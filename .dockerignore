@@ -1,0 +1,12 @@
+.git
+.github
+.agents
+.tmp-build
+**/dist
+**/lib
+**/*.tsbuildinfo
+node_modules
+coverage
+examples
+website
+docs

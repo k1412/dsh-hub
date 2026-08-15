@@ -3021,6 +3021,30 @@ export interface Config {
 
 Source: [`packages/workflow/workflow-worker-thread/src/index.ts:32`](../packages/workflow/workflow-worker-thread/src/index.ts)
 
+<a id="k1412dsh-hub-connector"></a>
+
+## `@k1412/dsh-hub-connector`
+
+Requires: `apiProxy`
+
+```ts config-catalog
+/** Connector configuration stored in the DSH profile. */
+export interface Config {
+  /** Owner-only Unix socket path or Windows named-pipe name exposed by Node Agent. */
+  ipcEndpoint?: string
+  /** Owner-only file containing the local Connector IPC secret. */
+  secretFile?: string
+  /** Stable identifier for this independently running DSH runtime. */
+  runtimeId?: string
+  /** DSH version advertised during capability negotiation. */
+  dshVersion?: string
+  /** Maximum reconnect backoff after local Node Agent interruption. */
+  reconnectMaximumMs?: number
+}
+```
+
+Source: [`packages/hub/hub-connector/src/index.ts:26`](../packages/hub/hub-connector/src/index.ts)
+
 ## Loadable plugins with no config
 
 These load from a `cordis.yml` entry with no `config:` block; they declare no configuration API.
@@ -3149,3 +3173,10 @@ Imported as libraries by other packages; a `cordis.yml` cannot load them.
 - `@deepseek-ai/dsh-typert-generator` ([`packages/typert/generator/src/index.ts`](../packages/typert/generator/src/index.ts))
 - `@deepseek-ai/dsh-typert-protocol` ([`packages/typert/protocol/src/index.ts`](../packages/typert/protocol/src/index.ts))
 - `@deepseek-ai/dsh-typert-registry` ([`packages/typert/registry/src/index.ts`](../packages/typert/registry/src/index.ts))
+- `@k1412/dsh-hub-capabilities` ([`packages/hub/hub-capabilities/src/index.ts`](../packages/hub/hub-capabilities/src/index.ts))
+- `@k1412/dsh-hub-node-agent` ([`packages/hub/hub-node-agent/src/index.ts`](../packages/hub/hub-node-agent/src/index.ts))
+- `@k1412/dsh-hub-node-ipc` ([`packages/hub/hub-node-ipc/src/index.ts`](../packages/hub/hub-node-ipc/src/index.ts))
+- `@k1412/dsh-hub-protocol` ([`packages/hub/hub-protocol/src/index.ts`](../packages/hub/hub-protocol/src/index.ts))
+- `@k1412/dsh-hub-server` ([`packages/hub/hub-server/src/index.ts`](../packages/hub/hub-server/src/index.ts))
+- `@k1412/dsh-hub-storage` ([`packages/hub/hub-storage/src/index.ts`](../packages/hub/hub-storage/src/index.ts))
+- `@k1412/dsh-hub-transport` ([`packages/hub/hub-transport/src/index.ts`](../packages/hub/hub-transport/src/index.ts))

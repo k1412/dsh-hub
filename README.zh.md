@@ -1,74 +1,60 @@
-# DeepSeek Harness
+# DSH Hub
 
 [English](README.md) | 中文
 
-DeepSeek Harness（`dsh`）是由 [DeepSeek AI](https://deepseek.com) 开发的开源 agent harness（智能体框架）。
+DSH Hub 是一个自托管控制平面，用于从同一个浏览器管理多个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Runtime。每个节点保留自己的 DSH Runtime、会话、工作区文件、凭据和本地客户端。Node Agent 主动向 Hub 建立经过认证的出站连接，进程内 Cordis Connector 则使用本地 Web 与桌面客户端到达的同一个与传输无关的 Host Gateway。
 
-它采用**一切皆插件**的架构，并由 [Cordis](https://github.com/cordiverse/cordis) 驱动，其设计参见论文 [_A Programming Paradigm for Spatiotemporal Composability_](https://github.com/cordiverse/paper)。
+## 功能
 
-## 开发者预览
+- 在本地 Web、桌面客户端或 Hub 之间交替继续同一个会话。
+- 通过适配移动端的单用户界面浏览所有已注册节点和会话。
+- 使用 Node Agent 的操作系统账户运行会话命令、工作区文件操作和交互式终端。
+- 按精确版本和制品哈希锁定、暂存、盘点及回滚 DSH Profile 插件。
+- 创建和恢复节点本地的配置、依赖、数据及机群快照，同时排除已知机密文件类别与符号链接。
+- 通过持久序列号、确认、重放、幂等和连接代际隔离恢复出站 WSS 连接。
 
-DeepSeek Harness 目前处于 _开发者预览_ 阶段，正在快速迭代。**未来将出现破坏兼容性的变更。**
+## 架构
+
+Hub 是控制平面，不是 DSH Runtime。它不运行 agent 或节点插件，也没有本地执行模式。节点始终是实时会话、工作区、受管插件制品和快照的权威来源；Hub 持久化控制状态、最小会话索引、命令、审计记录，以及显式导入其内容寻址存储 API 的对象。
+
+浏览器请求通过 REST 执行命令，通过 SSE 接收实时状态，并使用专用 WebSocket 传输 PTY 流量。Node Agent 只建立出站 WSS 连接，并使用 Cloudflare Access Service Token 与固定的 Ed25519 节点身份进行认证。人员访问使用 Cloudflare Access 和 Hub 内部的邮箱白名单。
+
+详见[架构参考](docs/hub/architecture.md)与[安全参考](docs/hub/security.md)。
 
 ## 运行
 
-### 通过 `npm` 运行
+本 fork 保留完整的上游 DSH Runtime 和开发界面。
 
-安装 `Node.js`，然后运行：
+### 从 `npm` 运行
+
+安装 Node.js，然后运行上游 Web UI：
 
 ```sh
 npx @deepseek-ai/dsh web
 ```
 
-该命令会启动 Web UI，默认地址为 `http://127.0.0.1:3080`。详见 [Web UI 指南](docs/user/guide/index.md)。
+Web UI 默认监听 `http://127.0.0.1:3080`。详见 [Web UI 指南](docs/user/guide/index.md)。
 
 ### 从源码运行
 
-如需从仓库源码运行：
-
 ```sh
-git clone https://github.com/deepseek-ai/deepseek-harness.git
-cd deepseek-harness
+git clone https://github.com/k1412/dsh-hub.git
+cd dsh-hub
 pnpm install
 pnpm run build
 pnpm dsh web
 ```
 
-## 社区与支持
+## 部署
 
-- 欢迎通过 [GitHub Discussions](https://github.com/deepseek-ai/deepseek-harness/discussions) 提交反馈或 bug 报告。
-- 为你的插件仓库添加 [`dsh-plugin`](https://github.com/topics/dsh-plugin) 话题，便于被发现。
-- 欢迎加入 DeepSeek Harness 企微群：扫码添加企微小助手并填写入群问卷，完成后小助手会邀请你入群。
+Hub 支持使用经过加固的 [Docker Compose 定义](deploy/hub/compose.yaml)部署。节点安装发行版 Node Agent 和 DSH Connector Bundle。Connector 加入提供 DSH Host Gateway 的现有 Composition，不安装或代理 DSH Web 传输。
 
-<table>
-  <thead>
-    <tr>
-      <th align="center">企微小助手</th>
-      <th align="center">入群问卷</th>
-      <th align="center">微信公众号</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td align="center"><img src="assets/community-wecom-assistant.png" alt="DeepSeek Harness 企微小助手二维码" width="180" height="180"></td>
-      <td align="center"><a href="https://trtgsjkv6r.feishu.cn/share/base/form/shrcnIt5twSVdLGD52KJBckGCgg"><img src="assets/community-wecom-survey.png" alt="DeepSeek Harness 入群问卷二维码" width="180" height="180"></a></td>
-      <td align="center"><img src="assets/community-wechat-official-account.png" alt="DeepSeek Harness 团队微信公众号二维码" width="180" height="180"></td>
-    </tr>
-  </tbody>
-</table>
-
-## 参与贡献
-
-参见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+先按照[部署指南](docs/hub/deployment.md)完成安装，再通过[运维指南](docs/hub/operations.md)执行注册、备份、恢复、升级和吊销。
 
 ## 开发
 
-请先阅读[开发指南](docs/development.md)与[架构文档](docs/architecture.md)。
+Hub 包位于 [`packages/hub`](packages/hub)，浏览器应用位于 [`apps/hub-web`](apps/hub-web)。贡献需遵循 [CONTRIBUTING.md](CONTRIBUTING.md)以及仓库已有的包、文档、测试和双语配对规范。
 
-面向 agent：请遵循 [AGENTS.md](AGENTS.md)。
+## 上游与许可证
 
-## 许可证
-
-[MIT](LICENSE)
-
-第三方依赖及其许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+本仓库是 DeepSeek Harness 的 fork。上游 DSH 代码、Hub 新增代码和完整仓库均采用 [MIT License](LICENSE) 分发，第三方声明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。DSH Hub 是独立社区项目，不将 DeepSeek 品牌用作自身产品标识。

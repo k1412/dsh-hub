@@ -1,0 +1,14 @@
+{
+  "name": "@k1412/dsh-hub-web",
+  "version": "0.1.0-rc.5",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vite": "8.0.16"
+  }
+}

@@ -1,0 +1,126 @@
+name: Hub CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: hub-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22.22.1'
+  DSH_TELEMETRY_DISABLED: '1'
+
+jobs:
+  node:
+    name: Hub / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install immutable dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Type-check Hub packages
+        run: pnpm run hub:typecheck
+      - name: Lint Hub sources
+        run: pnpm run hub:lint
+      - name: Run Hub tests
+        run: pnpm run hub:test
+      - name: Build Hub Web
+        run: pnpm run hub:web:build
+      - name: Verify Hub server backup path
+        run: pnpm run hub:server:verify
+      - name: Build release assets
+        run: pnpm run hub:release:pack
+      - name: Verify packed installation
+        run: pnpm run hub:release:verify
+
+  windows-typecheck:
+    name: Hub / windows typecheck
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - name: Install immutable dependencies
+        shell: pwsh
+        run: pnpm install --frozen-lockfile
+      - name: Type-check Hub packages
+        shell: pwsh
+        run: pnpm run hub:typecheck
+      - name: Lint Hub sources
+        shell: pwsh
+        run: pnpm run hub:lint
+      - name: Build Hub Web
+        shell: pwsh
+        run: pnpm run hub:web:build
+
+  documentation:
+    name: Hub / documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify bilingual and Agent Note contracts
+        run: |
+          pnpm run verify-translation-pairing
+          pnpm run verify-agent-note-classification
+          pnpm run verify-agent-note-format
+          pnpm run verify-md-links
+          pnpm run verify-mermaid
+      - name: Build documentation website
+        run: pnpm run docs:check
+
+  container:
+    name: Hub / linux-amd64 container
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/hub/Dockerfile
+          platforms: linux/amd64
+          push: false
+          tags: dsh-hub:ci
+          cache-from: type=gha,scope=hub-ci
+          cache-to: type=gha,mode=max,scope=hub-ci

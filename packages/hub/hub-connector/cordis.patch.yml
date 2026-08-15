@@ -1,0 +1,9 @@
+# Adds the transport-independent Hub Connector to an existing DSH profile.
+# The local Web and desktop surfaces remain unchanged because this row consumes
+# the same apiProxy service and does not provide a Web server or client bundle.
+
+- insert:
+    - id: hub-connector
+      # Resolve from this profile instead of the globally installed DSH loader.
+      # This keeps global, container and desktop installations on the same path.
+      name: './node_modules/@k1412/dsh-hub-connector/lib/index.js'
