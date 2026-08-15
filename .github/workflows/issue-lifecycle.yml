@@ -38,6 +38,9 @@ jobs:
     name: Issue lifecycle
     if: ${{ github.event_name != 'pull_request_review' || (github.event.action == 'submitted' && github.event.review.state == 'changes_requested') }}
     runs-on: ubuntu-latest
+    env:
+      DSH_ISSUE_APP_CLIENT_ID: ${{ vars.DSH_ISSUE_APP_CLIENT_ID }}
+      DSH_ISSUE_APP_PRIVATE_KEY: ${{ secrets.DSH_ISSUE_APP_PRIVATE_KEY }}
     steps:
       - name: Check out trusted policy
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -46,13 +49,18 @@ jobs:
           persist-credentials: false
       - name: Create project token
         id: app-token
+        if: ${{ env.DSH_ISSUE_APP_CLIENT_ID != '' && env.DSH_ISSUE_APP_PRIVATE_KEY != '' }}
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
         with:
-          client-id: ${{ vars.DSH_ISSUE_APP_CLIENT_ID }}
-          private-key: ${{ secrets.DSH_ISSUE_APP_PRIVATE_KEY }}
-          owner: deepseek-harness
-          repositories: deepseek-harness
+          client-id: ${{ env.DSH_ISSUE_APP_CLIENT_ID }}
+          private-key: ${{ env.DSH_ISSUE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
       - name: Handle repository event
+        if: ${{ steps.app-token.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: node .github/issue-management/policy.mjs lifecycle
+      - name: Report optional automation state
+        if: ${{ steps.app-token.outcome == 'skipped' }}
+        run: echo "Issue project automation is disabled until the repository GitHub App credentials are configured."
