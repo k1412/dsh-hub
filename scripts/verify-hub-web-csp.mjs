@@ -88,10 +88,13 @@ try {
     })
   })
   const hubPluginRequest = page.waitForRequest(request => request.url().includes('/plugins/@k1412/dsh-hub-client-ui/client.js'))
+  const directoryFlowRequest = page.waitForRequest(request => request.url().includes(
+    '/plugins/@deepseek-ai/dsh-client-ui-directory-picker-browse/client.js',
+  ))
   await page.goto(`http://127.0.0.1:${address.port}/?nodeId=fixture-node&runtimeId=fixture-runtime`, {
     waitUntil: 'domcontentloaded',
   })
-  await hubPluginRequest
+  await Promise.all([hubPluginRequest, directoryFlowRequest])
   await page.locator('#root').waitFor({ state: 'attached' })
   await page.waitForFunction(() => document.querySelector('#root')?.childElementCount !== 0)
   const policyErrors = await page.evaluate(() => globalThis.__hubCspViolations)
@@ -101,7 +104,7 @@ try {
       ...policyErrors.map(error => JSON.stringify(error)),
     ].join('\n')}`)
   }
-  process.stdout.write('Hub Web: strict CSP boot verified\n')
+  process.stdout.write('Hub Web: strict CSP boot and directory flow verified\n')
 } finally {
   await browser?.close()
   await new Promise(resolveClose => server.close(resolveClose))

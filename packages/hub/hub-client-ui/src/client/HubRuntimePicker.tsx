@@ -1,7 +1,10 @@
 /** Direct node/Runtime choice beside the official new-session Workspace picker. */
 
-import { useEffect, useMemo, useState, type ChangeEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import {
+  IconApiOutline14, IconChevronDownOutline14, Menu, type MenuEntry,
+} from '@deepseek-ai/dsh-client-ui-primitives'
 // Type-only: pulls the new-session Runtime seat into the shared SlotMap.
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { readFleet, type FleetSnapshot, type HubRuntime } from './api.ts'
@@ -28,6 +31,7 @@ export function HubRuntimePicker({ selectedWorkspaceId, onTargetChange, t }: Hub
   const [fleet, setFleet] = useState<FleetSnapshot>()
   const [selected, setSelected] = useState<HubRuntimeTarget | undefined>(() => readRuntimeTarget())
   const [failed, setFailed] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
 
   useEffect(() => {
     let current = true
@@ -67,8 +71,9 @@ export function HubRuntimePicker({ selectedWorkspaceId, onTargetChange, t }: Hub
     (fleet?.nodes ?? []).map(node => [node.nodeId, node.displayName]),
   ), [fleet])
 
-  const choose = (event: ChangeEvent<HTMLSelectElement>): void => {
-    const next = runtimesByKey.get(event.currentTarget.value)
+  const choose = (id: string): void => {
+    setMenuOpen(false)
+    const next = runtimesByKey.get(id)
     if (next === undefined || sameTarget(selected, next)) return
     setSelected(next)
     replaceRuntimeTarget(next)
@@ -80,24 +85,39 @@ export function HubRuntimePicker({ selectedWorkspaceId, onTargetChange, t }: Hub
     : fleet === undefined
       ? t('runtimeLoading')
       : t('runtimeEmpty')
+  const selectedRuntime = selected === undefined ? undefined : runtimesByKey.get(runtimeKey(selected))
+  const selectedLabel = selectedRuntime === undefined
+    ? placeholder
+    : `${names.get(selectedRuntime.nodeId) ?? selectedRuntime.nodeId} · ${selectedRuntime.runtimeId}`
+  const items: MenuEntry[] = runtimes.map(runtime => ({
+    id: runtimeKey(runtime),
+    label: `${names.get(runtime.nodeId) ?? runtime.nodeId} · ${runtime.runtimeId}`,
+  }))
 
   return (
-    <label className={css.picker} title={failed ? t('runtimeUnavailable') : t('runtimeHelp')}>
-      <span className={css.srOnly}>{t('runtimeLabel')}</span>
-      <select
-        aria-label={t('runtimeLabel')}
-        className={css.select}
-        disabled={runtimes.length === 0}
-        onChange={choose}
-        value={selected === undefined ? '' : runtimeKey(selected)}
-      >
-        {runtimes.length === 0 ? <option value="">{placeholder}</option> : null}
-        {runtimes.map((runtime: HubRuntime) => (
-          <option key={runtimeKey(runtime)} value={runtimeKey(runtime)}>
-            {names.get(runtime.nodeId) ?? runtime.nodeId} · {runtime.runtimeId}
-          </option>
-        ))}
-      </select>
-    </label>
+    <Menu
+      open={menuOpen}
+      items={items}
+      selectedId={selectedRuntime === undefined ? undefined : runtimeKey(selectedRuntime)}
+      onSelect={choose}
+      onClose={() => { setMenuOpen(false) }}
+      portal
+      anchor={(
+        <button
+          type="button"
+          className={css.trigger}
+          aria-label={t('runtimeLabel')}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          disabled={runtimes.length === 0}
+          title={failed ? t('runtimeUnavailable') : t('runtimeHelp')}
+          onClick={() => { setMenuOpen(open => !open) }}
+        >
+          <IconApiOutline14 className={css.icon} size={16} />
+          <span className={css.label}>{selectedLabel}</span>
+          <IconChevronDownOutline14 className={css.chevron} size={12} />
+        </button>
+      )}
+    />
   )
 }

@@ -34,7 +34,7 @@ Hub 与 Node Agent 交换签名信封，其中包含协议版本、节点与可�
 
 Hub 控制合约由 `/hub/v1` 命名空间拥有。JSON REST 承载有界请求和变更，可恢复 SSE 通道承载可重建的控制事件，专用同源 WebSocket 转发交互式 PTY 帧。Hub Web 构建直接使用官方 DSH 客户端清单。Hub 会把不含资源身份的会话、搜索与工作区读取分发到每个在线 `dsh.web` Runtime，把节点本地资源 ID 重写为包含 `{nodeId, runtimeId, sourceId}` 的浏览器不透明 ID，并将后续 HTTP 与事件操作路由回所属 Runtime。Hub 会先合并各 Runtime 的完整工作区顺序与归档快照再发布，避免单个节点覆盖全部节点的状态。当一个不含资源身份的操作必须指定唯一所有者时，它使用操作者选择的 Runtime。上游 Web API 仍是浏览器到 Runtime 的接口，而不是 Hub 到节点协议。
 
-官方客户端包继续负责对话、工作区、项目分组、目录选择、流式输出、滚动、错误与移动端行为。会话壳会在 Workspace picker 前声明一个可选的根作用域 `conversation.hero.runtime` seat。Hub 以经过审查的选择器占用它，只列出在线 `dsh.web.fetch` Runtime：上次仍可用的目标会预选，切换目标会清除旧空白会话选择，选择已有的不透明 Fleet Workspace 则会同步到其所有者。设置页继续提供注册、节点状态、无所有者操作的兜底目标、插件健康、更新历史、回退、显式快照和需确认的救援诊断。Runtime 选择不会筛选全部节点汇总页面、替换官方交互模型或加载节点提供的 JavaScript。
+官方客户端包继续负责对话、工作区、项目分组、目录选择、流式输出、滚动、错误与移动端行为。会话壳会在 Workspace picker 前声明一个可选的根作用域 `conversation.hero.runtime` seat。Hub 以经过审查的选择器占用它，只列出在线 `dsh.web.fetch` Runtime：上次仍可用的目标会预选，切换目标会清除旧空白会话选择，选择已有的不透明 Fleet Workspace 则会同步到其所有者。该选择器使用官方 Menu 和芯片组件。由于 Hub 是静态浏览器 Composition，而不是官方 Web Host，其经审查的清单会显式加入官方浏览器目录浏览流程，而不依赖 Host 侧自动选择器；浏览和创建请求随后使用已选 Runtime。在节点集合侧边栏中，Workspace 文件夹始终是项目分组的主标签，节点显示名作为附属后缀，会话嵌套在该分组下。设置页继续提供注册、节点状态、无所有者操作的兜底目标、插件健康、更新历史、回退、显式快照和需确认的救援诊断。Runtime 选择不会筛选全部节点汇总页面、替换官方交互模型或加载节点提供的 JavaScript。
 
 ## Storage and fleet operations
 
@@ -50,7 +50,7 @@ Hub Web UI 是由官方 DSH 客户端包和 Hub 客户端插件组成的经过�
 
 Connector Composition 测试让本地 Web、桌面端和 Hub 调用方通过同一套 Host API 与事件 Gateway 工作，并验证三类调用方使用同一个会话所有者。节点测试覆盖已认证本地 IPC、持久状态、插件清单与事务、快照排除与恢复隔离、乐观文件操作和真实 PTY 输出。Hub 客户端测试覆盖新会话直接选择 Runtime、上次选择持久化、不透明 Workspace 所有者同步、注册、取消、吊销、插件更新与回退、显式快照恢复和高级诊断保护。发布检查会安装打包后的 Connector 与 Node Agent 制品，容器检查会为 Linux AMD64 构建 Hub 服务端和静态 UI。部署验收还会在 Hub 与 Connector 故障前后，让现有本地 Web 和桌面客户端使用同一个真实 DSH Runtime。
 
-Hub 构建测试固定完整官方客户端清单及 Hub 设置页贡献。构建页面的 Chromium 检查会使用生产 Content Security Policy 提供该清单，并要求 Hub 设置 Bundle 和应用根节点在无 Policy Error 或 Page Error 的情况下加载。官方 GUI 组件清单与无密钥 Chromium 回放仍是必需项，因此会话创建、项目分组、工作目录选择、流式输出、滚动、错误恢复和移动端行为不能在 Hub 专用替代品中退化。节点集合路由测试覆盖多 Runtime 列表与搜索汇总、不透明身份往返、按所有者路由历史与聊天、工作区顺序与归档快照合并、畸形及跨 Runtime 身份拒绝，以及官方事件多路复用。存储与服务端测试覆盖保行 Schema 迁移、Connector 基线、WSS 投影和 REST 输出。
+Hub 构建测试固定完整官方客户端清单、浏览器目录浏览流程及 Hub 设置页贡献，同时排除本地文件系统选择器。构建页面的 Chromium 检查会使用生产 Content Security Policy 提供该清单，并要求 Hub 设置 Bundle 和应用根节点在无 Policy Error 或 Page Error 的情况下加载。官方 GUI 组件清单与无密钥 Chromium 回放仍是必需项，因此会话创建、项目分组、工作目录选择、流式输出、滚动、错误恢复和移动端行为不能在 Hub 专用替代品中退化。节点集合路由测试覆盖多 Runtime 列表与搜索汇总、不透明身份往返、按所有者路由历史与聊天、文件夹优先且附带节点的 Workspace 标签、工作区顺序与归档快照合并、畸形及跨 Runtime 身份拒绝，以及官方事件多路复用。存储与服务端测试覆盖保行 Schema 迁移、Connector 基线、WSS 投影和 REST 输出。
 
 ## Alternatives considered
 

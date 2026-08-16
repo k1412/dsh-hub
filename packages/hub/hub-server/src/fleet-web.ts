@@ -162,7 +162,9 @@ export function encodeFleetPayload(input: unknown, target: FleetWebTarget): unkn
       Object.entries(record).map(([childKey, child]) => [childKey, visit(child, childKey)]),
     )
     if (target.displayName !== undefined && isWorkspaceView(record)) {
-      rewritten.title = `${target.displayName} · ${String(record.title)}`
+      // The official sidebar groups sessions by Workspace. Keep the folder as
+      // the primary label and attach the node only to disambiguate equal paths.
+      rewritten.title = `${String(record.title)} · ${target.displayName}`
     }
     return rewritten
   }
