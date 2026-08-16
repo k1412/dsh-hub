@@ -44,7 +44,7 @@ The Hub settings capability returns redacted values and secret-slot state. Snaps
 
 ## Browser content security
 
-Hub serves one fixed UI build with a restrictive Content Security Policy, frame denial, no third-party scripts, no inline script execution, and no runtime-loaded node UI extensions. Nodes cannot upload JavaScript for execution in the Hub origin.
+Hub serves one fixed UI build with a restrictive Content Security Policy, frame denial, no third-party scripts, no inline script execution, no dynamic evaluation, and no runtime-loaded node UI extensions. The style policy permits inline attributes and `<style>` elements because the reviewed official bundles compute layout and inject component CSS at runtime; bundled fonts may use `data:` URLs, while the script policy still accepts only same-origin static assets. Hub selects Zod's non-JIT parser before the official entry runs, while Loader defers compiling its expression evaluator unless a composition actually evaluates an expression node. The reviewed static Hub roster contains no such nodes, so nodes cannot upload JavaScript for execution in the Hub origin.
 
 Session events and terminal output remain untrusted display data. The UI inserts them as text rather than HTML. New rich renderers belong in the reviewed Hub build and must not evaluate event payloads.
 
