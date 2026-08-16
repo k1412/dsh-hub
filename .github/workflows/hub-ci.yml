@@ -119,11 +119,17 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Install the locked Chromium runtime
         run: pnpm --filter @deepseek-ai/dsh-web-frontend exec playwright install --with-deps chromium
+      - name: Prepare bubblewrap for DSH subprocess sandboxes
+        run: bash scripts/prepare-ci-bubblewrap.sh
       - name: Run official GUI unit and component tests
         run: pnpm run test:gui
       - name: Run official Web replay tests
         env:
           DSH_SNAPSHOT: replay
+          # The fleet-console gate values deterministic compatibility over
+          # throughput. Some upstream replay fixtures register process-wide
+          # loaders and are not safe to overlap on a small hosted runner.
+          DSH_SNAPSHOT_MAX_CONCURRENCY: '1'
         run: pnpm run test:web
 
   container:
