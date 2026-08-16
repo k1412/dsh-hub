@@ -3,6 +3,7 @@
 /** Install packed Hub node assets into a clean prefix and verify their release shape. */
 
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { access, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -17,7 +18,30 @@ const connectorAsset = join(releaseDirectory, `k1412-dsh-hub-connector-${version
 const agentAsset = join(releaseDirectory, `k1412-dsh-hub-node-agent-${version}.tgz`)
 const prefix = await mkdtemp(join(tmpdir(), 'dsh-hub-packed-install-'))
 
+async function verifyChecksums() {
+  const checksumText = await readFile(join(releaseDirectory, 'SHA256SUMS'), 'utf8')
+  const records = checksumText.trimEnd().split('\n').map((line) => {
+    const match = /^([0-9a-f]{64})  ([^/\\]+)$/.exec(line)
+    if (match === null) throw new Error(`release checksum must use a basename: ${line}`)
+    return { digest: match[1], asset: match[2] }
+  })
+  const expectedAssets = [
+    `k1412-dsh-hub-connector-${version}.tgz`,
+    `k1412-dsh-hub-node-agent-${version}.tgz`,
+  ].sort()
+  if (JSON.stringify(records.map(record => record.asset).sort()) !== JSON.stringify(expectedAssets)) {
+    throw new Error('release checksum file does not cover the exact packed asset set')
+  }
+  for (const record of records) {
+    const actual = createHash('sha256')
+      .update(await readFile(join(releaseDirectory, record.asset)))
+      .digest('hex')
+    if (actual !== record.digest) throw new Error(`release checksum mismatch for ${record.asset}`)
+  }
+}
+
 try {
+  await verifyChecksums()
   const installed = spawnSync('npm', [
     'install', '--prefix', prefix, '--no-package-lock', '--legacy-peer-deps', agentAsset, connectorAsset,
   ], { cwd: repositoryRoot, stdio: 'inherit', shell: false })

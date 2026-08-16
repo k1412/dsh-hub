@@ -25,7 +25,7 @@ import { clientRequestSchema, serverResponseSchema } from '@deepseek-ai/dsh-host
 import { SessionId } from '@deepseek-ai/dsh-session/types'
 
 /** Connector release sent in the authenticated local baseline. */
-export const HUB_CONNECTOR_VERSION = '0.1.0-rc.8'
+export const HUB_CONNECTOR_VERSION = '0.1.0-rc.9'
 
 /** Connector configuration stored in the DSH profile. */
 export interface Config {
