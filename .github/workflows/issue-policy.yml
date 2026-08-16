@@ -14,6 +14,9 @@ permissions:
 jobs:
   policy:
     name: Issue policy
+    # Forks do not necessarily use GitHub Issue Types or the configured
+    # organization Project. Enable this check only after both are provisioned.
+    if: ${{ vars.DSH_ISSUE_POLICY_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - name: Check out trusted policy
