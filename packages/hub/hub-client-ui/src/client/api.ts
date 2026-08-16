@@ -1,5 +1,7 @@
 /** Same-origin operator API used only by Hub settings extensions. */
 
+import { navigateRuntimeTarget } from './runtime-target.ts'
+
 /** Operator-visible identity and live state for one enrolled physical node. */
 export interface HubNode {
   nodeId: string
@@ -166,8 +168,5 @@ export async function invoke<T>(runtime: HubRuntime, capability: string, operati
  * @param runtime - target node and Runtime identity.
  */
 export function switchRuntime(runtime: Pick<HubRuntime, 'nodeId' | 'runtimeId'>): void {
-  const url = new URL(globalThis.location.href)
-  url.searchParams.set('nodeId', runtime.nodeId)
-  url.searchParams.set('runtimeId', runtime.runtimeId)
-  globalThis.location.assign(url)
+  navigateRuntimeTarget(runtime)
 }

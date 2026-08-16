@@ -2,9 +2,18 @@
 
 English | [中文](console.zh.md)
 
-This guide explains what Hub adds to official DSH Web. Sessions, project groups, new-session flow, working-directory selection, message streaming, tool rendering, scrolling, and mobile interactions come from official Web. Hub-specific entries live only under Settings in the lower-left menu.
+This guide explains what Hub adds to official DSH Web. Sessions, project groups, working-directory selection, message streaming, tool rendering, scrolling, and mobile interactions come from official Web. Hub adds one node/Runtime selector to the official new-session row; management entries live under Settings in the lower-left menu.
 
-## Enroll and switch nodes
+## Start a session on a node and folder
+
+1. Open **New session**. The main page continues to show project groups and sessions from every online Runtime together.
+2. In the hero row, choose **Node and Runtime**. Hub preselects the last usable choice.
+3. Use the adjacent official Workspace picker to choose a remembered folder or browse that node's filesystem to add one.
+4. Send the first message. The Workspace identity becomes authoritative and every later request routes to its owner automatically.
+
+Changing the node before the first message clears the previous blank-session selection so a prompt cannot be sent to the old node by mistake. Choosing an existing Workspace from the fleet list synchronizes the node selector to its owner. No visit to Settings is required.
+
+## Enroll nodes and choose a fallback runtime
 
 Open **Settings → Hub nodes**.
 
@@ -13,7 +22,7 @@ Open **Settings → Hub nodes**.
 3. Create a distinct Cloudflare Access Service Token for that node.
 4. Expand **How to connect the node**, install and initialize Node Agent on the target machine, and register it as a system service.
 5. **Waiting to connect** lists unbound grants and allows cancellation before expiry. **Enrolled nodes** shows online, offline, and revoked states plus every DSH runtime.
-6. Select **Open** on a runtime to route official Web to it. Revoking a node identity disconnects it immediately but does not delete sessions or files on the node.
+6. Select **Set as default** only as the fallback for another ownerless Host operation. New sessions can choose their node directly on the main page. Revoking a node identity disconnects it immediately but does not delete sessions or files on the node.
 
 One physical machine needs one Node Agent and may connect multiple DSH profiles with distinct runtime IDs. Every node requires a distinct Service Token.
 

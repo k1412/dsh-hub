@@ -32,9 +32,9 @@ Hub 与 Node Agent 交换签名信封，其中包含协议版本、节点与可�
 
 双方都在确认前持久化命令和结果。重连时交换确认位置，拒绝过时代次和重复消息身份，重放未确认的持久记录，再校准 Runtime 实例、能力、未完成命令和流基线。变更命令必须提供幂等键或显式校准过程。副作用发生但结果未确认时返回 `outcome-unknown`，不会盲目重新执行。Hub 会在浏览器显式确认结果后删除已完成命令正文，并定期对无人领取的终止记录应用有界清理窗口。
 
-Hub 控制合约由 `/hub/v1` 命名空间拥有。JSON REST 承载有界请求和变更，可恢复 SSE 通道承载可重建的控制事件，专用同源 WebSocket 转发交互式 PTY 帧。Hub Web 构建直接使用官方 DSH 客户端清单；其中的 `/api/*` 请求和官方事件 WebSocket 会携带所选 `{nodeId, runtimeId}`，经 Hub 与 `dsh.web` 能力到达 Connector 的 Host Service。上游 Web API 仍是浏览器到 Runtime 的接口，而不是 Hub 到节点协议。
+Hub 控制合约由 `/hub/v1` 命名空间拥有。JSON REST 承载有界请求和变更，可恢复 SSE 通道承载可重建的控制事件，专用同源 WebSocket 转发交互式 PTY 帧。Hub Web 构建直接使用官方 DSH 客户端清单。Hub 会把不含资源身份的会话、搜索与工作区读取分发到每个在线 `dsh.web` Runtime，把节点本地资源 ID 重写为包含 `{nodeId, runtimeId, sourceId}` 的浏览器不透明 ID，并将后续 HTTP 与事件操作路由回所属 Runtime。Hub 会先合并各 Runtime 的完整工作区顺序与归档快照再发布，避免单个节点覆盖全部节点的状态。当一个不含资源身份的操作必须指定唯一所有者时，它使用操作者选择的 Runtime。上游 Web API 仍是浏览器到 Runtime 的接口，而不是 Hub 到节点协议。
 
-官方客户端包继续负责对话、工作区、项目分组、目录选择、流式输出、滚动、错误与移动端行为。Hub 只增加经过审查的设置页贡献，用于注册、节点状态、Runtime 切换、插件健康、更新历史、回退、显式快照和需确认的救援诊断。节点选择只改变浏览器目标，不替换官方交互模型，也不会加载节点提供的 JavaScript。
+官方客户端包继续负责对话、工作区、项目分组、目录选择、流式输出、滚动、错误与移动端行为。会话壳会在 Workspace picker 前声明一个可选的根作用域 `conversation.hero.runtime` seat。Hub 以经过审查的选择器占用它，只列出在线 `dsh.web.fetch` Runtime：上次仍可用的目标会预选，切换目标会清除旧空白会话选择，选择已有的不透明 Fleet Workspace 则会同步到其所有者。设置页继续提供注册、节点状态、无所有者操作的兜底目标、插件健康、更新历史、回退、显式快照和需确认的救援诊断。Runtime 选择不会筛选全部节点汇总页面、替换官方交互模型或加载节点提供的 JavaScript。
 
 ## Storage and fleet operations
 
@@ -42,15 +42,15 @@ Hub 控制合约由 `/hub/v1` 命名空间拥有。JSON REST 承载有界请求�
 
 Node Agent 只通过受大小限制的公共 npm 制品路径安装精确语义插件版本，并记录下载制品的 SHA-256。变更前它会把依赖、锁文件、Cordis 与受管插件状态保存为可见回退事务。它在不使用 Shell 的情况下调用 DSH Profile 管理，通过 `--dump-config` 验证 Profile 组合，验证已安装包 Manifest 与清单，并在应用失败时自动恢复已记录文件和冻结安装。成功更新会显示源版本、目标版本和一键回退；过期锁阻止旧事务覆盖后续状态。快照清单独立描述显式的配置、依赖、数据或节点集合范围；疑似密钥文件与符号链接会被排除，每个归档都有哈希，恢复时根目录必须仍然匹配，带符号链接的父目录也不能将写入重定向到已配置根目录之外。
 
-Hub Web UI 是由官方 DSH 客户端包和 Hub 设置插件组成的经过审查的静态构建。其启动脚本会在官方入口执行前选择 Zod 的非 JIT Parser，Loader 则会推迟编译表达式求值器，直到 Composition 实际求值表达式节点。Hub 静态清单不含表达式节点，其 Content Security Policy 会禁止动态求值和内联脚本，同时允许经过审查的官方客户端 Bundle 生成内联 Style Attribute 和 `<style>` 元素。节点可以声明新的类型化能力，但接入节点绝不会让其提供的 JavaScript 在操作者浏览器中执行。新的富能力界面作为经过审查的 Hub 代码发布。
+Hub Web UI 是由官方 DSH 客户端包和 Hub 客户端插件组成的经过审查的静态构建。其启动脚本会在官方入口执行前选择 Zod 的非 JIT Parser，Loader 则会推迟编译表达式求值器，直到 Composition 实际求值表达式节点。Hub 静态清单不含表达式节点，其 Content Security Policy 会禁止动态求值和内联脚本，同时允许经过审查的官方客户端 Bundle 生成内联 Style Attribute 和 `<style>` 元素。节点可以声明新的类型化能力，但接入节点绝不会让其提供的 JavaScript 在操作者浏览器中执行。新的富能力界面作为经过审查的 Hub 代码发布。
 
 ## Verification
 
 协议测试覆盖签名、篡改、过期、协商、序号、去重、过时代次、持久重放和恢复。存储测试覆盖所有权、未消费注册码的原子轮换、已注册节点复用拒绝、Schema 迁移、命令生命周期与脱敏、SQLite 备份和审计链验证。服务端集成测试覆盖 Access 验证、Origin 检查、注册、已签名 Agent WSS 交换、命令路由、连接吊销、官方 HTTP 与事件转发、终端转发和审计读取。
 
-Connector Composition 测试让本地 Web、桌面端和 Hub 调用方通过同一套 Host API 与事件 Gateway 工作，并验证三类调用方使用同一个会话所有者。节点测试覆盖已认证本地 IPC、持久状态、插件清单与事务、快照排除与恢复隔离、乐观文件操作和真实 PTY 输出。设置页组件测试覆盖注册、取消、吊销、Runtime 切换、插件更新与回退、显式快照恢复和高级诊断保护。发布检查会安装打包后的 Connector 与 Node Agent 制品，容器检查会为 Linux AMD64 构建 Hub 服务端和静态 UI。部署验收还会在 Hub 与 Connector 故障前后，让现有本地 Web 和桌面客户端使用同一个真实 DSH Runtime。
+Connector Composition 测试让本地 Web、桌面端和 Hub 调用方通过同一套 Host API 与事件 Gateway 工作，并验证三类调用方使用同一个会话所有者。节点测试覆盖已认证本地 IPC、持久状态、插件清单与事务、快照排除与恢复隔离、乐观文件操作和真实 PTY 输出。Hub 客户端测试覆盖新会话直接选择 Runtime、上次选择持久化、不透明 Workspace 所有者同步、注册、取消、吊销、插件更新与回退、显式快照恢复和高级诊断保护。发布检查会安装打包后的 Connector 与 Node Agent 制品，容器检查会为 Linux AMD64 构建 Hub 服务端和静态 UI。部署验收还会在 Hub 与 Connector 故障前后，让现有本地 Web 和桌面客户端使用同一个真实 DSH Runtime。
 
-Hub 构建测试固定完整官方客户端清单及 Hub 设置页贡献。构建页面的 Chromium 检查会使用生产 Content Security Policy 提供该清单，并要求 Hub 设置 Bundle 和应用根节点在无 Policy Error 或 Page Error 的情况下加载。官方 GUI 组件清单与无密钥 Chromium 回放仍是必需项，因此会话创建、项目分组、工作目录选择、流式输出、滚动、错误恢复和移动端行为不能在 Hub 专用替代品中退化。目标路由测试会保留标准 HTTP 与事件请求中的节点和 Runtime 复合标识。存储与服务端测试覆盖保行 Schema 迁移、Connector 基线、WSS 投影和 REST 输出。
+Hub 构建测试固定完整官方客户端清单及 Hub 设置页贡献。构建页面的 Chromium 检查会使用生产 Content Security Policy 提供该清单，并要求 Hub 设置 Bundle 和应用根节点在无 Policy Error 或 Page Error 的情况下加载。官方 GUI 组件清单与无密钥 Chromium 回放仍是必需项，因此会话创建、项目分组、工作目录选择、流式输出、滚动、错误恢复和移动端行为不能在 Hub 专用替代品中退化。节点集合路由测试覆盖多 Runtime 列表与搜索汇总、不透明身份往返、按所有者路由历史与聊天、工作区顺序与归档快照合并、畸形及跨 Runtime 身份拒绝，以及官方事件多路复用。存储与服务端测试覆盖保行 Schema 迁移、Connector 基线、WSS 投影和 REST 输出。
 
 ## Alternatives considered
 

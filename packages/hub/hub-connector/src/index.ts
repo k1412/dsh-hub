@@ -25,7 +25,7 @@ import { clientRequestSchema, serverResponseSchema } from '@deepseek-ai/dsh-host
 import { SessionId } from '@deepseek-ai/dsh-session/types'
 
 /** Connector release sent in the authenticated local baseline. */
-export const HUB_CONNECTOR_VERSION = '0.1.0-rc.5'
+export const HUB_CONNECTOR_VERSION = '0.1.0-rc.7'
 
 /** Connector configuration stored in the DSH profile. */
 export interface Config {
@@ -267,6 +267,7 @@ export class HubConnector {
     await waitForConnect(socket, signal)
     const decoder = new HubIpcFrameDecoder()
     let chain = Promise.resolve()
+    let streamTask: Promise<void> | undefined
     let authenticated = false
     const closed = new Promise<void>((resolve, reject) => {
       socket.once('close', resolve)
@@ -305,7 +306,11 @@ export class HubConnector {
             return
           }
           if (frame.type === 'ipc.accepted') {
-            void this.pumpStreams(streams.signal)
+            streamTask ??= this.pumpStreams(streams.signal).catch((error: unknown) => {
+              if (!streams.signal.aborted) {
+                socket.destroy(error instanceof Error ? error : new Error(String(error)))
+              }
+            })
             await this.publishIndex()
           } else if (frame.type === 'ipc.hub-body') {
             await this.handleBody(frame.body)
@@ -327,6 +332,10 @@ export class HubConnector {
         clearTimeout(this.active.indexTimer)
       }
       streams.abort(new Error('Connector IPC disconnected'))
+      // The event iterators use services owned by this Cordis Context. Let
+      // them observe cancellation and finish before plugin disposal makes
+      // those services inactive.
+      await streamTask
       if (this.active.socket === socket) this.active = undefined
       socket.destroy()
     }
@@ -399,8 +408,9 @@ export class HubConnector {
         ? {}
         : { body: input.body }),
     })
-    let response = await toFetchHandler(this.api).fetch(request)
-    if (response.status === 404 && input.method === 'POST' && url.pathname.startsWith('/api/')) {
+    let remoteResponse: Response | undefined
+    let parsedBody: ReturnType<typeof clientRequestSchema.safeParse> | undefined
+    if (input.method === 'POST' && url.pathname.startsWith('/api/')) {
       const endpoint = url.pathname.slice('/api/'.length)
       let body: unknown
       try {
@@ -408,15 +418,34 @@ export class HubConnector {
       } catch {
         return { status: 400, headers: [['content-type', 'text/plain; charset=utf-8']], encoding: 'utf8', body: 'body is not JSON' }
       }
-      const parsed = clientRequestSchema.safeParse(body)
-      if (parsed.success && parsed.data.method === endpoint) {
-        const result = await this.gateway.dispatch(endpoint, parsed.data.payload, new AbortController().signal)
+      parsedBody = clientRequestSchema.safeParse(body)
+      // Generic Typert Remote endpoints contain a namespace/method slash and
+      // are claimed ahead of ApiProxy by the ordinary node Connection route.
+      // Preserve that order in this in-process carrier: ApiProxy treats an
+      // unknown method as its own error response, so waiting for a 404 loses
+      // the Remote endpoint before the Gateway can see it.
+      if (endpoint.includes('/') && parsedBody.success && parsedBody.data.method === endpoint) {
+        const result = await this.gateway.dispatch(
+          endpoint, parsedBody.data.payload, new AbortController().signal,
+        )
         const envelope = serverResponseSchema.parse({
           type: 'server-response',
-          rpcId: parsed.data.rpcId,
+          rpcId: parsedBody.data.rpcId,
           result,
         })
-        response = Response.json(envelope)
+        remoteResponse = Response.json(envelope)
+      }
+    }
+    let response = remoteResponse ?? await toFetchHandler(this.api).fetch(request)
+    if (response.status === 404 && parsedBody?.success === true) {
+      const endpoint = url.pathname.slice('/api/'.length)
+      if (parsedBody.data.method === endpoint) {
+        const result = await this.gateway.dispatch(
+          endpoint, parsedBody.data.payload, new AbortController().signal,
+        )
+        response = Response.json(serverResponseSchema.parse({
+          type: 'server-response', rpcId: parsedBody.data.rpcId, result,
+        }))
       }
     }
     const bytes = Buffer.from(await response.arrayBuffer())
@@ -651,6 +680,7 @@ export class HubConnector {
     const host = this.api.events.host({ rpcId: rpcId(), payload: {} }, signal)
     const consumeMux = async () => {
       for await (const frame of mux) {
+        if (signal.aborted) return
         this.webMuxFrameSequence += 1
         await this.send({ type: 'ipc.hub-body', body: {
           type: 'stream.frame',
@@ -684,6 +714,7 @@ export class HubConnector {
     }
     const consumeHost = async () => {
       for await (const frame of host) {
+        if (signal.aborted) return
         this.webHostFrameSequence += 1
         await this.send({ type: 'ipc.hub-body', body: {
           type: 'stream.frame',

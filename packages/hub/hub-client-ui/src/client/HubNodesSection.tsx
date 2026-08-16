@@ -7,6 +7,7 @@ import {
   type EnrollmentGrant, type FleetSnapshot, type HubNode, type HubRuntime,
 } from './api.ts'
 import { AdvancedDiagnostics } from './AdvancedDiagnostics.tsx'
+import { readRuntimeTarget, runtimeKey, supportsOfficialWeb } from './runtime-target.ts'
 import css from './HubSettings.module.css'
 
 /** Props supplied by the official Settings section outlet. */
@@ -26,15 +27,9 @@ function nodeState(node: HubNode): { label: string; tone: string } {
   return { label: '离线', tone: 'muted' }
 }
 
-function runtimeKey(runtime: Pick<HubRuntime, 'nodeId' | 'runtimeId'>): string {
-  return `${runtime.nodeId}\u0000${runtime.runtimeId}`
-}
-
 function currentRuntimeKey(): string | undefined {
-  const query = new URL(globalThis.location.href).searchParams
-  const nodeId = query.get('nodeId')
-  const runtimeId = query.get('runtimeId')
-  return nodeId === null || runtimeId === null ? undefined : `${nodeId}\u0000${runtimeId}`
+  const target = readRuntimeTarget()
+  return target === undefined ? undefined : runtimeKey(target)
 }
 
 /** Render the complete node registration and lifecycle page. */
@@ -120,7 +115,7 @@ export function HubNodesSection(_props: HubNodesSectionProps): ReactNode {
       <header className={css.pageHeader}>
         <div>
           <h2>Hub 节点</h2>
-          <p>节点只向 Hub 建立出站连接；在这里注册、查看状态、切换当前 DSH Runtime 或撤销身份。</p>
+          <p>节点只向 Hub 建立出站连接；会话与项目始终跨节点汇总。这里管理节点，并选择新会话和节点设置的默认 Runtime。</p>
         </div>
         <button className={css.secondaryButton} type="button" onClick={() => { void load() }}>刷新</button>
       </header>
@@ -150,7 +145,7 @@ export function HubNodesSection(_props: HubNodesSectionProps): ReactNode {
                 <li>在节点本机设置注册码与 Service Token Secret 环境变量，再运行下面的初始化命令。</li>
                 <li>按部署文档把 Node Agent 注册为系统服务；节点上线后，本页会显示它和对应 Runtime。</li>
               </ol>
-              <pre>{`DSH_HUB_ENROLLMENT_CODE='<上方注册码>' \\\nDSH_HUB_ACCESS_CLIENT_SECRET='<节点 Service Token Secret>' \\\ndsh-hub-node init \\\n  --hub '${globalThis.location.origin}' \\\n  --node '${grant.nodeId}' \\\n  --access-client-id '<节点 Service Token Client ID>' \\\n  --profile-directory '<DSH Profile 绝对路径>' \\\n  --runtime-id 'default' \\\n  --install-connector '@k1412/dsh-hub-connector@0.1.0-rc.5'`}</pre>
+              <pre>{`DSH_HUB_ENROLLMENT_CODE='<上方注册码>' \\\nDSH_HUB_ACCESS_CLIENT_SECRET='<节点 Service Token Secret>' \\\ndsh-hub-node init \\\n  --hub '${globalThis.location.origin}' \\\n  --node '${grant.nodeId}' \\\n  --access-client-id '<节点 Service Token Client ID>' \\\n  --profile-directory '<DSH Profile 绝对路径>' \\\n  --runtime-id 'default' \\\n  --install-connector '@k1412/dsh-hub-connector@0.1.0-rc.7'`}</pre>
             </details>
           </div>
         )}
@@ -200,10 +195,16 @@ export function HubNodesSection(_props: HubNodesSectionProps): ReactNode {
                         <button
                           className={runtimeKey(runtime) === activeKey ? css.activeButton : css.secondaryButton}
                           type="button"
-                          disabled={!runtime.online || runtimeKey(runtime) === activeKey}
+                          disabled={!runtime.online || !supportsOfficialWeb(runtime) || runtimeKey(runtime) === activeKey}
                           onClick={() => { switchRuntime(runtime) }}
                         >
-                          {runtimeKey(runtime) === activeKey ? '当前' : runtime.online ? '打开' : '离线'}
+                          {runtimeKey(runtime) === activeKey
+                            ? '默认'
+                            : !runtime.online
+                              ? '离线'
+                              : supportsOfficialWeb(runtime)
+                                ? '设为默认'
+                                : '等待 Connector 更新'}
                         </button>
                       </li>
                     ))}

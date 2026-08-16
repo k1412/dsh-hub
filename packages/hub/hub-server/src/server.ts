@@ -12,6 +12,9 @@ import {
 } from './auth.ts'
 import { HubAgentRegistry, parseAgentUpgrade } from './agents.ts'
 import { HubEventBroker, type HubBrowserEvent } from './events.ts'
+import {
+  decodeFleetPayload, encodeFleetPayload, singleFleetTarget, type FleetWebTarget,
+} from './fleet-web.ts'
 
 /** Access verifier interface implemented by Cloudflare JWT validation. */
 export interface HubAccessVerifier {
@@ -47,6 +50,27 @@ class HttpProblem extends Error {
     super(message)
   }
 }
+
+interface OfficialWebResponse {
+  status: number
+  headers: Array<[string, string]>
+  encoding: 'utf8' | 'base64'
+  body: string
+}
+
+interface OfficialRpcEnvelope {
+  type: 'server-response'
+  rpcId: string
+  result: { ok: boolean; value?: unknown; error?: unknown }
+}
+
+interface FleetWorkspaceSnapshot {
+  workspaceIds: string[]
+  archivedSessionIds: string[]
+}
+
+const FLEET_AGGREGATE_METHODS = new Set(['session.list', 'session.search', 'workspace.list'])
+const INTERACTION_TARGET_LIFETIME_MS = 60 * 60_000
 
 const enrollmentSchema = z.strictObject({
   nodeId: z.string().min(1).max(64),
@@ -160,6 +184,8 @@ export class HubServer {
   private readonly terminalWebSockets = new WebSocketServer({ noServer: true, maxPayload: 1_048_576, perMessageDeflate: false })
   private readonly officialWebSockets = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 * 1024, perMessageDeflate: false })
   private readonly events = new HubEventBroker()
+  private readonly interactionTargets = new Map<string, { target: FleetWebTarget; expiresAt: number }>()
+  private readonly workspaceSnapshots = new Map<string, FleetWorkspaceSnapshot>()
   /** Authenticated outbound-node registry used by REST and terminal routing. */
   public readonly agents: HubAgentRegistry
   private readonly publicOrigin: string
@@ -172,6 +198,10 @@ export class HubServer {
     this.agents = new HubAgentRegistry(options.storage, this.events, options.hubIdentity)
     this.maintenance = setInterval(() => {
       options.storage.control.redactTerminalCommandContentBefore(Date.now() - 5 * 60_000)
+      const now = Date.now()
+      for (const [rpcId, record] of this.interactionTargets) {
+        if (record.expiresAt <= now) this.interactionTargets.delete(rpcId)
+      }
     }, 60_000)
     this.maintenance.unref()
     this.http = createServer((request, response) => {
@@ -262,13 +292,12 @@ export class HubServer {
     }
     if ((method === 'GET' || method === 'HEAD') && (url.pathname === '/' || url.pathname === '/setup.html')) {
       const target = this.firstOfficialRuntime()
-      const hasTarget = url.searchParams.has('nodeId') && url.searchParams.has('runtimeId')
-      if (url.pathname === '/' && !hasTarget) {
-        this.redirect(response, target === undefined ? '/setup.html' : this.officialRuntimeUrl(target))
+      if (url.pathname === '/' && target === undefined) {
+        this.redirect(response, '/setup.html')
         return
       }
       if (url.pathname === '/setup.html' && target !== undefined) {
-        this.redirect(response, this.officialRuntimeUrl(target))
+        this.redirect(response, '/')
         return
       }
     }
@@ -434,11 +463,9 @@ export class HubServer {
     if (url.pathname === '/api/events.mux' || url.pathname === '/api/events.host') {
       const human = await this.options.access.verifyHuman(headers(request))
       if (request.headers.origin !== this.publicOrigin) throw new Error('official Web stream requires same origin')
-      const nodeId = HubNodeId(url.searchParams.get('nodeId') ?? '')
-      const runtimeId = HubRuntimeId(url.searchParams.get('runtimeId') ?? '')
       const stream = url.pathname.endsWith('.mux') ? 'mux' : 'host'
       this.officialWebSockets.handleUpgrade(request, socket, head, (webSocket) => {
-        void this.openOfficialStream(webSocket, human, nodeId, runtimeId, stream).catch((error: unknown) => {
+        void this.openOfficialStream(webSocket, human, stream).catch((error: unknown) => {
           this.options.reportError?.(error)
           webSocket.close(1011, 'official Web stream failed')
         })
@@ -455,56 +482,105 @@ export class HubServer {
     human: HubHumanPrincipal,
     method: string,
   ): Promise<void> {
-    const nodeId = HubNodeId(url.searchParams.get('nodeId') ?? '')
-    const runtimeId = HubRuntimeId(url.searchParams.get('runtimeId') ?? '')
-    if (!this.agents.isOnline(nodeId)) throw new HttpProblem(503, 'node is offline')
     const forwarded = new URL(url)
+    const requestedTarget = this.resolveOfficialTarget({
+      nodeId: url.searchParams.get('nodeId') ?? '',
+      runtimeId: url.searchParams.get('runtimeId') ?? '',
+    })
     forwarded.searchParams.delete('nodeId')
     forwarded.searchParams.delete('runtimeId')
-    let body: string | undefined
+    let bodyValue: unknown
     if (method === 'POST') {
       const mediaType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase()
       if (mediaType !== 'application/json') throw new HttpProblem(415, 'application/json is required')
-      body = await textBody(request, 160 * 1024 * 1024)
+      const body = await textBody(request, 160 * 1024 * 1024)
+      try {
+        bodyValue = JSON.parse(body) as unknown
+      } catch {
+        throw new HttpProblem(400, 'request body is not valid JSON')
+      }
     }
-    const command = await this.agents.invoke(
-      nodeId,
-      runtimeId,
-      'dsh.web',
-      '1.0.0',
-      'fetch',
-      {
-        clientMutationId: crypto.randomUUID(),
-        method,
-        path: `${forwarded.pathname}${forwarded.search}`,
-        headers: method === 'POST' ? [['content-type', 'application/json']] : [],
-        ...(body === undefined ? {} : { body }),
-      },
-      `human:${human.email}`,
+
+    let decodedBody: ReturnType<typeof decodeFleetPayload>
+    try {
+      decodedBody = decodeFleetPayload(bodyValue)
+    } catch (error) {
+      throw new HttpProblem(400, error instanceof Error ? error.message : 'fleet identity is malformed')
+    }
+    let payloadTarget: FleetWebTarget | undefined
+    try {
+      payloadTarget = singleFleetTarget(decodedBody.targets)
+    } catch (error) {
+      throw new HttpProblem(409, error instanceof Error ? error.message : 'request spans multiple Runtimes')
+    }
+    let queryTarget: FleetWebTarget | undefined
+    for (const [name, value] of [...forwarded.searchParams.entries()]) {
+      let decoded: ReturnType<typeof decodeFleetPayload>
+      try {
+        decoded = decodeFleetPayload(value, name)
+      } catch (error) {
+        throw new HttpProblem(400, error instanceof Error ? error.message : 'fleet identity is malformed')
+      }
+      let candidate: FleetWebTarget | undefined
+      try {
+        candidate = singleFleetTarget(decoded.targets)
+      } catch (error) {
+        throw new HttpProblem(409, error instanceof Error ? error.message : 'request spans multiple Runtimes')
+      }
+      if (candidate !== undefined) {
+        if (queryTarget !== undefined
+          && (queryTarget.nodeId !== candidate.nodeId || queryTarget.runtimeId !== candidate.runtimeId)) {
+          throw new HttpProblem(409, 'one request cannot address multiple DSH Runtimes')
+        }
+        queryTarget = candidate
+      }
+      forwarded.searchParams.set(name, String(decoded.value))
+    }
+    if (payloadTarget !== undefined && queryTarget !== undefined
+      && (payloadTarget.nodeId !== queryTarget.nodeId || payloadTarget.runtimeId !== queryTarget.runtimeId)) {
+      throw new HttpProblem(409, 'one request cannot address multiple DSH Runtimes')
+    }
+    const rpc = this.officialRpcRequest(decodedBody.value)
+    if (method === 'POST' && rpc?.type === 'client-request'
+      && payloadTarget === undefined && queryTarget === undefined
+      && FLEET_AGGREGATE_METHODS.has(rpc.method)) {
+      const aggregated = await this.aggregateOfficialRequest(
+        rpc.method,
+        `${forwarded.pathname}${forwarded.search}`,
+        decodedBody.value,
+        human,
+      )
+      this.writeOfficialResponse(response, aggregated, method)
+      return
+    }
+
+    const responseTarget = rpc?.type === 'client-response'
+      ? this.interactionTarget(rpc.rpcId)
+      : undefined
+    const target = this.requireOfficialTarget(
+      payloadTarget ?? queryTarget ?? responseTarget ?? requestedTarget ?? this.firstOfficialRuntime(),
     )
-    const completed = await this.waitCommand(command.commandId)
-    this.redactCommand(completed)
-    if (completed.status !== 'ok' || typeof completed.result !== 'object' || completed.result === null) {
-      throw new HttpProblem(502, 'node Web request failed')
-    }
-    const result = completed.result as {
-      status?: unknown
-      headers?: unknown
-      encoding?: unknown
-      body?: unknown
-    }
-    if (typeof result.status !== 'number'
-      || !Array.isArray(result.headers)
-      || (result.encoding !== 'utf8' && result.encoding !== 'base64')
-      || typeof result.body !== 'string') {
-      throw new Error('node Web response is invalid')
-    }
-    const bytes = result.encoding === 'base64' ? Buffer.from(result.body, 'base64') : Buffer.from(result.body, 'utf8')
+    const result = await this.invokeOfficialRequest(
+      target,
+      method,
+      `${forwarded.pathname}${forwarded.search}`,
+      decodedBody.value,
+      human,
+    )
+    this.writeOfficialResponse(
+      response,
+      this.encodeOfficialResponse(result, target, rpc?.method),
+      method,
+    )
+  }
+
+  private writeOfficialResponse(response: ServerResponse, result: OfficialWebResponse, method: string): void {
+    const bytes = result.encoding === 'base64'
+      ? Buffer.from(result.body, 'base64')
+      : Buffer.from(result.body, 'utf8')
     securityHeaders(response)
     response.statusCode = result.status
     for (const header of result.headers) {
-      if (!Array.isArray(header) || header.length !== 2
-        || typeof header[0] !== 'string' || typeof header[1] !== 'string') continue
       const name = header[0].toLowerCase()
       if (name === 'connection' || name === 'content-length' || name === 'transfer-encoding'
         || name === 'set-cookie') continue
@@ -515,14 +591,173 @@ export class HubServer {
     else response.end(bytes)
   }
 
+  private async invokeOfficialRequest(
+    target: FleetWebTarget,
+    method: string,
+    path: string,
+    body: unknown,
+    human: HubHumanPrincipal,
+  ): Promise<OfficialWebResponse> {
+    if (!this.agents.isOnline(HubNodeId(target.nodeId))) throw new HttpProblem(503, 'node is offline')
+    const command = await this.agents.invoke(
+      HubNodeId(target.nodeId),
+      HubRuntimeId(target.runtimeId),
+      'dsh.web',
+      '1.0.0',
+      'fetch',
+      {
+        clientMutationId: crypto.randomUUID(),
+        method,
+        path,
+        headers: method === 'POST' ? [['content-type', 'application/json']] : [],
+        ...(method === 'POST' ? { body: JSON.stringify(body) } : {}),
+      },
+      `human:${human.email}`,
+    )
+    const completed = await this.waitCommand(command.commandId)
+    this.redactCommand(completed)
+    if (completed.status !== 'ok' || typeof completed.result !== 'object' || completed.result === null) {
+      throw new HttpProblem(502, 'node Web request failed')
+    }
+    const result = completed.result as Partial<OfficialWebResponse>
+    if (typeof result.status !== 'number'
+      || !Array.isArray(result.headers)
+      || (result.encoding !== 'utf8' && result.encoding !== 'base64')
+      || typeof result.body !== 'string') {
+      throw new Error('node Web response is invalid')
+    }
+    return result as OfficialWebResponse
+  }
+
+  private encodeOfficialResponse(
+    result: OfficialWebResponse,
+    target: FleetWebTarget,
+    rpcMethod?: string,
+  ): OfficialWebResponse {
+    if (result.encoding !== 'utf8'
+      || !result.headers.some(([name, value]) => name.toLowerCase() === 'content-type'
+        && value.toLowerCase().includes('json'))) return result
+    let value: unknown
+    try {
+      value = JSON.parse(result.body) as unknown
+    } catch {
+      throw new Error('node Web JSON response is invalid')
+    }
+    const encoded = encodeFleetPayload(value, target)
+    this.updateWorkspaceRpcSnapshot(value, target, rpcMethod)
+    this.installFleetWorkspaceSnapshot(encoded, rpcMethod)
+    return { ...result, body: JSON.stringify(encoded) }
+  }
+
+  private async aggregateOfficialRequest(
+    rpcMethod: string,
+    path: string,
+    body: unknown,
+    human: HubHumanPrincipal,
+  ): Promise<OfficialWebResponse> {
+    const targets = this.officialRuntimes()
+    if (targets.length === 0) throw new HttpProblem(503, 'no DSH Web Runtime is online')
+    const settled = await Promise.allSettled(targets.map(async target => ({
+      target,
+      response: await this.invokeOfficialRequest(target, 'POST', path, body, human),
+    })))
+    const envelopes: Array<{ target: FleetWebTarget; response: OfficialWebResponse; envelope: OfficialRpcEnvelope }> = []
+    for (const item of settled) {
+      if (item.status === 'rejected') {
+        this.options.reportError?.(item.reason)
+        continue
+      }
+      const envelope = this.parseOfficialEnvelope(item.value.response)
+      if (envelope?.result.ok === true) envelopes.push({ ...item.value, envelope })
+    }
+    if (envelopes.length === 0) throw new HttpProblem(502, 'no node returned a usable Web response')
+    const rpcId = envelopes[0]?.envelope.rpcId as string
+    let value: unknown
+    if (rpcMethod === 'session.list') {
+      const items = envelopes.flatMap(({ target, envelope }) => {
+        const rows = (envelope.result.value as { items?: unknown } | undefined)?.items
+        return Array.isArray(rows) ? rows.map(row => encodeFleetPayload(row, target)) : []
+      }).sort((left, right) => Number((right as { updatedAt?: unknown }).updatedAt ?? 0)
+        - Number((left as { updatedAt?: unknown }).updatedAt ?? 0))
+      value = { items }
+    } else if (rpcMethod === 'workspace.list') {
+      for (const { target, envelope } of envelopes) {
+        this.updateWorkspaceListSnapshot(target, envelope.result.value)
+      }
+      value = {
+        items: envelopes.flatMap(({ target, envelope }) => {
+          const rows = (envelope.result.value as { items?: unknown } | undefined)?.items
+          return Array.isArray(rows) ? rows.map(row => encodeFleetPayload(row, target)) : []
+        }),
+        archivedSessionIds: envelopes.flatMap(({ target, envelope }) => {
+          const rows = (envelope.result.value as { archivedSessionIds?: unknown } | undefined)?.archivedSessionIds
+          return Array.isArray(rows)
+            ? encodeFleetPayload({ sessionIds: rows }, target) as { sessionIds: unknown[] }
+            : { sessionIds: [] }
+        }).flatMap(record => record.sessionIds),
+      }
+    } else {
+      const lists = envelopes.map(({ target, envelope }) => {
+        const items = (envelope.result.value as { items?: unknown } | undefined)?.items
+        return Array.isArray(items) ? items.map(item => encodeFleetPayload(item, target)) : []
+      })
+      const rows: unknown[] = []
+      for (let rank = 0; rows.length < 20 && lists.some(list => rank < list.length); rank += 1) {
+        for (const list of lists) {
+          if (rows.length === 20) break
+          if (rank < list.length) rows.push(list[rank])
+        }
+      }
+      const total = lists.reduce((sum, list) => sum + list.length, 0)
+      value = {
+        items: rows,
+        hasMore: total > 20 || envelopes.some(({ envelope }) =>
+          (envelope.result.value as { hasMore?: unknown } | undefined)?.hasMore === true),
+      }
+    }
+    return {
+      status: 200,
+      headers: [['content-type', 'application/json; charset=utf-8']],
+      encoding: 'utf8',
+      body: JSON.stringify({ type: 'server-response', rpcId, result: { ok: true, value } }),
+    }
+  }
+
+  private parseOfficialEnvelope(response: OfficialWebResponse): OfficialRpcEnvelope | undefined {
+    if (response.status !== 200 || response.encoding !== 'utf8') return undefined
+    try {
+      const value = JSON.parse(response.body) as Partial<OfficialRpcEnvelope>
+      if (value.type !== 'server-response' || typeof value.rpcId !== 'string'
+        || typeof value.result !== 'object'
+        || typeof value.result.ok !== 'boolean') return undefined
+      return value as OfficialRpcEnvelope
+    } catch {
+      return undefined
+    }
+  }
+
+  private officialRpcRequest(value: unknown): {
+    type: 'client-request' | 'client-response'
+    rpcId: string
+    method: string
+  } | undefined {
+    if (typeof value !== 'object' || value === null) return undefined
+    const record = value as { type?: unknown; rpcId?: unknown; method?: unknown }
+    if ((record.type !== 'client-request' && record.type !== 'client-response')
+      || typeof record.rpcId !== 'string') return undefined
+    return {
+      type: record.type,
+      rpcId: record.rpcId,
+      method: typeof record.method === 'string' ? record.method : '',
+    }
+  }
+
   private async openOfficialStream(
     socket: WebSocket,
     human: HubHumanPrincipal,
-    nodeId: ReturnType<typeof HubNodeId>,
-    runtimeId: ReturnType<typeof HubRuntimeId>,
     stream: 'mux' | 'host',
   ): Promise<void> {
-    if (!this.agents.isOnline(nodeId)) throw new Error('node is offline')
+    if (this.officialRuntimes().length === 0) throw new Error('no DSH Web Runtime is online')
     const subscription = this.events.subscribe(undefined, (event) => {
       if (event.type !== 'stream.frame' || typeof event.data !== 'object' || event.data === null) return
       const data = event.data as {
@@ -532,9 +767,18 @@ export class HubServer {
         stream?: unknown
         payload?: unknown
       }
-      if (data.nodeId !== nodeId || data.runtimeId !== runtimeId
+      if (typeof data.nodeId !== 'string' || typeof data.runtimeId !== 'string'
         || data.capability !== 'dsh.web' || data.stream !== stream) return
-      void this.sendWebSocket(socket, data.payload).catch(() => { socket.close() })
+      const target = this.resolveOfficialTarget({ nodeId: data.nodeId, runtimeId: data.runtimeId })
+      if (target === undefined) return
+      const rewritten = encodeFleetPayload(data.payload, target)
+      this.updateWorkspaceHostSnapshot(data.payload, target)
+      this.installFleetWorkspaceHostSnapshot(rewritten)
+      if (typeof data.payload === 'object' && data.payload !== null
+        && 'rpcId' in data.payload && typeof data.payload.rpcId === 'string') {
+        this.rememberInteractionTarget(data.payload.rpcId, target)
+      }
+      void this.sendWebSocket(socket, rewritten).catch(() => { socket.close() })
     })
     const expiry = setTimeout(() => { socket.close(4003, 'operator authentication expired') }, Math.min(
       2_147_483_647, Math.max(1_000, human.expiresAt * 1_000 - Date.now()),
@@ -708,19 +952,172 @@ export class HubServer {
     return true
   }
 
-  private firstOfficialRuntime(): { nodeId: string; runtimeId: string } | undefined {
-    return this.options.storage.control.listRuntimes().find((runtime) => {
+  private officialRuntimes(): FleetWebTarget[] {
+    const displayNames = new Map(
+      this.options.storage.control.listNodes().map(node => [String(node.nodeId), node.displayName]),
+    )
+    return this.options.storage.control.listRuntimes().filter((runtime) => {
       if (!runtime.online || !this.agents.isOnline(runtime.nodeId) || !Array.isArray(runtime.capabilities)) return false
-      return runtime.capabilities.some(capability => typeof capability === 'object' && capability !== null
-        && 'name' in capability && capability.name === 'dsh.web')
-    })
+      return runtime.capabilities.some((capability) => {
+        if (typeof capability !== 'object' || capability === null
+          || !('name' in capability) || capability.name !== 'dsh.web'
+          || !('version' in capability) || capability.version !== '1.0.0'
+          || !('operations' in capability) || !Array.isArray(capability.operations)) return false
+        return capability.operations.some(operation => typeof operation === 'object' && operation !== null
+          && 'name' in operation && operation.name === 'fetch')
+      })
+    }).map(runtime => ({
+      nodeId: String(runtime.nodeId),
+      runtimeId: String(runtime.runtimeId),
+      displayName: displayNames.get(String(runtime.nodeId)) ?? String(runtime.nodeId),
+    }))
   }
 
-  private officialRuntimeUrl(target: { nodeId: string; runtimeId: string }): string {
-    const url = new URL('/', this.publicOrigin)
-    url.searchParams.set('nodeId', target.nodeId)
-    url.searchParams.set('runtimeId', target.runtimeId)
-    return `${url.pathname}${url.search}`
+  private workspaceTargetKey(target: Pick<FleetWebTarget, 'nodeId' | 'runtimeId'>): string {
+    return `${target.nodeId}\u0000${target.runtimeId}`
+  }
+
+  private workspaceSnapshot(target: FleetWebTarget): FleetWorkspaceSnapshot {
+    const key = this.workspaceTargetKey(target)
+    const current = this.workspaceSnapshots.get(key)
+    if (current !== undefined) return current
+    const created = { workspaceIds: [], archivedSessionIds: [] }
+    this.workspaceSnapshots.set(key, created)
+    return created
+  }
+
+  private stringArray(value: unknown): string[] | undefined {
+    return Array.isArray(value) && value.every(item => typeof item === 'string')
+      ? value
+      : undefined
+  }
+
+  private updateWorkspaceListSnapshot(target: FleetWebTarget, value: unknown): void {
+    if (typeof value !== 'object' || value === null) return
+    const record = value as { items?: unknown; archivedSessionIds?: unknown }
+    if (!Array.isArray(record.items)) return
+    const workspaceIds = record.items.flatMap(item =>
+      typeof item === 'object' && item !== null && typeof (item as { workspaceId?: unknown }).workspaceId === 'string'
+        ? [(item as { workspaceId: string }).workspaceId]
+        : [])
+    const archivedSessionIds = this.stringArray(record.archivedSessionIds)
+    if (archivedSessionIds === undefined) return
+    this.workspaceSnapshots.set(this.workspaceTargetKey(target), { workspaceIds, archivedSessionIds })
+  }
+
+  private updateWorkspaceRpcSnapshot(value: unknown, target: FleetWebTarget, method?: string): void {
+    if (method !== 'workspace.insertBefore' && method !== 'workspace.archiveSession') return
+    const envelope = value as { result?: { ok?: unknown; value?: unknown } }
+    if (envelope.result?.ok !== true || typeof envelope.result.value !== 'object'
+      || envelope.result.value === null) return
+    const snapshot = this.workspaceSnapshot(target)
+    const result = envelope.result.value as { workspaceIds?: unknown; archivedSessionIds?: unknown }
+    if (method === 'workspace.insertBefore') {
+      const workspaceIds = this.stringArray(result.workspaceIds)
+      if (workspaceIds !== undefined) snapshot.workspaceIds = workspaceIds
+    } else {
+      const archivedSessionIds = this.stringArray(result.archivedSessionIds)
+      if (archivedSessionIds !== undefined) snapshot.archivedSessionIds = archivedSessionIds
+    }
+  }
+
+  private fleetWorkspaceIds(): string[] {
+    return this.officialRuntimes().flatMap(target =>
+      (this.workspaceSnapshots.get(this.workspaceTargetKey(target))?.workspaceIds ?? [])
+        .map(sourceId => encodeFleetPayload({ workspaceId: sourceId }, target) as { workspaceId: string })
+        .map(record => record.workspaceId))
+  }
+
+  private fleetArchivedSessionIds(): string[] {
+    return this.officialRuntimes().flatMap(target =>
+      (this.workspaceSnapshots.get(this.workspaceTargetKey(target))?.archivedSessionIds ?? [])
+        .map(sourceId => encodeFleetPayload({ sessionId: sourceId }, target) as { sessionId: string })
+        .map(record => record.sessionId))
+  }
+
+  private installFleetWorkspaceSnapshot(value: unknown, method?: string): void {
+    if (method !== 'workspace.insertBefore' && method !== 'workspace.archiveSession') return
+    const envelope = value as { result?: { ok?: unknown; value?: unknown } }
+    if (envelope.result?.ok !== true || typeof envelope.result.value !== 'object'
+      || envelope.result.value === null) return
+    const result = envelope.result.value as { workspaceIds?: unknown; archivedSessionIds?: unknown }
+    if (method === 'workspace.insertBefore') result.workspaceIds = this.fleetWorkspaceIds()
+    else result.archivedSessionIds = this.fleetArchivedSessionIds()
+  }
+
+  private updateWorkspaceHostSnapshot(value: unknown, target: FleetWebTarget): void {
+    if (typeof value !== 'object' || value === null) return
+    const envelope = value as { payload?: unknown }
+    if (typeof envelope.payload !== 'object' || envelope.payload === null) return
+    const payload = envelope.payload as {
+      type?: unknown
+      workspaceIds?: unknown
+      archivedSessionIds?: unknown
+      workspaceId?: unknown
+      workspace?: { workspaceId?: unknown }
+    }
+    const snapshot = this.workspaceSnapshot(target)
+    if (payload.type === 'host/workspace-order-changed') {
+      const ids = this.stringArray(payload.workspaceIds)
+      if (ids !== undefined) snapshot.workspaceIds = ids
+    } else if (payload.type === 'host/archived-sessions-changed') {
+      const ids = this.stringArray(payload.archivedSessionIds)
+      if (ids !== undefined) snapshot.archivedSessionIds = ids
+    } else if (payload.type === 'host/workspace-changed'
+      && typeof payload.workspace?.workspaceId === 'string'
+      && !snapshot.workspaceIds.includes(payload.workspace.workspaceId)) {
+      snapshot.workspaceIds = [payload.workspace.workspaceId, ...snapshot.workspaceIds]
+    } else if (payload.type === 'host/workspace-removed' && typeof payload.workspaceId === 'string') {
+      snapshot.workspaceIds = snapshot.workspaceIds.filter(id => id !== payload.workspaceId)
+    }
+  }
+
+  private installFleetWorkspaceHostSnapshot(value: unknown): void {
+    if (typeof value !== 'object' || value === null) return
+    const envelope = value as { payload?: unknown }
+    if (typeof envelope.payload !== 'object' || envelope.payload === null) return
+    const payload = envelope.payload as {
+      type?: unknown
+      workspaceIds?: unknown
+      archivedSessionIds?: unknown
+    }
+    if (payload.type === 'host/workspace-order-changed') payload.workspaceIds = this.fleetWorkspaceIds()
+    else if (payload.type === 'host/archived-sessions-changed') {
+      payload.archivedSessionIds = this.fleetArchivedSessionIds()
+    }
+  }
+
+  private firstOfficialRuntime(): FleetWebTarget | undefined {
+    return this.officialRuntimes()[0]
+  }
+
+  private resolveOfficialTarget(target: Pick<FleetWebTarget, 'nodeId' | 'runtimeId'>): FleetWebTarget | undefined {
+    return this.officialRuntimes().find(candidate =>
+      candidate.nodeId === target.nodeId && candidate.runtimeId === target.runtimeId)
+  }
+
+  private requireOfficialTarget(target: FleetWebTarget | undefined): FleetWebTarget {
+    if (target === undefined) throw new HttpProblem(503, 'no DSH Web Runtime is online')
+    const resolved = this.resolveOfficialTarget(target)
+    if (resolved === undefined) throw new HttpProblem(409, 'target Runtime does not provide DSH Web access')
+    return resolved
+  }
+
+  private rememberInteractionTarget(rpcId: string, target: FleetWebTarget): void {
+    this.interactionTargets.set(rpcId, {
+      target,
+      expiresAt: Date.now() + INTERACTION_TARGET_LIFETIME_MS,
+    })
+    if (this.interactionTargets.size <= 10_000) return
+    const oldest = this.interactionTargets.keys().next().value
+    if (oldest !== undefined) this.interactionTargets.delete(oldest)
+  }
+
+  private interactionTarget(rpcId: string): FleetWebTarget | undefined {
+    const record = this.interactionTargets.get(rpcId)
+    if (record === undefined) return undefined
+    this.interactionTargets.delete(rpcId)
+    return record.expiresAt > Date.now() ? record.target : undefined
   }
 
   private redirect(response: ServerResponse, location: string): void {

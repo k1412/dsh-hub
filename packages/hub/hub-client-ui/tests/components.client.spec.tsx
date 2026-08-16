@@ -3,6 +3,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { FleetSnapshot, HubRuntime } from '../src/client/api.ts'
+import { makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
 
 const api = vi.hoisted(() => ({
   readFleet: vi.fn(),
@@ -20,7 +21,10 @@ vi.mock('../src/client/api.ts', async original => ({
 
 import { HubNodesSection } from '../src/client/HubNodesSection.tsx'
 import { HubPluginsSection } from '../src/client/HubPluginsSection.tsx'
+import { HubRuntimePicker } from '../src/client/HubRuntimePicker.tsx'
 import { terminalSocketUrl } from '../src/client/AdvancedDiagnostics.tsx'
+import { zh } from '../src/client/locales.ts'
+import { runtimeKey } from '../src/client/runtime-target.ts'
 
 const runtime: HubRuntime = {
   nodeId: 'nas-home',
@@ -30,6 +34,7 @@ const runtime: HubRuntime = {
   online: true,
   lastSeenAt: 1_000,
   capabilities: [
+    { name: 'dsh.web', version: '1.0.0', operations: [{ name: 'fetch' }] },
     { name: 'dsh.plugins', version: '2.0.0', operations: [
       { name: 'inventory' }, { name: 'check-updates' }, { name: 'history' },
       { name: 'apply' }, { name: 'rollback' },
@@ -56,8 +61,10 @@ const fleet: FleetSnapshot = {
 }
 
 const unusedHook = (() => { throw new Error('not used by Hub Settings') }) as never
+const hubT = makeTranslate(zh)
 
 beforeEach(() => {
+  localStorage.clear()
   history.replaceState({}, '', '/?nodeId=nas-home&runtimeId=web')
   api.readFleet.mockResolvedValue(fleet)
   api.createEnrollment.mockResolvedValue({
@@ -103,6 +110,54 @@ afterEach(() => {
 })
 
 describe('Hub management Settings pages', () => {
+  it('selects the node directly on the new-session screen and retains it in the URL', async () => {
+    const secondRuntime: HubRuntime = { ...runtime, nodeId: 'mac-neo', runtimeId: 'desktop' }
+    api.readFleet.mockResolvedValue({
+      ...fleet,
+      nodes: [...fleet.nodes, {
+        nodeId: 'mac-neo', displayName: 'Mac Neo', status: 'active', online: true,
+        createdAt: 600, lastSeenAt: 1_100,
+      }],
+      runtimes: [runtime, secondRuntime],
+    })
+    const onTargetChange = vi.fn()
+    render(<HubRuntimePicker
+      selectedWorkspaceId={undefined}
+      onTargetChange={onTargetChange}
+      t={hubT}
+      useSessions={unusedHook}
+      useWorkspaces={unusedHook}
+    />)
+
+    const picker = await screen.findByRole('combobox', { name: '节点与 Runtime' })
+    expect(picker).toHaveProperty('value', runtimeKey(runtime))
+    fireEvent.change(picker, { target: { value: runtimeKey(secondRuntime) } })
+    expect(onTargetChange).toHaveBeenCalledOnce()
+    expect(new URL(location.href).searchParams.get('nodeId')).toBe('mac-neo')
+    expect(new URL(location.href).searchParams.get('runtimeId')).toBe('desktop')
+    expect(localStorage.getItem('dsh.hub.runtime-target')).toContain('mac-neo')
+  })
+
+  it('synchronizes the node selector to the owner of an aggregated Workspace', async () => {
+    const secondRuntime: HubRuntime = { ...runtime, nodeId: 'mac-neo', runtimeId: 'desktop' }
+    api.readFleet.mockResolvedValue({ ...fleet, runtimes: [runtime, secondRuntime] })
+    const encoded = btoa(JSON.stringify(['mac-neo', 'desktop', 'workspace-local']))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/u, '')
+    const onTargetChange = vi.fn()
+    render(<HubRuntimePicker
+      selectedWorkspaceId={`hub-workspace-${encoded}` as never}
+      onTargetChange={onTargetChange}
+      t={hubT}
+      useSessions={unusedHook}
+      useWorkspaces={unusedHook}
+    />)
+
+    const picker = await screen.findByRole('combobox', { name: '节点与 Runtime' })
+    await waitFor(() => { expect(picker).toHaveProperty('value', runtimeKey(secondRuntime)) })
+    expect(onTargetChange).not.toHaveBeenCalled()
+    expect(new URL(location.href).searchParams.get('nodeId')).toBe('mac-neo')
+  })
+
   it('shows registration lifecycle, runtime switching, and diagnostic purpose without primary tool navigation', async () => {
     render(<HubNodesSection
       close={() => undefined}
@@ -111,7 +166,7 @@ describe('Hub management Settings pages', () => {
     />)
     expect(await screen.findByText('Home NAS')).toBeTruthy()
     expect(screen.getByText('Home Mac')).toBeTruthy()
-    expect(screen.getByRole('button', { name: '当前' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: '默认' })).toHaveProperty('disabled', true)
     expect(screen.queryByRole('navigation', { name: /终端|文件/ })).toBeNull()
 
     fireEvent.click(screen.getByText('高级诊断：终端与文件'))
@@ -144,7 +199,7 @@ describe('Hub management Settings pages', () => {
     fireEvent.click(screen.getByRole('button', { name: '取消注册' }))
     await waitFor(() => { expect(api.cancelEnrollment).toHaveBeenCalledWith('mac-home') })
 
-    fireEvent.click(screen.getByRole('button', { name: '打开' }))
+    fireEvent.click(screen.getByRole('button', { name: '设为默认' }))
     expect(api.switchRuntime).toHaveBeenCalledWith(secondRuntime)
 
     fireEvent.click(screen.getByRole('button', { name: '撤销节点身份' }))

@@ -10,7 +10,7 @@ const PACKAGE_NAME = '@k1412/dsh-hub-client-ui'
 export const name = 'hub-client-ui-invariant'
 /** Service required before package ownership is reserved. */
 export const inject = ['invariants']
-/** Browser settings do not own node-side runtime state. */
+/** No runtime invariant: browser surfaces do not own node-side runtime state. */
 const install: InvariantInstaller = () => {}
 /** Register package ownership with the invariant service. */
 export const apply = (ctx: Context): Promise<() => void> =>
