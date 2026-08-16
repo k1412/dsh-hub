@@ -5,7 +5,7 @@ import { chmod, mkdir, open } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 
 /** Current Hub control-plane schema version. */
-export const HUB_STORAGE_SCHEMA_VERSION = 2
+export const HUB_STORAGE_SCHEMA_VERSION = 3
 
 /**
  * Resolve, owner-create, configure, and migrate one Hub database.
@@ -50,11 +50,19 @@ function configure(database: DatabaseSync): void {
   if (version < 0 || version > HUB_STORAGE_SCHEMA_VERSION) {
     throw new Error(`Hub database schema ${String(version)} is incompatible with ${String(HUB_STORAGE_SCHEMA_VERSION)}`)
   }
-  if (version === 0) materializeV2(database)
-  else if (version === 1) migrateV1ToV2(database)
+  if (version === 0) {
+    materializeV3(database)
+    return
+  }
+  let current = version
+  if (current === 1) {
+    migrateV1ToV2(database)
+    current = 2
+  }
+  if (current === 2) migrateV2ToV3(database)
 }
 
-function materializeV2(database: DatabaseSync): void {
+function materializeV3(database: DatabaseSync): void {
   database.exec(`
     BEGIN IMMEDIATE;
 
@@ -132,23 +140,6 @@ function materializeV2(database: DatabaseSync): void {
 
     CREATE INDEX commands_pending_by_node ON commands(node_id, status, created_at);
 
-    CREATE TABLE durable_objects (
-      object_hash      TEXT PRIMARY KEY,
-      kind             TEXT NOT NULL CHECK (kind IN ('plugin-artifact', 'snapshot', 'export', 'backup')),
-      size_bytes       INTEGER NOT NULL CHECK (size_bytes >= 0),
-      media_type       TEXT NOT NULL,
-      created_at       INTEGER NOT NULL,
-      reference_count INTEGER NOT NULL DEFAULT 0 CHECK (reference_count >= 0)
-    ) STRICT;
-
-    CREATE TABLE object_references (
-      owner_type  TEXT NOT NULL,
-      owner_id    TEXT NOT NULL,
-      object_hash TEXT NOT NULL REFERENCES durable_objects(object_hash) ON DELETE RESTRICT,
-      created_at  INTEGER NOT NULL,
-      PRIMARY KEY (owner_type, owner_id, object_hash)
-    ) STRICT;
-
     CREATE TABLE audit_log (
       sequence      INTEGER PRIMARY KEY AUTOINCREMENT,
       occurred_at   INTEGER NOT NULL,
@@ -175,7 +166,7 @@ function materializeV2(database: DatabaseSync): void {
       SELECT RAISE(ABORT, 'audit_log is append-only');
     END;
 
-    PRAGMA user_version = 2;
+    PRAGMA user_version = 3;
     COMMIT;
   `)
 }
@@ -185,6 +176,16 @@ function migrateV1ToV2(database: DatabaseSync): void {
     BEGIN IMMEDIATE;
     ALTER TABLE session_index ADD COLUMN workspace_path TEXT;
     PRAGMA user_version = 2;
+    COMMIT;
+  `)
+}
+
+function migrateV2ToV3(database: DatabaseSync): void {
+  database.exec(`
+    BEGIN IMMEDIATE;
+    DROP TABLE IF EXISTS object_references;
+    DROP TABLE IF EXISTS durable_objects;
+    PRAGMA user_version = 3;
     COMMIT;
   `)
 }

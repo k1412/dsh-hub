@@ -22,6 +22,14 @@ export interface HubEnrollmentGrant {
   expiresAt: number
 }
 
+/** Operator-visible pending enrollment metadata; the one-time code is never persisted. */
+export interface HubPendingEnrollment {
+  nodeId: HubNodeIdType
+  displayName: string
+  expiresAt: number
+  createdAt: number
+}
+
 /** Persisted enrolled-node record. */
 export interface HubNodeRecord {
   nodeId: HubNodeIdType
@@ -237,6 +245,37 @@ export class HubControlStore {
       `).run(secretHash(code), nodeId, displayName, expiresAt, now)
     })
     return { nodeId, displayName, code, expiresAt }
+  }
+
+  /**
+   * List unconsumed, unexpired enrollment reservations without exposing their secrets.
+   * @param now - expiry cutoff in Unix milliseconds.
+   * @returns pending reservations in newest-first order.
+   */
+  public listPendingEnrollments(now = Date.now()): HubPendingEnrollment[] {
+    return this.database.prepare(`
+      SELECT node_id, display_name, expires_at, created_at
+      FROM enrollment_codes
+      WHERE consumed_at IS NULL AND expires_at > ?
+      ORDER BY created_at DESC, node_id
+    `).all(now).map(row => ({
+      nodeId: HubNodeId(String(row.node_id)),
+      displayName: String(row.display_name),
+      expiresAt: Number(row.expires_at),
+      createdAt: Number(row.created_at),
+    }))
+  }
+
+  /**
+   * Cancel one pending enrollment reservation.
+   * @param nodeId - reserved node identifier.
+   */
+  public cancelEnrollment(nodeId: HubNodeIdType): void {
+    const result = this.database.prepare(`
+      DELETE FROM enrollment_codes
+      WHERE node_id = ? AND consumed_at IS NULL
+    `).run(nodeId)
+    if (Number(result.changes) !== 1) throw new Error('pending enrollment not found')
   }
 
   /**

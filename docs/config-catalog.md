@@ -3025,7 +3025,7 @@ Source: [`packages/workflow/workflow-worker-thread/src/index.ts:32`](../packages
 
 ## `@k1412/dsh-hub-connector`
 
-Requires: `apiProxy`
+Requires: `apiProxy` · `typertGateway`
 
 ```ts config-catalog
 /** Connector configuration stored in the DSH profile. */
@@ -3043,7 +3043,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/hub/hub-connector/src/index.ts:26`](../packages/hub/hub-connector/src/index.ts)
+Source: [`packages/hub/hub-connector/src/index.ts:31`](../packages/hub/hub-connector/src/index.ts)
 
 ## Loadable plugins with no config
 
@@ -3114,6 +3114,7 @@ These load from a `cordis.yml` entry with no `config:` block; they declare no co
 - `@deepseek-ai/dsh-tool-subagent-control` — requires `tools` · `subagents` ([`packages/subagent/tool-subagent-control/src/index.ts`](../packages/subagent/tool-subagent-control/src/index.ts))
 - `@deepseek-ai/dsh-user-questions` ([`packages/interaction/user-questions/src/index.ts`](../packages/interaction/user-questions/src/index.ts))
 - `@deepseek-ai/dsh-workspace` — requires `storageDomain` · `sessionPersistence` ([`packages/workspace/workspace/src/index.ts`](../packages/workspace/workspace/src/index.ts))
+- `@k1412/dsh-hub-client-ui` ([`packages/hub/hub-client-ui/src/index.ts`](../packages/hub/hub-client-ui/src/index.ts))
 
 ## Seam packages (not directly loadable)
 

@@ -1,0 +1,25 @@
+:root { color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; background: #f7f7f5; color: #202124; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; }
+.setup { width: min(720px, calc(100% - 32px)); margin: 0 auto; padding: 10vh 0 48px; }
+header span { color: #6b6f76; font-size: 13px; font-weight: 600; }
+header h1 { margin: 14px 0 8px; font-size: clamp(28px, 6vw, 42px); letter-spacing: -.03em; }
+header p { max-width: 620px; margin: 0; color: #6b6f76; line-height: 1.7; }
+section { margin-top: 32px; border: 1px solid #deded9; border-radius: 16px; padding: 20px; background: #fff; box-shadow: 0 10px 32px rgb(0 0 0 / 5%); }
+form { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; }
+label { display: grid; gap: 6px; color: #62666d; font-size: 12px; }
+input, button { height: 40px; border-radius: 9px; font: inherit; }
+input { width: 100%; border: 1px solid #d8d8d2; padding: 0 11px; background: #fafafa; color: inherit; }
+button { border: 1px solid #202124; padding: 0 16px; background: #202124; color: #fff; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+#status { color: #6b6f76; font-size: 13px; }
+#grant { display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; margin-top: 16px; border-radius: 12px; padding: 14px; background: #f1f2ef; }
+#grant strong, #grant p { grid-column: 1 / -1; }
+#grant p { margin: 0; color: #6b6f76; font-size: 12px; }
+#grant code { min-width: 0; align-self: center; overflow-wrap: anywhere; }
+#grant button { height: 34px; }
+ul { margin: 0; padding: 0; list-style: none; }
+li { display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid #ecece8; padding: 12px 0; font-size: 13px; }
+li strong { color: #6b6f76; font-size: 12px; }
+@media (max-width: 640px) { .setup { padding-top: 40px; } section { padding: 16px; } form { grid-template-columns: 1fr; } form button { width: 100%; } #grant { grid-template-columns: 1fr; } }
+@media (prefers-color-scheme: dark) { :root { background: #171717; color: #ececec; } section { border-color: #343434; background: #222; } input { border-color: #424242; background: #181818; } button { border-color: #ececec; background: #ececec; color: #202124; } #grant { background: #2b2b2b; } li { border-color: #363636; } }

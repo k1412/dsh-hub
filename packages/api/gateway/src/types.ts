@@ -3,6 +3,11 @@
  * @module @deepseek-ai/dsh-api-gateway/types
  */
 
+import type { ConnectionRpcHandler } from '@deepseek-ai/dsh-client-connection'
+
+/** Transport-neutral result used by direct carriers outside Connection's HTTP bridge. */
+export type TypertGatewayDispatchResult = Awaited<ReturnType<ConnectionRpcHandler>>
+
 /** One Remote method request after a carrier has decoded its envelope. */
 export interface InvokeRemoteRequest {
   /** Remote namespace selected by the generated descriptor. */
@@ -44,6 +49,15 @@ export interface TypertGateway {
    * @throws {@link TypertGatewayError} for dispatch, provider, or boundary failures; lookup-policy and business errors retain identity.
    */
   invoke(request: InvokeRemoteRequest): Promise<unknown>
+
+  /**
+   * Dispatch one decoded Connection endpoint and normalize business failures into an RPC result.
+   * @param endpoint - canonical `<namespace>/<method>` endpoint.
+   * @param payload - decoded Connection payload containing exactly one `args` object.
+   * @param signal - carrier cancellation signal.
+   * @returns normalized RPC result without a transport envelope.
+   */
+  dispatch(endpoint: string, payload: unknown, signal: AbortSignal): Promise<TypertGatewayDispatchResult>
 }
 
 declare module '@deepseek-ai/cordis' {

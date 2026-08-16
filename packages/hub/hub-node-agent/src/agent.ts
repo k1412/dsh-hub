@@ -218,7 +218,7 @@ export class HubNodeAgent {
     const config = this.options.state.config
     const socket = new WebSocket(webSocketUrl(config.hubUrl, config.nodeId, this.bootId), {
       headers: this.accessHeaders(),
-      maxPayload: 1_048_576,
+      maxPayload: 256 * 1024 * 1024,
       perMessageDeflate: false,
     })
     const challengePromise = receiveOne(socket, 10_000)

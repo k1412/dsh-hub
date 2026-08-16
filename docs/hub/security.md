@@ -40,7 +40,7 @@ The durable journal accepts a message once, rejects gaps and impossible acknowle
 
 Hub secrets, Service Token secrets, enrollment codes, private Ed25519 keys, and Connector IPC secrets use owner-only files or container environment injection. They never enter Git, browser APIs, audit details, session discovery, snapshots, or diagnostic messages.
 
-The Hub settings capability returns redacted values and secret-slot state. Snapshot collection excludes environment files and secret-like names, but it does not classify arbitrary file content; configure data roots as sensitive local state and review them before backup or export. Node snapshots remain in owner-only Node Agent storage. Plugin artifacts are executable trusted code: apply only reviewed packages whose exact version and SHA-256 hash match the approved artifact.
+The Hub settings capability returns redacted values and secret-slot state. Snapshot collection excludes environment files and secret-like names, but it does not classify arbitrary file content; configure data roots as sensitive local state and review them before backup. Node snapshots remain in owner-only Node Agent storage. Plugin artifacts are executable code. Automatic update accepts only exact semantic versions from the public npm registry and records the downloaded SHA-256 on the node; this does not replace publisher and package-content review.
 
 ## Browser content security
 
@@ -50,7 +50,7 @@ Session events and terminal output remain untrusted display data. The UI inserts
 
 ## Storage and backup
 
-SQLite and content-addressed objects contain security-relevant control state and must reside on an encrypted, access-controlled volume. Backups include node public identities, command metadata and transient unclaimed bodies, audit records, and any objects explicitly imported into Hub storage. Protect them like the live Hub state even though node private keys and model credentials are absent. Back up Node Agent state separately when local plugin rollback transactions and snapshots must survive node-disk loss.
+SQLite contains security-relevant control state and must reside on an encrypted, access-controlled volume. Backups include node public identities, command metadata and transient unclaimed bodies, and audit records. Protect them like the live Hub state even though node private keys and model credentials are absent. Hub has no node-file cache. Back up Node Agent state separately when plugin rollback transactions and snapshots must survive node-disk loss.
 
 Hub verifies the complete audit hash chain at startup. The chain detects damaged, changed, or reordered rows relative to the database being opened; it is not an external signature and cannot prove history against an administrator who can replace the database and recompute the chain. Export or anchor audit records outside the Hub failure and administration domain when that stronger property is required.
 

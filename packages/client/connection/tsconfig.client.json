@@ -10,6 +10,7 @@
     "src/client/api.ts",
     "src/client/connection.ts",
     "src/client/fixture.ts",
+    "src/client/hub-target.ts",
     "src/client/index.ts",
     "src/client/random-uuid.ts",
     "src/client/rpc.ts",

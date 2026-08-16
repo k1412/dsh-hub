@@ -8,7 +8,7 @@ RUN apt-get update \
 RUN corepack enable && corepack prepare pnpm@11.7.0 --activate
 COPY . .
 RUN pnpm install --frozen-lockfile
-RUN pnpm --dir apps/hub-web exec vite build
+RUN pnpm run hub:web:build
 RUN node scripts/build-hub-server.mjs /source/hub-server.mjs
 
 FROM node:22.22.1-bookworm-slim AS runtime

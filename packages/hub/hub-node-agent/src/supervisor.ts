@@ -28,6 +28,22 @@ interface ManagedPlugin {
   artifactHash: string
 }
 
+interface PluginChangeRecord {
+  changeId: string
+  clientMutationId: string
+  packageName: string
+  fromVersion?: string
+  toVersion: string
+  artifactHash: string
+  beforeLockHash: string
+  afterLockHash?: string
+  createdAt: number
+  status: 'applying' | 'applied' | 'failed-rolled-back' | 'rollback-failed' | 'rolled-back'
+  rolledBackAt?: number
+  rollbackMutationId?: string
+  error?: string
+}
+
 interface SnapshotFile {
   root: number
   path: string
@@ -50,6 +66,9 @@ interface SnapshotIndexRow {
   type: SnapshotArchive['type']
   artifactHash: string
   createdAt: number
+  label: string
+  reason: 'manual' | 'pre-restore'
+  manifest: HubJson
   clientMutationId?: string
 }
 
@@ -71,6 +90,7 @@ const MAX_SNAPSHOT_BYTES = 512 * 1024 * 1024
 const MAX_ARTIFACT_BYTES = 128 * 1024 * 1024
 const MAX_REGISTRY_METADATA_BYTES = 1024 * 1024
 const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/
+const PACKAGE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
 
 function hash(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('base64url')
@@ -148,6 +168,7 @@ export class HubNodeSupervisor {
   private readonly root: string
   private readonly profile: HubNodeManagementProfile
   private readonly managedPath: string
+  private readonly pluginChangesPath: string
   private readonly snapshotsPath: string
   private readonly transactionsPath: string
   private operation = Promise.resolve()
@@ -166,6 +187,7 @@ export class HubNodeSupervisor {
     this.root = join(stateDirectory, 'management')
     this.profile = management
     this.managedPath = join(this.root, 'managed-plugins.json')
+    this.pluginChangesPath = join(this.root, 'plugin-changes.json')
     this.snapshotsPath = join(this.root, 'snapshots')
     this.transactionsPath = join(this.root, 'transactions')
   }
@@ -381,7 +403,7 @@ export class HubNodeSupervisor {
           && (tracked === undefined || installed.version === tracked.version),
       })
     }
-    return { plugins, lockHash: await this.lockHash() }
+    return { plugins, lockHash: await this.lockHash(), checkedAt: Date.now() }
   }
 
   private async installedPackage(packageName: string): Promise<PackageManifest | undefined> {
@@ -394,37 +416,86 @@ export class HubNodeSupervisor {
 
   private async plugins(operation: string, value: unknown): Promise<HubJson> {
     if (operation === 'inventory') return this.inventory()
+    if (operation === 'check-updates') {
+      const current = await this.inventory() as {
+        plugins: Array<Record<string, HubJson | undefined>>
+        lockHash: string
+      }
+      const plugins: HubJson[] = []
+      for (const plugin of current.plugins) {
+        if (typeof plugin.packageName !== 'string') throw new Error('plugin inventory contains an invalid package name')
+        const packageName = plugin.packageName
+        const metadata = await this.registryMetadata(packageName, 'latest')
+        plugins.push({
+          ...plugin,
+          latestVersion: metadata.version,
+          updateAvailable: metadata.version !== plugin.version,
+        })
+      }
+      return { plugins, lockHash: current.lockHash, checkedAt: Date.now() }
+    }
+    if (operation === 'history') {
+      const changes = await readJson<PluginChangeRecord[]>(this.pluginChangesPath, [])
+      return { changes: changes.map(change => this.publicPluginChange(change)) }
+    }
     const input = value as Record<string, unknown>
     if (operation === 'apply') {
-      const current = await this.lockHash()
+      const clientMutationId = String(input.clientMutationId)
       const packageName = String(input.packageName)
       const version = String(input.version)
-      const artifactHash = String(input.artifactHash)
-      if (current !== input.expectedLockHash) {
+      const changes = await readJson<PluginChangeRecord[]>(this.pluginChangesPath, [])
+      const prior = changes.find(change => change.clientMutationId === clientMutationId)
+      if (prior !== undefined) {
         const currentInventory = await this.inventory() as { plugins: HubJson[]; lockHash: string }
-        const reconciled = currentInventory.plugins.find(candidate =>
+        const plugin = currentInventory.plugins.find(candidate =>
           typeof candidate === 'object' && candidate !== null
-          && (candidate as { packageName?: unknown }).packageName === packageName
-          && (candidate as { version?: unknown }).version === version
-          && (candidate as { artifactHash?: unknown }).artifactHash === artifactHash)
-        if (reconciled !== undefined) {
-          return { plugin: reconciled, previousLockHash: String(input.expectedLockHash), lockHash: current }
+          && !Array.isArray(candidate)
+          && candidate.packageName === packageName
+          && candidate.version === version
+          && candidate.artifactHash === prior.artifactHash
+          && candidate.healthy === true)
+        if (plugin !== undefined && prior.status === 'applying') {
+          prior.status = 'applied'
+          prior.afterLockHash = currentInventory.lockHash
+          delete prior.error
+          await this.writePluginChanges(changes)
         }
-        throw new Error('plugin lock changed before apply')
+        if (plugin !== undefined && prior.status === 'applied') {
+          return { plugin, change: this.publicPluginChange(prior), lockHash: currentInventory.lockHash }
+        }
+        throw new Error(`plugin change ${prior.changeId} is ${prior.status}`)
       }
-      const transaction = join(this.transactionsPath, current)
+      const before = await this.inventory() as { plugins: HubJson[]; lockHash: string }
+      if (before.lockHash !== input.expectedLockHash) throw new Error('plugin lock changed before apply')
+      const from = before.plugins.find(candidate =>
+        typeof candidate === 'object' && candidate !== null && !Array.isArray(candidate)
+        && candidate.packageName === packageName) as Record<string, HubJson> | undefined
+      const artifact = await this.fetchArtifact(packageName, version)
+      const change: PluginChangeRecord = {
+        changeId: `plugin-change-${randomBytes(18).toString('base64url')}`,
+        clientMutationId,
+        packageName,
+        ...(typeof from?.version === 'string' ? { fromVersion: from.version } : {}),
+        toVersion: version,
+        artifactHash: artifact.artifactHash,
+        beforeLockHash: before.lockHash,
+        createdAt: Date.now(),
+        status: 'applying',
+      }
+      const transaction = join(this.transactionsPath, change.changeId)
       await this.backupDependencyState(transaction)
-      const tarball = await this.fetchArtifact(packageName, version, artifactHash)
+      changes.push(change)
+      await this.writePluginChanges(changes)
       try {
         await run(this.profile.dshExecutable, [
-          'plugin', '--profile', this.profile.profileName, 'add', tarball, '--save-exact',
+          'plugin', '--profile', this.profile.profileName, 'add', artifact.path, '--save-exact',
         ], dirname(this.profile.profileDirectory))
         await run(this.profile.dshExecutable, [
           '--profile', this.profile.profileName, '--dump-config',
         ], dirname(this.profile.profileDirectory))
         const managed = await readJson<ManagedPlugin[]>(this.managedPath, [])
         const next = managed.filter(plugin => plugin.packageName !== packageName)
-        next.push({ packageName, version, artifactHash })
+        next.push({ packageName, version, artifactHash: artifact.artifactHash })
         next.sort((left, right) => left.packageName.localeCompare(right.packageName))
         await writeFileAtomic(this.managedPath, `${JSON.stringify(next, null, 2)}\n`, {
           mode: 0o600,
@@ -436,52 +507,113 @@ export class HubNodeSupervisor {
           && (candidate as { packageName?: unknown }).packageName === packageName
           && (candidate as { healthy?: unknown }).healthy === true)
         if (plugin === undefined) throw new Error('installed plugin did not pass inventory validation')
-        return { plugin, previousLockHash: current, lockHash: after.lockHash }
+        change.status = 'applied'
+        change.afterLockHash = after.lockHash
+        delete change.error
+        await this.writePluginChanges(changes)
+        return { plugin, change: this.publicPluginChange(change), lockHash: after.lockHash }
       } catch (error) {
-        await this.restoreDependencyState(transaction)
-        await run(this.profile.dshExecutable, [
-          'plugin', '--profile', this.profile.profileName, 'install', '--frozen-lockfile',
-        ], dirname(this.profile.profileDirectory)).catch((rollbackError: unknown) => {
-          throw new AggregateError([error, rollbackError], 'plugin apply and rollback both failed')
-        })
+        try {
+          await this.restoreDependencyState(transaction)
+          await run(this.profile.dshExecutable, [
+            'plugin', '--profile', this.profile.profileName, 'install', '--frozen-lockfile',
+          ], dirname(this.profile.profileDirectory))
+          change.status = 'failed-rolled-back'
+          change.error = error instanceof Error ? error.message : 'plugin update failed'
+          await this.writePluginChanges(changes)
+        } catch (rollbackError) {
+          change.status = 'rollback-failed'
+          change.error = 'plugin update and automatic rollback both failed'
+          await this.writePluginChanges(changes)
+          throw new AggregateError([error, rollbackError], change.error)
+        }
         throw error
       }
     }
     if (operation === 'rollback') {
-      const target = String(input.targetLockHash)
-      if (await this.lockHash() === target) return this.inventory()
-      const transaction = join(this.transactionsPath, target)
-      if (!await exists(transaction)) throw new Error('plugin rollback target is unavailable')
-      await this.restoreDependencyState(transaction)
-      await run(this.profile.dshExecutable, [
-        'plugin', '--profile', this.profile.profileName, 'install', '--frozen-lockfile',
-      ], dirname(this.profile.profileDirectory))
-      const restored = await this.inventory() as { plugins: HubJson[]; lockHash: string }
-      if (restored.plugins.some(plugin =>
-        typeof plugin !== 'object' || plugin === null || Array.isArray(plugin) || plugin.healthy !== true)) {
-        throw new Error('plugin rollback did not restore a healthy inventory')
+      const changes = await readJson<PluginChangeRecord[]>(this.pluginChangesPath, [])
+      const change = changes.find(candidate => candidate.changeId === input.changeId)
+      if (change === undefined) throw new Error('plugin rollback version is unavailable')
+      const current = await this.lockHash()
+      if (change.status === 'rolled-back' && current === change.beforeLockHash) {
+        const restored = await this.inventory() as { plugins: HubJson[]; lockHash: string }
+        return { ...restored, change: this.publicPluginChange(change) }
       }
-      return restored
+      if (current !== input.expectedLockHash) throw new Error('plugin lock changed before rollback')
+      if (change.afterLockHash !== undefined && current !== change.afterLockHash) {
+        throw new Error('plugin rollback would overwrite a newer plugin state')
+      }
+      const transaction = join(this.transactionsPath, change.changeId)
+      if (!await exists(transaction)) throw new Error('plugin rollback target is unavailable')
+      const rollbackGuard = join(
+        this.transactionsPath,
+        `${change.changeId}-rollback-${hash(String(input.clientMutationId)).slice(0, 16)}`,
+      )
+      await this.backupDependencyState(rollbackGuard)
+      try {
+        await this.restoreDependencyState(transaction)
+        await run(this.profile.dshExecutable, [
+          'plugin', '--profile', this.profile.profileName, 'install', '--frozen-lockfile',
+        ], dirname(this.profile.profileDirectory))
+        const restored = await this.inventory() as { plugins: HubJson[]; lockHash: string }
+        if (restored.lockHash !== change.beforeLockHash || restored.plugins.some(plugin =>
+          typeof plugin !== 'object' || plugin === null || Array.isArray(plugin) || plugin.healthy !== true)) {
+          throw new Error('plugin rollback did not restore the recorded healthy inventory')
+        }
+        change.status = 'rolled-back'
+        change.rolledBackAt = Date.now()
+        change.rollbackMutationId = String(input.clientMutationId)
+        delete change.error
+        await this.writePluginChanges(changes)
+        return { ...restored, change: this.publicPluginChange(change) }
+      } catch (error) {
+        await this.restoreDependencyState(rollbackGuard)
+        await run(this.profile.dshExecutable, [
+          'plugin', '--profile', this.profile.profileName, 'install', '--frozen-lockfile',
+        ], dirname(this.profile.profileDirectory)).catch((guardError: unknown) => {
+          throw new AggregateError([error, guardError], 'plugin rollback and rollback recovery both failed')
+        })
+        change.status = 'rollback-failed'
+        change.error = error instanceof Error ? error.message : 'plugin rollback failed'
+        await this.writePluginChanges(changes)
+        throw error
+      }
     }
     throw new Error(`unsupported plugin operation ${operation}`)
   }
 
-  private async fetchArtifact(packageName: string, version: string, expectedHash: string): Promise<string> {
-    const directory = join(this.root, 'artifacts')
-    const destination = join(directory, `${expectedHash}.tgz`)
-    if (await exists(destination)) {
-      if (hash(await readFile(destination)) !== expectedHash) throw new Error('cached plugin artifact hash mismatch')
-      return destination
-    }
+  private publicPluginChange(change: PluginChangeRecord): HubJson {
+    const {
+      clientMutationId: _clientMutationId,
+      rollbackMutationId: _rollbackMutationId,
+      ...visible
+    } = change
+    return visible
+  }
+
+  private writePluginChanges(changes: PluginChangeRecord[]): Promise<void> {
+    return writeFileAtomic(this.pluginChangesPath, `${JSON.stringify(changes, null, 2)}\n`, {
+      mode: 0o600,
+      dirMode: 0o700,
+    })
+  }
+
+  private async registryMetadata(packageName: string, requestedVersion: string): Promise<{
+    version: string
+    tarball: string
+  }> {
     const metadataResponse = await fetch(
-      `https://registry.npmjs.org/${encodeURIComponent(packageName)}/${encodeURIComponent(version)}`,
+      `https://registry.npmjs.org/${encodeURIComponent(packageName)}/${encodeURIComponent(requestedVersion)}`,
       { redirect: 'error' },
     )
     if (!metadataResponse.ok) throw new Error(`plugin registry metadata failed with HTTP ${String(metadataResponse.status)}`)
     const metadata = JSON.parse(
       (await boundedResponseBytes(metadataResponse, MAX_REGISTRY_METADATA_BYTES)).toString('utf8'),
     ) as { name?: unknown; version?: unknown; dist?: { tarball?: unknown } }
-    if (metadata.name !== packageName || metadata.version !== version) {
+    if (metadata.name !== packageName
+      || typeof metadata.version !== 'string'
+      || !PACKAGE_VERSION.test(metadata.version)
+      || (requestedVersion !== 'latest' && metadata.version !== requestedVersion)) {
       throw new Error('plugin registry metadata identity mismatch')
     }
     if (typeof metadata.dist?.tarball !== 'string') throw new Error('plugin registry metadata has no tarball')
@@ -489,16 +621,27 @@ export class HubNodeSupervisor {
     if (artifactUrl.protocol !== 'https:' || artifactUrl.hostname !== 'registry.npmjs.org') {
       throw new Error('plugin artifact URL is outside the trusted npm registry')
     }
-    const artifactResponse = await fetch(artifactUrl, { redirect: 'error' })
+    return { version: metadata.version, tarball: artifactUrl.href }
+  }
+
+  private async fetchArtifact(packageName: string, version: string): Promise<{ path: string; artifactHash: string }> {
+    const directory = join(this.root, 'artifacts')
+    const metadata = await this.registryMetadata(packageName, version)
+    const artifactResponse = await fetch(metadata.tarball, { redirect: 'error' })
     if (!artifactResponse.ok) throw new Error(`plugin artifact failed with HTTP ${String(artifactResponse.status)}`)
     const declared = Number(artifactResponse.headers.get('content-length') ?? '0')
     if (declared > MAX_ARTIFACT_BYTES) throw new Error('plugin artifact exceeds size limit')
     const bytes = await boundedResponseBytes(artifactResponse, MAX_ARTIFACT_BYTES)
     if (bytes.byteLength > MAX_ARTIFACT_BYTES) throw new Error('plugin artifact exceeds size limit')
-    if (hash(bytes) !== expectedHash) throw new Error('plugin artifact hash mismatch')
+    const artifactHash = hash(bytes)
+    const destination = join(directory, `${artifactHash}.tgz`)
     await mkdir(directory, { recursive: true, mode: 0o700 })
-    await writeFile(destination, bytes, { mode: 0o600, flag: 'wx' })
-    return destination
+    if (await exists(destination)) {
+      if (hash(await readFile(destination)) !== artifactHash) throw new Error('cached plugin artifact hash mismatch')
+    } else {
+      await writeFile(destination, bytes, { mode: 0o600, flag: 'wx' })
+    }
+    return { path: destination, artifactHash }
   }
 
   private async backupDependencyState(destination: string): Promise<void> {
@@ -537,44 +680,8 @@ export class HubNodeSupervisor {
     if (operation === 'create') {
       const type = String(input.type) as SnapshotArchive['type']
       const clientMutationId = String(input.clientMutationId)
-      const prior = index.find(candidate => candidate.clientMutationId === clientMutationId)
-      if (prior !== undefined) {
-        const priorArchive = JSON.parse(
-          await readFile(join(this.snapshotsPath, `${prior.artifactHash}.json`), 'utf8'),
-        ) as SnapshotArchive
-        return {
-          snapshotId: prior.snapshotId,
-          type: prior.type,
-          artifactHash: prior.artifactHash,
-          createdAt: prior.createdAt,
-          manifest: priorArchive.manifest,
-        }
-      }
-      const snapshotId = `snapshot-${randomBytes(18).toString('base64url')}`
-      const createdAt = Date.now()
-      const roots = type === 'data' ? this.profile.snapshotPaths : [this.profile.profileDirectory]
-      const files = await this.collectSnapshot(type, roots)
-      const archive: SnapshotArchive = {
-        version: 1,
-        snapshotId,
-        type,
-        createdAt,
-        roots,
-        files,
-        manifest: {
-          fileCount: files.length,
-          totalBytes: files.reduce((sum, file) => sum + Buffer.byteLength(file.content, 'base64'), 0),
-          knownSecretFileClassesExcluded: true,
-          contentClassifiedForSecrets: false,
-        },
-      }
-      const serialized = JSON.stringify(archive)
-      const artifactHash = hash(serialized)
-      await mkdir(this.snapshotsPath, { recursive: true, mode: 0o700 })
-      await writeFileAtomic(join(this.snapshotsPath, `${artifactHash}.json`), serialized, { mode: 0o600, dirMode: 0o700 })
-      index.push({ snapshotId, type, artifactHash, createdAt, clientMutationId })
-      await writeFileAtomic(indexPath, `${JSON.stringify(index, null, 2)}\n`, { mode: 0o600, dirMode: 0o700 })
-      return { snapshotId, type, artifactHash, createdAt, manifest: archive.manifest }
+      const label = typeof input.label === 'string' ? input.label : `${type} snapshot`
+      return this.createSnapshot(indexPath, index, type, clientMutationId, label, 'manual')
     }
     if (operation === 'restore') {
       const row = index.find(candidate => candidate.snapshotId === input.snapshotId)
@@ -583,13 +690,77 @@ export class HubNodeSupervisor {
       if (input.expectedCurrentHash !== undefined && input.expectedCurrentHash !== currentHash) {
         throw new Error('snapshot restore precondition failed')
       }
+      const protection = await this.createSnapshot(
+        indexPath,
+        index,
+        row.type,
+        `${String(input.clientMutationId)}-protection`,
+        `Before restoring ${row.label}`,
+        'pre-restore',
+      ) as { snapshotId: string }
       const serialized = await readFile(join(this.snapshotsPath, `${row.artifactHash}.json`), 'utf8')
       if (hash(serialized) !== row.artifactHash) throw new Error('snapshot artifact hash mismatch')
       const archive = JSON.parse(serialized) as SnapshotArchive
       await this.restoreSnapshot(archive)
-      return { restored: true, currentHash: await this.snapshotCurrentHash(row.type) }
+      return {
+        restored: true,
+        currentHash: await this.snapshotCurrentHash(row.type),
+        protectionSnapshotId: protection.snapshotId,
+      }
     }
     throw new Error(`unsupported snapshot operation ${operation}`)
+  }
+
+  private async createSnapshot(
+    indexPath: string,
+    index: SnapshotIndexRow[],
+    type: SnapshotArchive['type'],
+    clientMutationId: string,
+    label: string,
+    reason: SnapshotIndexRow['reason'],
+  ): Promise<HubJson> {
+    const prior = index.find(candidate => candidate.clientMutationId === clientMutationId)
+    if (prior !== undefined) {
+      const { clientMutationId: _mutation, ...visible } = prior
+      return visible
+    }
+    const snapshotId = `snapshot-${randomBytes(18).toString('base64url')}`
+    const createdAt = Date.now()
+    const roots = type === 'data' ? this.profile.snapshotPaths : [this.profile.profileDirectory]
+    const files = await this.collectSnapshot(type, roots)
+    const manifest: HubJson = {
+      fileCount: files.length,
+      totalBytes: files.reduce((sum, file) => sum + Buffer.byteLength(file.content, 'base64'), 0),
+      knownSecretFileClassesExcluded: true,
+      contentClassifiedForSecrets: false,
+    }
+    const archive: SnapshotArchive = {
+      version: 1,
+      snapshotId,
+      type,
+      createdAt,
+      roots,
+      files,
+      manifest,
+    }
+    const serialized = JSON.stringify(archive)
+    const artifactHash = hash(serialized)
+    await mkdir(this.snapshotsPath, { recursive: true, mode: 0o700 })
+    await writeFileAtomic(join(this.snapshotsPath, `${artifactHash}.json`), serialized, { mode: 0o600, dirMode: 0o700 })
+    const row: SnapshotIndexRow = {
+      snapshotId,
+      type,
+      artifactHash,
+      createdAt,
+      label,
+      reason,
+      manifest,
+      clientMutationId,
+    }
+    index.push(row)
+    await writeFileAtomic(indexPath, `${JSON.stringify(index, null, 2)}\n`, { mode: 0o600, dirMode: 0o700 })
+    const { clientMutationId: _mutation, ...visible } = row
+    return visible
   }
 
   private async collectSnapshot(type: SnapshotArchive['type'], roots: string[]): Promise<SnapshotFile[]> {

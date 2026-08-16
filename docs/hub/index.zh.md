@@ -7,6 +7,7 @@ DSH Hub 为多个 DeepSeek Harness 节点提供一个经过认证的浏览器工
 ## 指南
 
 - [部署](deployment.md)使用 Docker Compose 安装 Hub 并注册 DSH 节点。
+- [控制台使用](console.md)解释节点注册、插件状态、自动回退、显式快照和高级诊断。
 - [节点服务](node-services.md)介绍如何通过 Linux、macOS 或 Windows 的服务管理机制运行 Node Agent。
 - [运维](operations.md)介绍注册、吊销、备份、恢复、版本升级和故障恢复。
 

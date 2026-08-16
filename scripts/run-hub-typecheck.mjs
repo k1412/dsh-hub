@@ -20,6 +20,7 @@ const projects = [
   'packages/hub/hub-node-ipc/tsconfig.json',
   'packages/hub/hub-node-agent/tsconfig.json',
   'packages/hub/hub-connector/tsconfig.json',
+  'packages/hub/hub-client-ui/tsconfig.json',
   'packages/hub/hub-server/tsconfig.json',
   'apps/hub-web/tsconfig.json',
 ]

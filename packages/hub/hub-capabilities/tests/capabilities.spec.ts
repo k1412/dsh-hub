@@ -27,11 +27,11 @@ describe('Hub capability contracts', () => {
     expect(resolveHubOperation('dsh.files', '1.0.0', 'read')?.request.safeParse({
       path: '/workspace/file', maxBytes: 5_000_000,
     }).success).toBe(false)
-    expect(resolveHubOperation('dsh.plugins', '1.0.0', 'apply')?.request.safeParse({
-      packageName: '../../escape', version: '1.0.0', artifactHash: 'a'.repeat(43), expectedLockHash: 'b'.repeat(43),
+    expect(resolveHubOperation('dsh.plugins', '2.0.0', 'apply')?.request.safeParse({
+      clientMutationId: 'plugin-change-1', packageName: '../../escape', version: '1.0.0', expectedLockHash: 'b'.repeat(43),
     }).success).toBe(false)
-    expect(resolveHubOperation('dsh.plugins', '1.0.0', 'apply')?.request.safeParse({
-      packageName: '@example/plugin', version: 'latest', artifactHash: 'a'.repeat(43), expectedLockHash: 'b'.repeat(43),
+    expect(resolveHubOperation('dsh.plugins', '2.0.0', 'apply')?.request.safeParse({
+      clientMutationId: 'plugin-change-1', packageName: '@example/plugin', version: 'latest', expectedLockHash: 'b'.repeat(43),
     }).success).toBe(false)
   })
 

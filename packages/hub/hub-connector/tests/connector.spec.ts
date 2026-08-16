@@ -7,6 +7,7 @@ import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
+import type { TypertGateway } from '@deepseek-ai/dsh-api-gateway'
 import { generateHubIpcSecret } from '@k1412/dsh-hub-node-ipc'
 import { HubConnectorServer } from '../../hub-node-agent/src/ipc-server.ts'
 import type { HubEnvelopeBody } from '@k1412/dsh-hub-protocol'
@@ -27,6 +28,16 @@ async function* idle(signal: AbortSignal): AsyncGenerator<never> {
   await new Promise<void>((resolve) => {
     signal.addEventListener('abort', () => { resolve() }, { once: true })
   })
+}
+
+function testGateway(): TypertGateway {
+  return {
+    invoke: async () => { throw new Error('unexpected test Gateway invocation') },
+    dispatch: async () => ({
+      ok: false,
+      error: { code: 'internal', message: 'test Gateway has no Remote endpoints', details: {} },
+    }),
+  }
 }
 
 describe('Hub Connector coexistence', () => {
@@ -110,6 +121,7 @@ describe('Hub Connector coexistence', () => {
     contexts.push(context)
     context.baseUrl = `${pathToFileURL(root).href}/`
     context.provide('apiProxy', api)
+    context.provide('typertGateway', testGateway())
     await context.plugin(Loader)
     context.loader.builtins.include = Include
     const surface = (name: string) => ({
@@ -239,7 +251,7 @@ describe('Hub Connector coexistence', () => {
     })
     servers.push(server)
     await server.listen()
-    const connector = new HubConnector(api, {
+    const connector = new HubConnector(api, testGateway(), {
       ipcEndpoint: endpoint,
       secretFile,
       runtimeId: 'default',
@@ -249,6 +261,39 @@ describe('Hub Connector coexistence', () => {
     const controller = new AbortController()
     const running = connector.run(controller.signal)
     await baseline
+
+    await server.send('default', {
+      type: 'capability.invoke',
+      commandId: 'command-web-fetch-0001',
+      runtimeId: 'default',
+      capability: 'dsh.web',
+      capabilityVersion: '1.0.0',
+      operation: 'fetch',
+      idempotencyKey: 'web-fetch-mutation-0001',
+      payload: {
+        clientMutationId: 'web-fetch-0001',
+        method: 'POST',
+        path: '/api/host.describe',
+        headers: [['content-type', 'application/json']],
+        body: JSON.stringify({
+          type: 'client-request', rpcId: 'web-rpc-0001', method: 'host.describe', payload: {},
+        }),
+      },
+    })
+    await vi.waitFor(() => { expect(bodies).toContainEqual(expect.objectContaining({
+      type: 'capability.result', commandId: 'command-web-fetch-0001', status: 'ok',
+    })) })
+    const webResult = bodies.find(body => body.type === 'capability.result'
+      && body.commandId === 'command-web-fetch-0001')
+    if (webResult?.type !== 'capability.result' || webResult.status !== 'ok'
+      || typeof webResult.value !== 'object' || webResult.value === null) {
+      throw new Error('official Web fetch result missing')
+    }
+    const webBody = JSON.parse(String((webResult.value as { body?: unknown }).body)) as Record<string, unknown>
+    expect(webBody).toMatchObject({
+      rpcId: 'web-rpc-0001',
+      result: { ok: true, value: { version: '0.1.0-rc.5', cwd: root } },
+    })
 
     await server.send('default', {
       type: 'capability.invoke',
@@ -327,7 +372,7 @@ describe('Hub Connector coexistence', () => {
     })
     servers.push(server)
     await server.listen()
-    const connector = new HubConnector(api, {
+    const connector = new HubConnector(api, testGateway(), {
       ipcEndpoint: endpoint,
       secretFile,
       runtimeId: 'default',

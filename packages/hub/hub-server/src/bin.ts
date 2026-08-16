@@ -4,7 +4,7 @@
 
 import { createHash } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { chmod, cp, lstat, mkdir, readFile, readdir, stat } from 'node:fs/promises'
+import { chmod, lstat, mkdir, readFile, readdir, stat } from 'node:fs/promises'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { generateHubIdentity, HubNodeId, type HubIdentityKeyPair } from '@k1412/dsh-hub-protocol'
@@ -53,11 +53,10 @@ async function backupFiles(root: string): Promise<BackupFileRecord[]> {
     files.push({ path: name, sizeBytes: metadata.size, sha256: await digest(path) })
   }
   await visit(join(root, 'hub.db'))
-  await visit(join(root, 'objects'))
   return files.sort((left, right) => left.path.localeCompare(right.path))
 }
 
-async function verifyBackup(source: string): Promise<number> {
+async function verifyBackup(source: string): Promise<void> {
   const manifest = JSON.parse(await readFile(join(source, 'manifest.json'), 'utf8')) as {
     version?: unknown
     files?: unknown
@@ -67,16 +66,15 @@ async function verifyBackup(source: string): Promise<number> {
   if (expected.some(file => typeof file.path !== 'string'
     || !Number.isSafeInteger(file.sizeBytes) || file.sizeBytes < 0
     || !/^[A-Za-z0-9_-]{43}$/.test(file.sha256)
-    || (file.path !== 'hub.db' && !file.path.startsWith('objects/'))
+    || file.path !== 'hub.db'
     || file.path.includes('..'))) {
     throw new Error('backup manifest file record is invalid')
   }
   const actual = await backupFiles(source)
   if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error('backup file checksum or file-set integrity check failed')
-  const verified = await HubStorage.open(join(source, 'hub.db'), join(source, 'objects'))
+  const verified = await HubStorage.open(join(source, 'hub.db'))
   try {
     verified.control.verifyAuditChain()
-    return await verified.objects.verifyAll()
   } finally {
     verified.close()
   }
@@ -102,7 +100,6 @@ async function identity(path: string): Promise<HubIdentityKeyPair> {
 
 const stateDirectory = resolve(process.env.DSH_HUB_STATE_DIRECTORY?.trim() || '/var/lib/dsh-hub')
 const databasePath = resolve(process.env.DSH_HUB_DATABASE_PATH?.trim() || `${stateDirectory}/hub.db`)
-const objectDirectory = resolve(process.env.DSH_HUB_OBJECT_DIRECTORY?.trim() || `${stateDirectory}/objects`)
 const identityPath = resolve(process.env.DSH_HUB_IDENTITY_PATH?.trim() || `${stateDirectory}/identity.json`)
 function option(name: string): string {
   const index = process.argv.indexOf(name)
@@ -121,7 +118,7 @@ if (process.argv[2] === 'create-enrollment') {
   if (!Number.isSafeInteger(expiresInSeconds) || expiresInSeconds < 60 || expiresInSeconds > 86_400) {
     throw new Error('--expires-in must be an integer from 60 through 86400 seconds')
   }
-  const enrollmentStorage = await HubStorage.open(databasePath, objectDirectory)
+  const enrollmentStorage = await HubStorage.open(databasePath)
   try {
     enrollmentStorage.control.verifyAuditChain()
     const grant = enrollmentStorage.control.createEnrollment(
@@ -149,10 +146,9 @@ if (process.argv[2] === 'backup') {
   }
   const destination = resolve(destinationValue)
   await mkdir(destination, { recursive: false, mode: 0o700 })
-  const backupStorage = await HubStorage.open(databasePath, objectDirectory)
+  const backupStorage = await HubStorage.open(databasePath)
   try {
     await backupStorage.control.backupTo(resolve(destination, 'hub.db'))
-    await cp(objectDirectory, resolve(destination, 'objects'), { recursive: true, force: false })
     const files = await backupFiles(destination)
     await writeFileAtomic(resolve(destination, 'manifest.json'), `${JSON.stringify({
       version: 1,
@@ -172,8 +168,8 @@ if (process.argv[2] === 'verify-backup') {
     throw new Error('verify-backup requires --source /absolute/backup/directory')
   }
   const source = resolve(sourceValue)
-  const objectCount = await verifyBackup(source)
-  process.stdout.write(`dsh-hub: backup verified (${String(objectCount)} explicit objects)\n`)
+  await verifyBackup(source)
+  process.stdout.write('dsh-hub: backup verified\n')
   process.exit(0)
 }
 const operators = required('DSH_HUB_OPERATOR_EMAILS').split(',').map(value => value.trim()).filter(Boolean)
@@ -185,7 +181,7 @@ process.once('SIGINT', () => { shutdown.abort(new Error('SIGINT')) })
 process.once('SIGTERM', () => { shutdown.abort(new Error('SIGTERM')) })
 
 try {
-  storage = await HubStorage.open(databasePath, objectDirectory)
+  storage = await HubStorage.open(databasePath)
   storage.control.verifyAuditChain()
   storage.control.redactTerminalCommandContentBefore(Date.now() - 5 * 60_000)
   server = new HubServer({

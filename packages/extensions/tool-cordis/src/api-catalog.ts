@@ -2001,6 +2001,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the validated business result.',
         throws: ['{@link TypertGatewayError} for dispatch, provider, or boundary failures; lookup-policy and business errors retain identity.'],
       },
+      {
+        signature: 'async dispatch( endpoint: string, payload: unknown, signal: AbortSignal, ): Promise<TypertGatewayDispatchResult>',
+        description: 'Dispatch one decoded Connection request through the same normalized result path used by the HTTP adapter.',
+        parameters: [{ name: 'endpoint', description: 'canonical `<namespace>/<method>` endpoint.' }, { name: 'payload', description: 'decoded payload containing exactly one plain-object `args` field.' }, { name: 'signal', description: 'carrier cancellation signal.' }],
+        returns: 'normalized RPC result.',
+      },
     ],
   },
   {
@@ -4484,6 +4490,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'TypertEventModel',
     declaration: 'export interface TypertEventModel extends TypertDocumentation {\n    readonly name: string;\n    readonly mode?: string;\n    readonly signature: string;\n}',
+  },
+  {
+    name: 'TypertGatewayDispatchResult',
+    declaration: 'export type TypertGatewayDispatchResult = Awaited<ReturnType<ConnectionRpcHandler>>;',
   },
   {
     name: 'TypertMemberModel',

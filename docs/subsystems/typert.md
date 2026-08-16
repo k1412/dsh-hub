@@ -185,6 +185,15 @@ interface TypertGateway {
    * @throws {@link TypertGatewayError} for dispatch, provider, or boundary failures; lookup-policy and business errors retain identity.
    */
   invoke(request: InvokeRemoteRequest): Promise<unknown>
+
+  /**
+   * Dispatch one decoded Connection endpoint and normalize business failures into an RPC result.
+   * @param endpoint - canonical `<namespace>/<method>` endpoint.
+   * @param payload - decoded Connection payload containing exactly one `args` object.
+   * @param signal - carrier cancellation signal.
+   * @returns normalized RPC result without a transport envelope.
+   */
+  dispatch(endpoint: string, payload: unknown, signal: AbortSignal): Promise<TypertGatewayDispatchResult>
 }
 ```
 
@@ -330,7 +339,16 @@ Resolve strict generated definitions or conservative SRC markers against current
  * @throws {@link TypertGatewayError} for dispatch, provider, or boundary failures; lookup-policy and business errors retain identity.
  */
 async invoke(request: InvokeRemoteRequest): Promise<unknown>
+
+/**
+ * Dispatch one decoded Connection request through the same normalized result path used by the HTTP adapter.
+ * @param endpoint - canonical `<namespace>/<method>` endpoint.
+ * @param payload - decoded payload containing exactly one plain-object `args` field.
+ * @param signal - carrier cancellation signal.
+ * @returns normalized RPC result.
+ */
+async dispatch( endpoint: string, payload: unknown, signal: AbortSignal, ): Promise<TypertGatewayDispatchResult>
 ```
 
-Source: [`packages/api/gateway/src/index.ts:90`](../../packages/api/gateway/src/index.ts)
+Source: [`packages/api/gateway/src/index.ts:91`](../../packages/api/gateway/src/index.ts)
 <!-- END GENERATED cordis-surface -->

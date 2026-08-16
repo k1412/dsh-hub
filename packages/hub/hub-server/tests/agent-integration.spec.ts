@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { sessionsCapability, terminalsCapability } from '@k1412/dsh-hub-capabilities'
+import { sessionsCapability, terminalsCapability, webCapability } from '@k1412/dsh-hub-capabilities'
 import {
   generateHubIdentity, HubCommandId, HubMessageId, HubNodeId, HubRuntimeId, signHubEnvelope,
   verifyHubEnvelope, type HubEnvelopeBody,
@@ -71,7 +71,7 @@ describe('Hub Agent WebSocket integration', () => {
   it('enrolls, authenticates, announces a runtime, invokes a capability, and records its result', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-hub-agent-integration-'))
     roots.push(root)
-    const storage = await HubStorage.open(join(root, 'hub.db'), join(root, 'objects'))
+    const storage = await HubStorage.open(join(root, 'hub.db'))
     const hubIdentity = generateHubIdentity()
     const nodeIdentity = generateHubIdentity()
     const nodeId = HubNodeId('node-a')
@@ -147,7 +147,7 @@ describe('Hub Agent WebSocket integration', () => {
       bootId: 'runtime-boot-00001',
       dshVersion: '0.1.0-rc.5',
       connectorVersion: '1.0.0',
-      capabilities: [sessionsCapability.descriptor, terminalsCapability.descriptor],
+      capabilities: [sessionsCapability.descriptor, terminalsCapability.descriptor, webCapability.descriptor],
     })
     await Promise.all(peer.renderPending().map(frame => send(socket, frame)))
     await vi.waitFor(() => { expect(storage.control.listRuntimes(nodeId)).toMatchObject([{
@@ -256,6 +256,62 @@ describe('Hub Agent WebSocket integration', () => {
     const flushNode = async () => {
       await Promise.all(peer.renderPending().map(frame => send(socket, frame)))
     }
+
+    const rootRedirect = await fetch(`http://127.0.0.1:${String(address.port)}/`, { redirect: 'manual' })
+    expect(rootRedirect.status).toBe(302)
+    expect(rootRedirect.headers.get('location')).toBe('/?nodeId=node-a&runtimeId=default-runtime')
+
+    const officialRequest = fetch(
+      `http://127.0.0.1:${String(address.port)}/api/host.describe?nodeId=node-a&runtimeId=default-runtime`,
+    )
+    const officialFetch = await nextAgentCommand('fetch', 'dsh.web')
+    expect(officialFetch.payload).toMatchObject({ method: 'GET', path: '/api/host.describe' })
+    peer.enqueue({
+      type: 'capability.result',
+      commandId: officialFetch.commandId,
+      status: 'ok',
+      value: {
+        status: 200,
+        headers: [['content-type', 'application/json; charset=utf-8']],
+        encoding: 'utf8',
+        body: JSON.stringify({ rpcId: 'hub-web', result: { ok: true, value: { version: '0.1.0-rc.5' } } }),
+      },
+    })
+    await flushNode()
+    const officialResponse = await officialRequest
+    expect(officialResponse.status).toBe(200)
+    await expect(officialResponse.json()).resolves.toMatchObject({
+      result: { ok: true, value: { version: '0.1.0-rc.5' } },
+    })
+
+    const officialSocket = new WebSocket(
+      `ws://127.0.0.1:${String(address.port)}/api/events.mux?nodeId=node-a&runtimeId=default-runtime`,
+      { origin: 'https://hub.example.com' },
+    )
+    sockets.push(officialSocket)
+    const nextOfficial = socketQueue(officialSocket)
+    await new Promise<void>((resolve, reject) => {
+      officialSocket.once('open', resolve)
+      officialSocket.once('error', reject)
+    })
+    const officialFrame = {
+      type: 'server-request',
+      rpcId: 'stream-rpc-1',
+      method: 'session/event',
+      payload: { type: 'session/event', payload: { sessionId: 'session-project-one' } },
+    }
+    peer.enqueue({
+      type: 'stream.frame',
+      runtimeId,
+      capability: 'dsh.web',
+      streamId: HubMessageId('official-mux-stream-01'),
+      stream: 'mux',
+      frameSequence: 1,
+      payload: officialFrame,
+    })
+    await flushNode()
+    await expect(nextOfficial()).resolves.toEqual(officialFrame)
+    officialSocket.close()
 
     // A command can be enqueued while an earlier socket send is still in
     // progress. The flush pump must drain that tail without waiting for an

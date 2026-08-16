@@ -36,6 +36,7 @@ const packageName = z.string().max(214).regex(
 )
 const empty = z.strictObject({})
 const ok = z.strictObject({ ok: z.literal(true) })
+const webBody = z.string().max(224 * 1024 * 1024)
 
 const sessionSummary = z.strictObject({
   sessionId: id,
@@ -63,6 +64,7 @@ function capability(
   name: string,
   operations: readonly HubOperationContract[],
   streams: readonly HubStreamContract[],
+  version = '1.0.0',
 ): HubCapabilityContract {
   const operationMap = new Map(operations.map(operation => [operation.name, operation]))
   const streamMap = new Map(streams.map(stream => [stream.name, stream]))
@@ -72,7 +74,7 @@ function capability(
   return {
     descriptor: defineHubCapability({
       name,
-      version: '1.0.0',
+      version,
       operations: operations.map(operation => ({
         name: operation.name,
         idempotency: operation.idempotency,
@@ -205,31 +207,123 @@ const pluginRecord = z.strictObject({
   healthy: z.boolean(),
 })
 
+const pluginUpdate = pluginRecord.extend({
+  latestVersion: version,
+  updateAvailable: z.boolean(),
+})
+
+const pluginChangeStatus = z.enum(['applying', 'applied', 'failed-rolled-back', 'rollback-failed', 'rolled-back'])
+const pluginChange = z.strictObject({
+  changeId: id,
+  packageName,
+  fromVersion: version.optional(),
+  toVersion: version,
+  artifactHash: hash,
+  beforeLockHash: hash,
+  afterLockHash: hash.optional(),
+  createdAt: z.number().int().nonnegative(),
+  status: pluginChangeStatus,
+  rolledBackAt: z.number().int().nonnegative().optional(),
+  error: z.string().max(8_192).optional(),
+})
+
 /** Node Agent stages and rolls back plugins outside the DSH process. */
 export const pluginsCapability = capability('dsh.plugins', [
-  { name: 'inventory', idempotency: 'read', request: empty, response: z.strictObject({ plugins: z.array(pluginRecord).max(10_000), lockHash: hash }) },
+  {
+    name: 'inventory',
+    idempotency: 'read',
+    request: empty,
+    response: z.strictObject({
+      plugins: z.array(pluginRecord).max(10_000),
+      lockHash: hash,
+      checkedAt: z.number().int().nonnegative(),
+    }),
+  },
+  {
+    name: 'check-updates',
+    idempotency: 'read',
+    request: empty,
+    response: z.strictObject({
+      plugins: z.array(pluginUpdate).max(10_000),
+      lockHash: hash,
+      checkedAt: z.number().int().nonnegative(),
+    }),
+  },
   {
     name: 'apply',
     idempotency: 'reconcile',
     request: z.strictObject({
+      clientMutationId: id,
       packageName,
       version,
-      artifactHash: hash,
       expectedLockHash: hash,
     }),
-    response: z.strictObject({ plugin: pluginRecord, previousLockHash: hash, lockHash: hash }),
+    response: z.strictObject({ plugin: pluginRecord, change: pluginChange, lockHash: hash }),
   },
-  { name: 'rollback', idempotency: 'reconcile', request: z.strictObject({ packageName, targetLockHash: hash }), response: z.strictObject({ plugins: z.array(pluginRecord).max(10_000), lockHash: hash }) },
-], [{ name: 'inventory', reconstructible: true, frame: z.strictObject({ plugins: z.array(pluginRecord).max(10_000), lockHash: hash }) }])
+  {
+    name: 'history',
+    idempotency: 'read',
+    request: empty,
+    response: z.strictObject({ changes: z.array(pluginChange).max(10_000) }),
+  },
+  {
+    name: 'rollback',
+    idempotency: 'reconcile',
+    request: z.strictObject({ clientMutationId: id, changeId: id, expectedLockHash: hash }),
+    response: z.strictObject({ plugins: z.array(pluginRecord).max(10_000), lockHash: hash, change: pluginChange }),
+  },
+], [{
+  name: 'inventory',
+  reconstructible: true,
+  frame: z.strictObject({ plugins: z.array(pluginRecord).max(10_000), lockHash: hash, checkedAt: z.number().int().nonnegative() }),
+}], '2.0.0')
 
 const snapshotType = z.enum(['configuration', 'dependency', 'data', 'fleet'])
 
 /** Explicit snapshots reject secret opt-in and filter known secret-file classes. */
 export const snapshotsCapability = capability('dsh.snapshots', [
-  { name: 'create', idempotency: 'idempotent', request: z.strictObject({ clientMutationId: id, type: snapshotType, includeSecretValues: z.literal(false).default(false) }), response: z.strictObject({ snapshotId: id, type: snapshotType, artifactHash: hash, createdAt: z.number().int().nonnegative(), manifest: z.json() }) },
-  { name: 'list', idempotency: 'read', request: empty, response: z.strictObject({ snapshots: z.array(z.strictObject({ snapshotId: id, type: snapshotType, artifactHash: hash, createdAt: z.number().int().nonnegative() })).max(10_000) }) },
-  { name: 'restore', idempotency: 'reconcile', request: z.strictObject({ snapshotId: id, expectedCurrentHash: hash.optional() }), response: z.strictObject({ restored: z.boolean(), currentHash: hash }) },
-], [])
+  {
+    name: 'create',
+    idempotency: 'idempotent',
+    request: z.strictObject({
+      clientMutationId: id,
+      type: snapshotType,
+      label: z.string().min(1).max(256).optional(),
+      includeSecretValues: z.literal(false).default(false),
+    }),
+    response: z.strictObject({
+      snapshotId: id,
+      type: snapshotType,
+      artifactHash: hash,
+      createdAt: z.number().int().nonnegative(),
+      label: z.string().min(1).max(256),
+      reason: z.enum(['manual', 'pre-restore']),
+      manifest: z.json(),
+    }),
+  },
+  {
+    name: 'list',
+    idempotency: 'read',
+    request: empty,
+    response: z.strictObject({
+      snapshots: z.array(z.strictObject({
+        snapshotId: id,
+        type: snapshotType,
+        artifactHash: hash,
+        createdAt: z.number().int().nonnegative(),
+        label: z.string().min(1).max(256),
+        reason: z.enum(['manual', 'pre-restore']),
+        manifest: z.json(),
+      })).max(10_000),
+    }),
+  },
+  {
+    name: 'restore',
+    idempotency: 'reconcile',
+    request: z.strictObject({ clientMutationId: id, snapshotId: id, expectedCurrentHash: hash.optional() }),
+    response: z.strictObject({ restored: z.boolean(), currentHash: hash, protectionSnapshotId: id }),
+  },
+], [], '2.0.0')
 
 /** Runtime health and controlled restart stay separate from Hub execution. */
 export const runtimeCapability = capability('dsh.runtime', [
@@ -241,6 +335,28 @@ export const settingsCapability = capability('dsh.settings', [
   { name: 'read', idempotency: 'read', request: empty, response: z.strictObject({ revision: hash, schema: z.json(), values: z.json(), redactedPaths: z.array(path).max(10_000) }) },
   { name: 'update', idempotency: 'reconcile', request: z.strictObject({ expectedRevision: hash, patch: z.json() }), response: z.strictObject({ revision: hash, restartRequired: z.boolean() }) },
 ], [{ name: 'changed', reconstructible: true, frame: z.strictObject({ revision: hash }) }])
+
+/** Complete official Web carrier forwarded without depending on a node Web listener. */
+export const webCapability = capability('dsh.web', [{
+  name: 'fetch',
+  idempotency: 'reconcile',
+  request: z.strictObject({
+    clientMutationId: id,
+    method: z.enum(['GET', 'HEAD', 'POST']),
+    path: z.string().min(5).max(16_384).regex(/^\/api(?:\/|$)/),
+    headers: z.array(z.tuple([z.string().min(1).max(256), z.string().max(16_384)])).max(128),
+    body: webBody.optional(),
+  }),
+  response: z.strictObject({
+    status: z.number().int().min(100).max(599),
+    headers: z.array(z.tuple([z.string().min(1).max(256), z.string().max(16_384)])).max(128),
+    encoding: z.enum(['utf8', 'base64']),
+    body: webBody,
+  }),
+}], [
+  { name: 'mux', reconstructible: true, frame: z.json() },
+  { name: 'host', reconstructible: true, frame: z.json() },
+])
 
 /** Workspace file access is node-authoritative and never mirrored by the Hub. */
 export const filesCapability = capability('dsh.files', [
@@ -258,6 +374,7 @@ export const hubCapabilityContracts: readonly HubCapabilityContract[] = [
   snapshotsCapability,
   runtimeCapability,
   settingsCapability,
+  webCapability,
   filesCapability,
 ]
 

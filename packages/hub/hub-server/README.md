@@ -2,13 +2,13 @@
 
 English | [中文](README.zh.md)
 
-`@k1412/dsh-hub-server` assembles the single-user Hub control plane. It provides the authenticated browser API, live SSE fan-out, static UI delivery, outbound Node Agent WebSocket termination, node enrollment, capability command delivery, and audit publication. It never loads DSH, an LLM provider, a node plugin, or an execution backend.
+`@k1412/dsh-hub-server` assembles the single-user Hub control plane. It provides the authenticated browser API, official Web HTTP/event routing, live SSE fan-out, static UI delivery, outbound Node Agent WebSocket termination, node enrollment, capability command delivery, and audit publication. It never loads DSH, an LLM provider, a node plugin, or an execution backend.
 
 Every origin request first passes an application-layer private-origin secret. Human routes then verify a Cloudflare Access application JWT and an exact operator email allowlist. Agent routes verify a Service Token `common_name`, bind it to one enrolled node, and complete an Ed25519 challenge-response before accepting capability traffic. The server validates issuer, audience, time claims, token type, key rotation, signed node envelopes, boot identity, and connection generation.
 
 Browser mutations require the configured HTTPS `Origin`, JSON content type, and same-origin Fetch Metadata when present. No CORS permission is emitted. Security headers disable framing, cross-origin opener sharing, MIME sniffing, referrer leakage, inline scripts, and response caching.
 
-SSE transfers live node events without retaining their payloads. A reconnect receives a resynchronization marker and reads fresh node-authoritative baselines. SQLite persists command intent and delivery state; completed bodies remain only until explicit browser acknowledgement or bounded periodic cleanup, so the Hub does not become a transcript or workspace replica.
+The static directory is a fixed build of official DSH Web with the reviewed Hub Settings plugin; nodes cannot upload frontend code. Official `/api/*` and event WebSockets route by the browser-selected node and runtime. SSE transfers control-plane node events without retaining their payloads. SQLite persists command intent and delivery state; completed bodies remain only until explicit browser acknowledgement or bounded periodic cleanup, so Hub does not become a transcript or workspace replica.
 
 ## Model Experience
 

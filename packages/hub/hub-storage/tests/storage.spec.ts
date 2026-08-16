@@ -5,9 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { HubNodeId, HubRuntimeId } from '@k1412/dsh-hub-protocol'
-import {
-  HubControlStore, HubObjectStore, HubStorage, openHubDatabase,
-} from '../src/index.ts'
+import { HubControlStore, HubStorage, openHubDatabase } from '../src/index.ts'
 
 const roots: string[] = []
 
@@ -23,7 +21,7 @@ afterEach(async () => {
 
 async function enrolledStore() {
   const root = await temporaryRoot()
-  const storage = await HubStorage.open(join(root, 'control', 'hub.db'), join(root, 'data'))
+  const storage = await HubStorage.open(join(root, 'control', 'hub.db'))
   const nodeId = HubNodeId('test-node')
   const grant = storage.control.createEnrollment(nodeId, 'Test Node', 2_000, 1_000)
   const node = storage.control.consumeEnrollment(grant.code, 'test-public-key', 'service-token-id', 1_001)
@@ -43,7 +41,7 @@ describe('Hub control storage', () => {
 
   it('rotates an unconsumed enrollment grant and rejects enrolled node reuse', async () => {
     const root = await temporaryRoot()
-    const storage = await HubStorage.open(join(root, 'control', 'hub.db'), join(root, 'data'))
+    const storage = await HubStorage.open(join(root, 'control', 'hub.db'))
     const nodeId = HubNodeId('retry-node')
     const first = storage.control.createEnrollment(nodeId, 'First attempt', 2_000, 1_000)
     const replacement = storage.control.createEnrollment(nodeId, 'Replacement attempt', 3_000, 1_100)
@@ -55,6 +53,26 @@ describe('Hub control storage', () => {
       publicKey: 'new-key',
     })
     expect(() => storage.control.createEnrollment(nodeId, 'Third attempt', 4_000, 1_200)).toThrow(/already enrolled/)
+    storage.close()
+  })
+
+  it('lists pending enrollment metadata without secrets and supports cancellation', async () => {
+    const root = await temporaryRoot()
+    const storage = await HubStorage.open(join(root, 'control', 'hub.db'))
+    const grant = storage.control.createEnrollment(HubNodeId('pending-node'), 'Pending Node', 2_000, 1_000)
+
+    expect(storage.control.listPendingEnrollments(1_100)).toEqual([{
+      nodeId: 'pending-node',
+      displayName: 'Pending Node',
+      expiresAt: 2_000,
+      createdAt: 1_000,
+    }])
+    expect(storage.control.listPendingEnrollments(2_000)).toEqual([])
+    expect(JSON.stringify(storage.control.listPendingEnrollments(1_100))).not.toContain(grant.code)
+
+    storage.control.cancelEnrollment(HubNodeId('pending-node'))
+    expect(storage.control.listPendingEnrollments(1_100)).toEqual([])
+    expect(() =>{  storage.control.cancelEnrollment(HubNodeId('pending-node')) }).toThrow(/not found/)
     storage.close()
   })
 
@@ -148,7 +166,7 @@ describe('Hub control storage', () => {
     legacy.close()
 
     const migrated = await openHubDatabase(path)
-    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(2)
+    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(3)
     expect(migrated.prepare('PRAGMA table_info(session_index)').all().map(row => (row as { name: string }).name))
       .toContain('workspace_path')
     expect(migrated.prepare('SELECT hub_session_id, workspace_path FROM session_index').get())
@@ -218,33 +236,15 @@ describe('Hub control storage', () => {
   })
 })
 
-describe('Hub durable object storage', () => {
-  it('atomically deduplicates, verifies, references, and collects explicit objects', async () => {
-    const root = await temporaryRoot()
-    const database = await openHubDatabase(join(root, 'hub.db'))
-    const objects = await HubObjectStore.open(database, join(root, 'data'))
-    const bytes = Buffer.from('immutable plugin artifact')
-    const first = await objects.putBytes('plugin-artifact', bytes, 'application/gzip', 1_000)
-    const second = await objects.putBytes('plugin-artifact', bytes, 'application/gzip', 1_001)
-    expect(second.objectHash).toBe(first.objectHash)
-    expect(await objects.readBytes(first.objectHash)).toEqual(bytes)
-    await expect(objects.verifyAll()).resolves.toBe(1)
-    objects.addReference('plugin-release', 'release-1', first.objectHash, 1_002)
-    objects.addReference('plugin-release', 'release-1', first.objectHash, 1_003)
-    expect(await objects.collectUnreferenced(2_000)).toEqual([])
-    objects.removeReference('plugin-release', 'release-1', first.objectHash)
-    expect(await objects.collectUnreferenced(2_000)).toEqual([first.objectHash])
-    expect(() => objects.objectPath(first.objectHash)).toThrow(/not found/)
-    database.close()
-  })
-
+describe('Hub storage boundaries', () => {
   it('contains no transcript, workspace, terminal, log, or credential tables', async () => {
     const root = await temporaryRoot()
     const database = await openHubDatabase(join(root, 'hub.db'))
     const names = database.prepare(`
       SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name
     `).all().map(row => String(row.name)).join(' ')
-    expect(names).not.toMatch(/transcript|workspace|terminal|credential|message|attachment|cache|log_output/)
+    const forbidden = /transcript|workspace|terminal|credential|message|attachment|cache|log_output|durable_object|object_reference/
+    expect(names).not.toMatch(forbidden)
     database.close()
   })
 })
