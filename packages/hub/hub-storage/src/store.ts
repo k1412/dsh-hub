@@ -213,6 +213,7 @@ export class HubControlStore {
 
   /**
    * Create a one-time enrollment grant; only its SHA-256 is persisted.
+   * A new grant rotates any unconsumed grant for the same unenrolled node.
    * @param nodeId - stable node identifier reserved by the grant.
    * @param displayName - operator-facing node label.
    * @param expiresAt - exclusive grant expiry in Unix milliseconds.
@@ -223,10 +224,17 @@ export class HubControlStore {
     if (expiresAt <= now) throw new Error('enrollment expiry must be in the future')
     if (displayName.trim().length === 0 || displayName.length > 128) throw new Error('invalid node display name')
     const code = randomBytes(32).toString('base64url')
-    this.database.prepare(`
-      INSERT INTO enrollment_codes (code_hash, node_id, display_name, expires_at, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(secretHash(code), nodeId, displayName, expiresAt, now)
+    hubTransaction(this.database, () => {
+      if (this.getNode(nodeId) !== undefined) throw new Error('node is already enrolled')
+      this.database.prepare(`
+        DELETE FROM enrollment_codes
+        WHERE node_id = ? AND consumed_at IS NULL
+      `).run(nodeId)
+      this.database.prepare(`
+        INSERT INTO enrollment_codes (code_hash, node_id, display_name, expires_at, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(secretHash(code), nodeId, displayName, expiresAt, now)
+    })
     return { nodeId, displayName, code, expiresAt }
   }
 

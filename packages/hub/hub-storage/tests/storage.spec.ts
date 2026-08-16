@@ -40,6 +40,23 @@ describe('Hub control storage', () => {
     expect(bytes.includes(Buffer.from(grant.code))).toBe(false)
   })
 
+  it('rotates an unconsumed enrollment grant and rejects enrolled node reuse', async () => {
+    const root = await temporaryRoot()
+    const storage = await HubStorage.open(join(root, 'control', 'hub.db'), join(root, 'data'))
+    const nodeId = HubNodeId('retry-node')
+    const first = storage.control.createEnrollment(nodeId, 'First attempt', 2_000, 1_000)
+    const replacement = storage.control.createEnrollment(nodeId, 'Replacement attempt', 3_000, 1_100)
+
+    expect(() => storage.control.consumeEnrollment(first.code, 'old-key', undefined, 1_101)).toThrow(/invalid or expired/)
+    expect(storage.control.consumeEnrollment(replacement.code, 'new-key', undefined, 1_102)).toMatchObject({
+      nodeId,
+      displayName: 'Replacement attempt',
+      publicKey: 'new-key',
+    })
+    expect(() => storage.control.createEnrollment(nodeId, 'Third attempt', 4_000, 1_200)).toThrow(/already enrolled/)
+    storage.close()
+  })
+
   it('increments connection generations and fences revoked nodes', async () => {
     const { storage, nodeId } = await enrolledStore()
     expect(storage.control.beginConnection(nodeId, 2_000)).toBe(1)

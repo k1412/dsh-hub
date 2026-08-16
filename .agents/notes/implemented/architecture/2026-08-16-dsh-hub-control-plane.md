@@ -44,7 +44,7 @@ Hub Web UI is a reviewed, static first-party application. A node can advertise n
 
 ## Verification
 
-Protocol tests cover signatures, tampering, expiry, negotiation, sequencing, deduplication, stale generations, durable replay, and recovery. Storage tests cover ownership, command lifecycle and redaction, content addressing, backup, and audit-chain verification. Server integration tests cover Access validation, origin checks, enrollment, signed Agent WSS exchange, command routing, connection revocation, terminal relay, and audit retrieval.
+Protocol tests cover signatures, tampering, expiry, negotiation, sequencing, deduplication, stale generations, durable replay, and recovery. Storage tests cover ownership, atomic rotation of unconsumed enrollment grants, rejection of enrolled-node reuse, command lifecycle and redaction, content addressing, backup, and audit-chain verification. Server integration tests cover Access validation, origin checks, enrollment, signed Agent WSS exchange, command routing, connection revocation, terminal relay, and audit retrieval.
 
 Connector composition tests exercise one shared fake `ApiProxy` through local Web, desktop, and Hub callers and verify that all three callers use the same session owner. Node tests cover authenticated local IPC, durable state, snapshot exclusions and restore containment, optimistic file operations, and real PTY output. Release checks install the packed Connector and Node Agent artifacts, and container checks build the Hub server and static UI for Linux AMD64. Deployment acceptance additionally exercises the existing local Web and desktop clients against the same real DSH runtime before and after Hub and Connector outages.
 
