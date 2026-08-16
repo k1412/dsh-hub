@@ -25,7 +25,7 @@ import { HeroShell } from '../src/client/skeleton/EmptyHero.tsx'
 import { InputBar } from '../src/client/skeleton/InputBar.tsx'
 import type { InputBarProps } from '../src/client/skeleton/InputBar.tsx'
 import type {
-  ComposerBarOwnerProps,
+  ComposerBarOwnerProps, HeroRuntimeOwnerProps,
 } from '../src/client/contract/slots.ts'
 import type { ViewTab } from '../src/client/contract/views.ts'
 
@@ -138,12 +138,14 @@ function mount(
   /** Owner share handed to the two composer tool-row seats, per render. */
   const seatOwners: { key: string; owner: unknown }[] = []
   let pickerOwner: unknown
+  let runtimeOwner: HeroRuntimeOwnerProps | undefined
   const renderSlot = ((key: string, owner: object, opts?: { only?: string }) => {
     slotCalls.push(key)
     if (key === 'conversation.input.model' || key === 'conversation.input.plan') {
       seatOwners.push({ key, owner })
     }
     if (key === 'conversation.hero.workspace') { pickerOwner = owner; return null }
+    if (key === 'conversation.hero.runtime') { runtimeOwner = owner as HeroRuntimeOwnerProps; return null }
     if (key === 'conversation.session.header') {
       return (
         <ConversationSessionHeader
@@ -246,13 +248,16 @@ function mount(
     inputActions,
     renderSlot,
     renderSlotChain,
+    clearSession: vi.fn(),
     selectWorkspace: retargetWorkspace,
     t,
   }
   const view = render(<ConversationRoot {...props} />)
   return {
     view, chat, sink, retargetWorkspace, session, slotCalls, seatOwners, open,
+    clearSession: props.clearSession,
     pickerOwner: () => pickerOwner,
+    runtimeOwner: () => runtimeOwner,
     rerender: () => { view.rerender(<ConversationRoot {...props} />) },
   }
 }
@@ -483,9 +488,17 @@ describe('ConversationRoot resident composer', () => {
     const chip = b.view.getByRole('button', { name: '选择工作区' })
     expect((chip as HTMLButtonElement).disabled).toBe(false)
     expect(b.slotCalls).toContain('conversation.hero.workspace')
+    expect(b.slotCalls).toContain('conversation.hero.runtime')
     // The agent-preset chip sits in the same row, for the same reason: both
     // choices are only open before the first message.
     expect(b.slotCalls).toContain('conversation.hero.agentPreset')
+  })
+
+  it('clears the blank session before a contributed deployment-target control changes Runtime', () => {
+    const b = mount(conversationSnapshot({ composerPhase: 'blank', blank: true }))
+    act(() => { b.runtimeOwner()?.onTargetChange() })
+    expect(b.clearSession).toHaveBeenCalledOnce()
+    expect(b.runtimeOwner()?.selectedWorkspaceId).toBe(wid('one'))
   })
 
   it('prompt failure renders the promptError strip (ordinary failure, no transaction UI)', () => {

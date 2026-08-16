@@ -63,7 +63,7 @@ Create a separate Cloudflare Access Service Token for the node. Do not reuse a t
 Download the Node Agent, Connector, and checksum manifest from the same release. Verify both artifacts before installation. The following example keeps secrets out of command arguments; enter both values at the hidden prompts.
 
 ```sh
-VERSION=0.1.0-rc.5
+VERSION=0.1.0-rc.7
 RELEASE="https://github.com/k1412/dsh-hub/releases/download/hub-v${VERSION}"
 curl --fail --location --remote-name "${RELEASE}/SHA256SUMS"
 curl --fail --location --remote-name "${RELEASE}/k1412-dsh-hub-node-agent-${VERSION}.tgz"

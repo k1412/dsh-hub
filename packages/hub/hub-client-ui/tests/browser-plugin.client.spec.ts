@@ -9,6 +9,7 @@ import { usePinnedBrowserLanguages } from '@deepseek-ai/dsh-client-test-runtime'
 import { apply, inject } from '../src/client/index.ts'
 import { HubNodesSection } from '../src/client/HubNodesSection.tsx'
 import { HubPluginsSection } from '../src/client/HubPluginsSection.tsx'
+import { HubRuntimePicker } from '../src/client/HubRuntimePicker.tsx'
 
 usePinnedBrowserLanguages('zh-CN')
 
@@ -22,7 +23,10 @@ describe('Hub official Settings registration', () => {
     const slots = ctx.get('slots') as SlotRegistry
     slots.register({
       name: 'root',
-      children: { 'settings.section': { kind: 'list', scope: 'root' } },
+      children: {
+        'settings.section': { kind: 'list', scope: 'root' },
+        'conversation.hero.runtime': { kind: 'single', scope: 'root' },
+      },
     } as never, () => null)
 
     const fiber = ctx.plugin({ inject: [...inject], apply })
@@ -36,6 +40,7 @@ describe('Hub official Settings registration', () => {
       { id: 'hub-nodes', label: 'Hub 节点', component: HubNodesSection },
       { id: 'hub-plugins', label: '节点插件', component: HubPluginsSection },
     ])
+    expect(slots.entries('conversation.hero.runtime').map(entry => entry.component)).toEqual([HubRuntimePicker])
 
     locale.setLocale('en')
     expect(entries.map(entry => resolveSlotLabel(entry.options.label))).toEqual(['Hub nodes', 'Node plugins'])

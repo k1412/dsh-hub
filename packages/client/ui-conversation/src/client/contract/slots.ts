@@ -131,6 +131,13 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      */
     'conversation.composer': { kind: 'chain'; scope: 'session'; owner: ComposerChainProps }
     /**
+     * Optional deployment-target control shown before the Workspace picker on
+     * the new-session screen. A multi-Runtime shell can occupy this seat to
+     * choose where the next Workspace is discovered and connected; ordinary
+     * local Web deployments leave it empty.
+     */
+    'conversation.hero.runtime': { kind: 'single'; scope: 'root'; owner: HeroRuntimeOwnerProps }
+    /**
      * The hero-phase Workspace picker hole: rendered by ConversationRoot
      * while the session is blank (picking another workspace switches to that
      * workspace's blank session, draft carried). Root scope: the picker
@@ -244,6 +251,14 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 export interface HeroAgentPresetOwnerProps {
   /** Marker field: the chip owns its own roster, staging, and menu state. */
   children?: never
+}
+
+/** Owner share of an optional deployment-target control in the new-session hero. */
+export interface HeroRuntimeOwnerProps {
+  /** Workspace currently staged for or owning the blank session, when any. */
+  selectedWorkspaceId?: WorkspaceId | undefined
+  /** Reset the blank-session selection after the deployment target changes. */
+  onTargetChange: () => void
 }
 
 /** Owner share of the strict session content seat. */
@@ -411,6 +426,8 @@ export type ChatStore = ReturnType<typeof createChatStore>
 
 /** Business callbacks injected into the conversation slot. */
 export interface ConversationInjected {
+  /** Clear the current blank-session selection before changing deployment target. */
+  clearSession: () => void
   /**
    * Connect the selected Workspace and open its reusable/new blank session.
    * When a blank session is already current, carry its draft to the target.
@@ -573,6 +590,7 @@ export type ConversationSlotProps =
     | 'conversation.input.overlay'
     | 'conversation.input.dock' | 'conversation.composer.dock'
     | 'conversation.input.left' | 'conversation.input.right'
+    | 'conversation.hero.runtime'
     | 'conversation.hero.workspace'
     | 'conversation.hero.agentPreset'
   >

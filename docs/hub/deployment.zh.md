@@ -63,7 +63,7 @@ docker compose up -d hub
 从同一个 Release 下载 Node Agent、Connector 和校验和清单，并在安装前验证两个制品。以下示例不会把机密放入命令参数；请在隐藏提示中输入两个值。
 
 ```sh
-VERSION=0.1.0-rc.5
+VERSION=0.1.0-rc.7
 RELEASE="https://github.com/k1412/dsh-hub/releases/download/hub-v${VERSION}"
 curl --fail --location --remote-name "${RELEASE}/SHA256SUMS"
 curl --fail --location --remote-name "${RELEASE}/k1412-dsh-hub-node-agent-${VERSION}.tgz"

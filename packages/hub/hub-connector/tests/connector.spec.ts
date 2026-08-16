@@ -251,7 +251,12 @@ describe('Hub Connector coexistence', () => {
     })
     servers.push(server)
     await server.listen()
-    const connector = new HubConnector(api, testGateway(), {
+    const gateway = testGateway()
+    const gatewayDispatch = vi.spyOn(gateway, 'dispatch').mockResolvedValue({
+      ok: true,
+      value: { manifests: ['dynamic-cordis-runner'] },
+    } as never)
+    const connector = new HubConnector(api, gateway, {
       ipcEndpoint: endpoint,
       secretFile,
       runtimeId: 'default',
@@ -293,6 +298,46 @@ describe('Hub Connector coexistence', () => {
     expect(webBody).toMatchObject({
       rpcId: 'web-rpc-0001',
       result: { ok: true, value: { version: '0.1.0-rc.5', cwd: root } },
+    })
+
+    await server.send('default', {
+      type: 'capability.invoke',
+      commandId: 'command-web-remote-0001',
+      runtimeId: 'default',
+      capability: 'dsh.web',
+      capabilityVersion: '1.0.0',
+      operation: 'fetch',
+      idempotencyKey: 'web-remote-mutation-0001',
+      payload: {
+        clientMutationId: 'web-remote-0001',
+        method: 'POST',
+        path: '/api/dynamicCordisRunner/inventory',
+        headers: [['content-type', 'application/json']],
+        body: JSON.stringify({
+          type: 'client-request',
+          rpcId: 'web-remote-rpc-0001',
+          method: 'dynamicCordisRunner/inventory',
+          payload: { refresh: true },
+        }),
+      },
+    })
+    await vi.waitFor(() => { expect(bodies).toContainEqual(expect.objectContaining({
+      type: 'capability.result', commandId: 'command-web-remote-0001', status: 'ok',
+    })) })
+    const remoteResult = bodies.find(body => body.type === 'capability.result'
+      && body.commandId === 'command-web-remote-0001')
+    if (remoteResult?.type !== 'capability.result' || remoteResult.status !== 'ok'
+      || typeof remoteResult.value !== 'object' || remoteResult.value === null) {
+      throw new Error('official Web Remote result missing')
+    }
+    expect(gatewayDispatch).toHaveBeenCalledWith(
+      'dynamicCordisRunner/inventory',
+      { refresh: true },
+      expect.any(AbortSignal),
+    )
+    expect(JSON.parse(String((remoteResult.value as { body?: unknown }).body))).toMatchObject({
+      rpcId: 'web-remote-rpc-0001',
+      result: { ok: true, value: { manifests: ['dynamic-cordis-runner'] } },
     })
 
     await server.send('default', {

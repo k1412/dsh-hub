@@ -14,6 +14,7 @@ import { HubStorage } from '@k1412/dsh-hub-storage'
 import { ReliablePeer, SqliteReliableJournal } from '@k1412/dsh-hub-transport'
 import type { HubAccessVerifier } from '../src/server.ts'
 import { HubServer } from '../src/server.ts'
+import { decodeFleetId } from '../src/fleet-web.ts'
 
 const roots: string[] = []
 const servers: HubServer[] = []
@@ -258,8 +259,8 @@ describe('Hub Agent WebSocket integration', () => {
     }
 
     const rootRedirect = await fetch(`http://127.0.0.1:${String(address.port)}/`, { redirect: 'manual' })
-    expect(rootRedirect.status).toBe(302)
-    expect(rootRedirect.headers.get('location')).toBe('/?nodeId=node-a&runtimeId=default-runtime')
+    expect(rootRedirect.status).toBe(404)
+    expect(rootRedirect.headers.get('location')).toBeNull()
 
     const officialRequest = fetch(
       `http://127.0.0.1:${String(address.port)}/api/host.describe?nodeId=node-a&runtimeId=default-runtime`,
@@ -310,7 +311,20 @@ describe('Hub Agent WebSocket integration', () => {
       payload: officialFrame,
     })
     await flushNode()
-    await expect(nextOfficial()).resolves.toEqual(officialFrame)
+    const browserFrame = await nextOfficial() as typeof officialFrame
+    expect(browserFrame).toMatchObject({
+      type: 'server-request',
+      rpcId: 'stream-rpc-1',
+      method: 'session/event',
+      payload: { type: 'session/event' },
+    })
+    const browserSessionId = browserFrame.payload.payload.sessionId
+    expect(decodeFleetId(browserSessionId)).toEqual({
+      kind: 'session',
+      nodeId: 'node-a',
+      runtimeId: 'default-runtime',
+      sourceId: 'session-project-one',
+    })
     officialSocket.close()
 
     // A command can be enqueued while an earlier socket send is still in

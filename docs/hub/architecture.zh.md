@@ -38,7 +38,9 @@ Connector 通过 DSH Host Gateway 实现会话、设置和 Runtime 健康状态�
 
 ## 浏览器传输
 
-Hub Web 应用直接构建官方 DSH Web 前端，并只增加固定编译进制品的 Hub 设置插件。浏览器 URL 中的节点和 Runtime 选择会路由官方 `/api/*` 请求与事件 WebSocket；Hub 将其转换为 `dsh.web` 能力并通过 Connector 调用同一 Runtime 的 Host API，而不是代理节点上的 Web Server。
+Hub Web 应用直接构建官方 DSH Web 前端，并只增加固定编译进制品且经过审查的 Hub 客户端插件。日常项目与会话页面是 Fleet 视图：Hub 会向每个在线且声明 `dsh.web` 的 Runtime 请求 `session.list`、`session.search` 与 `workspace.list`，然后合并结果。浏览器看到的会话和 Workspace ID 内含不透明的节点／Runtime 地址；后续历史、消息、重命名、归档或 Workspace 操作会自动回到所有者，无需手工切换节点。Host 与 Session WebSocket 同时复用全部在线 Runtime；对于官方协议中的 Workspace 顺序和已归档会话完整快照，Hub 会先合并再推送，避免一个节点覆盖整个 Fleet 状态。
+
+Hub 客户端会占用 Workspace picker 前面的可选官方 `conversation.hero.runtime` seat。它只列出在线且声明 `dsh.web.fetch` 的 Runtime，恢复上次仍可用的选择，并在不重新挂载 Web 的情况下更新后续无所有者目录与 Workspace 操作使用的目标。切换 Runtime 会先清除当前空白会话选择，再选择另一个文件夹；选择已有 Fleet Workspace 时则会同步到其编码的所有者。设置页中的选择只保留为其他无所有者 Host 操作的兜底。两处选择都不会过滤 Fleet 项目／会话页面。Hub 将官方 HTTP 与事件流量转换为 `dsh.web` 能力，Connector 调用同一 Runtime 的 Host API，而不是代理节点上的 Web Server。
 
 Hub 设置使用同源 REST，控制面事件接口可用 SSE；官方可重建事件通道和 Host 通道使用同源 WebSocket。浏览器重连后会重新加载节点权威基线。专用同源 WebSocket 承载交互式应急终端输入和输出。
 

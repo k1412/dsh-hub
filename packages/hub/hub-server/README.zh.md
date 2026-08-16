@@ -8,7 +8,7 @@
 
 浏览器变更请求必须携带已配置的 HTTPS `Origin`、JSON Content-Type，并在存在 Fetch Metadata 时满足同源要求。Server 不发送任何 CORS 授权。安全响应头禁止 Frame、跨源 Opener 共享、MIME 嗅探、Referrer 泄漏、内联脚本、动态求值和响应缓存。Style Policy 允许经过审查的官方客户端 Bundle 生成内联 Style Attribute 和 `<style>` 元素；Script 仍只允许同源静态制品。Hub Boot Script 会在官方入口运行前选择 Zod 的非 JIT Parser，Loader 也只在 Composition 含有表达式节点时编译表达式求值器。
 
-Hub 静态目录是官方 DSH Web 的固定构建，并包含经过审查的 Hub 设置插件；节点不能上传前端代码。官方 `/api/*` 和事件 WebSocket 按浏览器选择的节点与 Runtime 路由。SSE 只实时传递控制面节点事件，不保留事件正文。SQLite 持久化命令意图和投递状态；已完成正文只保留到浏览器显式确认或有界定期清理，因此 Hub 不会成为对话或工作区副本。
+Hub 静态目录是官方 DSH Web 的固定构建，并包含经过审查的 Hub 设置插件；节点不能上传前端代码。Fleet 列表与搜索会汇总全部在线且支持 Web 的 Runtime；浏览器中的不透明身份会把后续官方 `/api/*` 调用自动送回所属 Runtime，事件 WebSocket 则复用全部 Runtime。所选默认 Runtime 只用于没有既有身份的操作。SSE 只实时传递控制面节点事件，不保留事件正文。SQLite 持久化命令意图和投递状态；已完成正文只保留到浏览器显式确认或有界定期清理，因此 Hub 不会成为对话或工作区副本。
 
 ## 模型体验
 

@@ -1,11 +1,13 @@
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { generateHubIdentity, HubNodeId, HubRuntimeId } from '@k1412/dsh-hub-protocol'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { webCapability } from '@k1412/dsh-hub-capabilities'
+import { generateHubIdentity, HubCommandId, HubNodeId, HubRuntimeId } from '@k1412/dsh-hub-protocol'
 import { HubStorage } from '@k1412/dsh-hub-storage'
 import type { HubAccessVerifier } from '../src/server.ts'
 import { HubOriginGuard } from '../src/auth.ts'
+import { decodeFleetId } from '../src/fleet-web.ts'
 import { HubServer } from '../src/server.ts'
 
 const roots: string[] = []
@@ -166,6 +168,220 @@ describe('Hub HTTP server', () => {
       running: false,
       stale: false,
     }] })
+  })
+
+  it('aggregates official sessions across Runtimes and routes a selected session back to its owner', async () => {
+    const { base, storage } = await fixture()
+    const targets = [
+      { nodeId: HubNodeId('desktop-node'), runtimeId: HubRuntimeId('web'), displayName: 'Desktop' },
+      { nodeId: HubNodeId('nas-node'), runtimeId: HubRuntimeId('web'), displayName: 'NAS' },
+    ]
+    for (const [index, target] of targets.entries()) {
+      const grant = storage.control.createEnrollment(target.nodeId, target.displayName, Date.now() + 60_000)
+      storage.control.consumeEnrollment(grant.code, `public-key-${String(index)}`, `service-${String(index)}`)
+      storage.control.upsertRuntime({
+        nodeId: target.nodeId,
+        runtimeId: target.runtimeId,
+        bootId: `runtime-boot-${String(index)}`,
+        dshVersion: '0.1.0-rc.5',
+        connectorVersion: '0.1.0-rc.5',
+        capabilities: [webCapability.descriptor] as never,
+        online: true,
+        lastSeenAt: Date.now(),
+      })
+    }
+
+    const server = servers.at(-1)
+    if (server === undefined) throw new Error('fixture server missing')
+    vi.spyOn(server.agents, 'isOnline').mockReturnValue(true)
+    const invocations: Array<{ nodeId: string; runtimeId: string; rpcMethod: string; payload: unknown }> = []
+    let sequence = 0
+    vi.spyOn(server.agents, 'invoke').mockImplementation(async (
+      nodeId, runtimeId, capability, capabilityVersion, operation, payload,
+    ) => {
+      sequence += 1
+      const request = payload as { body?: string }
+      const rpc = JSON.parse(request.body ?? '{}') as { rpcId?: string; method?: string; payload?: unknown }
+      invocations.push({ nodeId, runtimeId, rpcMethod: rpc.method ?? '', payload: rpc.payload })
+      const sourceSessionId = nodeId === 'desktop-node' ? 'desktop-session' : 'nas-session'
+      let value: unknown
+      if (rpc.method === 'session.list') {
+        value = { items: [{
+          sessionId: sourceSessionId,
+          cwd: nodeId === 'desktop-node' ? '/Users/wuyang/project' : '/mnt/user/project',
+          updatedAt: nodeId === 'desktop-node' ? 1_000 : 2_000,
+          running: false,
+          blank: false,
+        }] }
+      } else if (rpc.method === 'session.search') {
+        value = {
+          items: [
+            { sessionId: `${sourceSessionId}-match-one`, snippet: 'first match' },
+            { sessionId: `${sourceSessionId}-match-two`, snippet: 'second match' },
+          ],
+          hasMore: false,
+        }
+      } else if (rpc.method === 'workspace.list') {
+        value = {
+          items: [{
+            workspaceId: `${nodeId}-workspace`,
+            path: nodeId === 'desktop-node' ? '/Users/wuyang/project' : '/mnt/user/project',
+            title: 'Project',
+            sessionIds: [sourceSessionId],
+            updatedAt: new Date(1_000).toISOString(),
+          }],
+          archivedSessionIds: [`${nodeId}-archived`],
+        }
+      } else if (rpc.method === 'workspace.insertBefore') {
+        value = { workspaceIds: [`${nodeId}-workspace`] }
+      } else if (rpc.method === 'workspace.archiveSession') {
+        value = { archivedSessionIds: [`${nodeId}-archived`, sourceSessionId] }
+      } else {
+        value = { events: [], hasMore: false, sessionId: sourceSessionId }
+      }
+      const command = storage.control.createCommand({
+        commandId: HubCommandId(`fleet-command-${String(sequence).padStart(4, '0')}`),
+        nodeId,
+        runtimeId,
+        capability,
+        capabilityVersion,
+        operation,
+        idempotency: 'read',
+        payload: payload as never,
+        createdAt: Date.now(),
+      })
+      storage.control.transitionCommand(command.commandId, 'sent', undefined)
+      storage.control.transitionCommand(command.commandId, 'ok', {
+        status: 200,
+        headers: [['content-type', 'application/json; charset=utf-8']],
+        encoding: 'utf8',
+        body: JSON.stringify({
+          type: 'server-response',
+          rpcId: rpc.rpcId,
+          result: { ok: true, value },
+        }),
+      })
+      return storage.control.getCommand(command.commandId) as typeof command
+    })
+
+    const listResponse = await fetch(`${base}/api/session.list`, {
+      method: 'POST',
+      headers: requestHeaders('human', true),
+      body: JSON.stringify({
+        type: 'client-request', rpcId: 'fleet-list', method: 'session.list', payload: {},
+      }),
+    })
+    expect(listResponse.status).toBe(200)
+    const listBody = await listResponse.json() as {
+      result: { value: { items: Array<{ sessionId: string; updatedAt: number }> } }
+    }
+    expect(listBody.result.value.items).toHaveLength(2)
+    expect(listBody.result.value.items.map(item => item.updatedAt)).toEqual([2_000, 1_000])
+    expect(invocations.map(call => `${call.nodeId}/${call.runtimeId}`)).toEqual([
+      'desktop-node/web', 'nas-node/web',
+    ])
+
+    const searchResponse = await fetch(`${base}/api/session.search`, {
+      method: 'POST',
+      headers: requestHeaders('human', true),
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: 'fleet-search',
+        method: 'session.search',
+        payload: { query: 'match' },
+      }),
+    })
+    expect(searchResponse.status).toBe(200)
+    const searchBody = await searchResponse.json() as {
+      result: { value: { items: Array<{ sessionId: string }> } }
+    }
+    expect(searchBody.result.value.items.map(item => decodeFleetId(item.sessionId)?.nodeId)).toEqual([
+      'desktop-node', 'nas-node', 'desktop-node', 'nas-node',
+    ])
+
+    const nasSessionId = listBody.result.value.items[0]?.sessionId
+    if (nasSessionId === undefined) throw new Error('aggregated NAS session missing')
+    expect(decodeFleetId(nasSessionId)).toEqual({
+      kind: 'session', nodeId: 'nas-node', runtimeId: 'web', sourceId: 'nas-session',
+    })
+    invocations.length = 0
+    const historyResponse = await fetch(`${base}/api/session.history`, {
+      method: 'POST',
+      headers: requestHeaders('human', true),
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: 'fleet-history',
+        method: 'session.history',
+        payload: { sessionId: nasSessionId },
+      }),
+    })
+    expect(historyResponse.status).toBe(200)
+    expect(invocations).toEqual([{
+      nodeId: 'nas-node',
+      runtimeId: 'web',
+      rpcMethod: 'session.history',
+      payload: { sessionId: 'nas-session' },
+    }])
+
+    const workspaceResponse = await fetch(`${base}/api/workspace.list`, {
+      method: 'POST',
+      headers: requestHeaders('human', true),
+      body: JSON.stringify({
+        type: 'client-request', rpcId: 'fleet-workspaces', method: 'workspace.list', payload: {},
+      }),
+    })
+    expect(workspaceResponse.status).toBe(200)
+    const workspaceBody = await workspaceResponse.json() as {
+      result: { value: {
+        items: Array<{ workspaceId: string; title: string }>
+        archivedSessionIds: string[]
+      } }
+    }
+    expect(workspaceBody.result.value.items.map(item => item.title)).toEqual([
+      'Desktop · Project', 'NAS · Project',
+    ])
+    expect(workspaceBody.result.value.archivedSessionIds.map(id => decodeFleetId(id)?.sourceId)).toEqual([
+      'desktop-node-archived', 'nas-node-archived',
+    ])
+
+    const nasWorkspaceId = workspaceBody.result.value.items.find(item =>
+      decodeFleetId(item.workspaceId)?.nodeId === 'nas-node')?.workspaceId
+    if (nasWorkspaceId === undefined) throw new Error('aggregated NAS workspace missing')
+    const reorderResponse = await fetch(`${base}/api/workspace.insertBefore`, {
+      method: 'POST',
+      headers: requestHeaders('human', true),
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: 'fleet-workspace-order',
+        method: 'workspace.insertBefore',
+        payload: { workspaceId: nasWorkspaceId },
+      }),
+    })
+    expect(reorderResponse.status).toBe(200)
+    const reorderBody = await reorderResponse.json() as {
+      result: { value: { workspaceIds: string[] } }
+    }
+    expect(reorderBody.result.value.workspaceIds.map(id => decodeFleetId(id)?.sourceId)).toEqual([
+      'desktop-node-workspace', 'nas-node-workspace',
+    ])
+
+    const archiveResponse = await fetch(`${base}/api/workspace.archiveSession`, {
+      method: 'POST',
+      headers: requestHeaders('human', true),
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: 'fleet-archive',
+        method: 'workspace.archiveSession',
+        payload: { sessionId: nasSessionId },
+      }),
+    })
+    expect(archiveResponse.status).toBe(200)
+    const archiveBody = await archiveResponse.json() as {
+      result: { value: { archivedSessionIds: string[] } }
+    }
+    expect(archiveBody.result.value.archivedSessionIds.map(id => decodeFleetId(id)?.sourceId)).toEqual([
+      'desktop-node-archived', 'nas-node-archived', 'nas-session',
+    ])
   })
 
   it('returns audit history and redacts a completed command after explicit acknowledgement', async () => {

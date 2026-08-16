@@ -9,7 +9,10 @@ import { join, resolve } from 'node:path'
 
 const repositoryRoot = resolve(import.meta.dirname, '..')
 const releaseDirectory = resolve(process.argv[2] ?? join(repositoryRoot, 'dist', 'hub-release'))
-const version = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8')).version
+const version = JSON.parse(await readFile(
+  join(repositoryRoot, 'packages', 'hub', 'hub-connector', 'package.json'),
+  'utf8',
+)).version
 const connectorAsset = join(releaseDirectory, `k1412-dsh-hub-connector-${version}.tgz`)
 const agentAsset = join(releaseDirectory, `k1412-dsh-hub-node-agent-${version}.tgz`)
 const prefix = await mkdtemp(join(tmpdir(), 'dsh-hub-packed-install-'))

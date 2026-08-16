@@ -243,6 +243,8 @@ describe('conversation slot inject API', () => {
   it('routes workspace switching through the runtime owner, carrying the draft', async () => {
     const b = await bench()
     const resident = b.residentApi(ROOT)
+    resident.clearSession()
+    expect(b.runtime.sessions.calls).toContainEqual({ method: 'clear', args: [] })
     // Same-session connect (the picked workspace resolves to this session):
     // no draft movement, plain re-open.
     b.runtime.workspaces.stub('connectWorkspace', () => Promise.resolve(ROOT))

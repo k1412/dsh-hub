@@ -14,7 +14,7 @@ import type { HubNodeAgentState } from './state.ts'
 import { HubNodeSupervisor } from './supervisor.ts'
 
 /** Public Node Agent package version sent during enrollment. */
-export const HUB_NODE_AGENT_VERSION = '0.1.0-rc.5'
+export const HUB_NODE_AGENT_VERSION = '0.1.0-rc.7'
 
 /** Sanitized lifecycle notice for service logs. */
 export interface HubNodeAgentNotice {

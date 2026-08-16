@@ -14,7 +14,7 @@ export type ConversationRootProps = ConversationSlotProps
 
 export function ConversationRoot({
   sessionId, useSession, useSessions, useWorkspaces, useInput, useComposerBlock,
-  renderSlot, renderSlotChain, selectWorkspace, t,
+  clearSession, renderSlot, renderSlotChain, selectWorkspace, t,
 }: ConversationRootProps) {
   const openState = useSession(s => s.openState)
   const composerPhase = useSession(s => s.composerPhase)
@@ -99,6 +99,14 @@ export function ConversationRoot({
 
   const heroWorkspaceRow = (
     <div className={css.heroWorkspaceRow}>
+      {renderSlot('conversation.hero.runtime', {
+        selectedWorkspaceId: pendingWorkspaceId ?? sessionWorkspace?.workspaceId,
+        onTargetChange: () => {
+          setPickerOpen(false)
+          setPendingWorkspaceId(undefined)
+          clearSession()
+        },
+      })}
       <WorkspaceChip
         buttonRef={pickerAnchor}
         label={chipTitle}
