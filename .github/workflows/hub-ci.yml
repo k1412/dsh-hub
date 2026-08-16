@@ -122,7 +122,7 @@ jobs:
       - name: Prepare bubblewrap for DSH subprocess sandboxes
         run: bash scripts/prepare-ci-bubblewrap.sh
       - name: Build Hub Web under the official client roster
-        run: pnpm run hub:web:build:contracts-ready
+        run: pnpm run hub:web:build
       - name: Verify Hub Web under the production CSP
         run: pnpm run hub:web:csp:verify
       - name: Run official GUI unit and component tests
