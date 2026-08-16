@@ -1,0 +1,6 @@
+# Security-sensitive Hub control-plane paths require review by the project owner.
+/packages/hub/ @k1412
+/apps/hub-web/ @k1412
+/deploy/hub/ @k1412
+/docs/hub/ @k1412
+/.github/workflows/hub-*.yml @k1412

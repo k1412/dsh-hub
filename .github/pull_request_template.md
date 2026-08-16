@@ -1,13 +1,26 @@
-<!-- 写 Fixes #NN 表示解决并自动关闭；写 Related to #NN 仅关联。 -->
-<!-- 进入评审的非 Draft 人类 PR 至少引用一个同仓库 Issue。 -->
-<!-- 解决型 PR 与 Issue 同步 Priority；解决多个 Issue 时取最高值。 -->
+<!-- Use “Fixes #NN” for an issue this PR closes or “Related to #NN” for context. -->
 
-关联 Issue：
+## Summary / 变更摘要
 
-<details>
-<summary>变更与验证</summary>
+- <!-- Describe the operator-visible or architectural outcome. -->
 
-- 变更：
-- 验证：
+## Validation / 验证
 
-</details>
+- [ ] Relevant unit and integration tests pass.
+- [ ] Hub protocol, authentication, storage, or recovery changes include failure-path tests.
+- [ ] Local Web, desktop, and Hub coexistence remains covered when Connector behavior changes.
+- [ ] Docker and packed release assets are verified when deployment code changes.
+
+## Security and compatibility / 安全与兼容性
+
+- [ ] No credentials, private deployment identifiers, hostnames, addresses, or personal data are committed.
+- [ ] New dependencies and executable artifacts are justified and pinned by the lockfile or immutable digest.
+- [ ] Wire, durable-state, browser API, and capability schema changes are explicitly versioned.
+- [ ] The Hub remains a full-authority control plane, not a DSH runtime or node-confirmation layer.
+
+## Documentation / 文档
+
+- [ ] English and Chinese documents are updated together and their pairing records are refreshed.
+- [ ] A current implemented Agent Note records every non-trivial product, architecture, test, or process decision.
+
+Issue: <!-- Fixes #NN or Related to #NN -->

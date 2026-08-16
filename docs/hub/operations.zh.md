@@ -1,0 +1,69 @@
+# 运维 DSH Hub
+
+[English](operations.md) | 中文
+
+本指南介绍 Hub 和至少一个节点安装完成后的日常生命周期操作。
+
+## 注册节点
+
+以操作员身份认证后创建短期注册授权，签发不同的 Cloudflare Access Service Token，并在目标节点运行 `dsh-hub-node init`。无人值守场景可使用[部署指南](deployment.md)中的离线 `create-enrollment` 命令，但必须先停止 Hub，避免两个进程并发写入状态 Volume。只有 Hub 已记录节点公钥和 Service Token 身份，且一次性代码已从仅所有者可读的 Node Agent 配置中消失，注册才算完成。
+
+在机群视图中验证节点、Runtime、DSH 版本、Connector 版本和声明能力。启用插件、文件、快照或终端工作流前，先测试读取操作。
+
+## 吊销节点
+
+在 Hub 中吊销节点，并删除或禁用其 Cloudflare Access Service Token。Hub 会隔离活动连接并拒绝后续代际。只有在确认调查不再需要该身份和排队结果后，才停止 Node Agent 并删除其私有状态。
+
+吊销不会删除节点上的会话或工作区数据，也不会删除 Hub 审计历史。除非有意复用与 Hub 记录匹配的已保留仅所有者可读状态，否则重新注册同一台机器会创建新的节点身份。
+
+## 备份 Hub
+
+生产镜像可以在不停止 Hub 的情况下创建在线 SQLite 备份，并复制不可变显式对象。目标必须是挂载备份 Volume 中的新目录。
+
+```sh
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+docker compose run --rm hub node /app/hub-server.mjs backup \
+  --destination "/backup/${STAMP}"
+docker compose run --rm hub node /app/hub-server.mjs verify-backup \
+  --source "/backup/${STAMP}"
+```
+
+将验证通过的目录复制到独立故障域，进行加密，并保留多个世代。有效备份包含 `hub.db`、`objects/` 和 `manifest.json`；验证过程会检查 Manifest 中的每个文件哈希、数据库记录的每个对象以及审计链。在备份旁记录容器镜像 Digest 和 Release 版本。Manifest 是完整性记录，不是外部签名，因此必须与备份一起保护。
+
+## 恢复 Hub
+
+停止 Hub，保留损坏 Volume，创建新状态 Volume，并恢复 `hub.db` 与 `objects/`，将所有权设为 `10001:10001`，且禁止 Group 或 World Access。先使用备份记录的精确镜像 Digest 启动，再考虑应用升级。
+
+把文件复制到新 Volume 前先运行 `verify-backup`。首次启动应使用隔离的反向代理路由；Hub 会在监听前验证审计链。确认节点记录存在，并确保恢复实例不能与生产 Hub 竞争同一批节点。原 Hub 永久停止后才能提升该路由。
+
+## 升级 Hub
+
+创建并导出新备份，阅读 Release Notes，固定新的不可变镜像 Digest，拉取镜像并重新创建容器。验证健康状态、人员登录、节点重连、会话基线加载、一次读取命令、SSE 刷新以及一次终端打开和关闭。
+
+Hub 在启动时只执行已知的单步数据库迁移。Schema v1 到 v2 的迁移会保留所有会话索引行，并增加可空的项目工作目录字段；节点重新发送基线后填入字段。迁移后的数据库不能由只支持 v1 的旧镜像打开。需要回滚镜像时，应停止 Hub，并恢复升级前使用该旧镜像创建和验证过的完整备份；不得让旧镜像直接写入已迁移 Volume。
+
+Hub 协议采用精确协商。新的 Hub 不再接受节点的协议或能力版本时，应升级节点。Hub Release 不得静默重新解释旧能力描述符。
+
+## 升级节点
+
+先升级 Node Agent 包，重启其服务并验证重连。通过 `dsh plugin --profile <name> add <release-asset> --save-exact` 升级每个 DSH Profile 中的 Connector，然后重启对应 DSH 进程并验证其 Runtime Boot ID 已变化。
+
+Node Agent 离线时，本地客户端仍可继续工作。Connector 重启期间，对应 Runtime 在 Hub 中显示离线，排队操作仍受各自幂等类别约束。
+
+## 管理插件
+
+读取插件清单并获取当前锁哈希。批准精确包版本和 SHA-256 Tarball 哈希，然后应用到 Canary 节点。确认清单健康和 DSH Runtime 健康后，再继续其他节点或批次。
+
+健康检查失败时，回滚到保留的目标锁。回滚会恢复已记录的依赖与 Cordis 文件，并使用冻结锁执行 DSH Profile Package Manager 安装。如果锁不匹配，操作会停止；只有清单证明精确请求制品已经存在时才会继续。
+
+## 管理快照
+
+配置快照用于 Cordis 组合，依赖快照用于包 Manifest 和锁，数据快照用于显式配置目录，机群快照用于组合经过过滤的 Profile 状态。每个创建请求都携带稳定的 Mutation ID，因此重连是安全的。
+
+恢复会检查快照制品哈希和已配置根目录。如果调用方必须拒绝并发变化，应提供预期当前哈希。快照恢复会先验检查每个目标、暂存替换文件，并在后续失败时回滚已经提交的替换。它只写入已包含文件，不会删除根目录中的无关文件。
+
+## 调查交付故障
+
+依次检查 Cloudflare Access Policy 和 Service Token 状态、公共 DNS 与 TLS、代理到 Origin 的私有路径、代理 WebSocket 转发、Node Agent 日志和 Hub 审计记录。收集诊断信息时不得打印 Service Token Secret、注册代码、私钥或 Connector Secret。
+
+序列缺口会请求 Runtime 重新同步。`outcome-unknown` 命令要求在再次变更前检查节点权威状态。不得只依据 Hub 命令记录把它改为成功或直接重试。

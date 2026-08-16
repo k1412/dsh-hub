@@ -1,0 +1,13 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "lib/types" },
+  "include": ["src"],
+  "references": [
+    { "path": "../../util/atomic-write" },
+    { "path": "../hub-capabilities" },
+    { "path": "../hub-protocol" },
+    { "path": "../hub-storage" },
+    { "path": "../hub-transport" },
+    { "path": "../../runtime-diagnostics/invariants" }
+  ]
+}

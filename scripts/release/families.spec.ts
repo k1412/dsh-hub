@@ -30,6 +30,14 @@ describe('release families', () => {
     expect(vendor.tagFor({ ...cordis, version: '4.0.0-rc.7' })).toBe('vendor-cordis-v4.0.0-rc.7')
   })
 
+  it('keeps Hub artifacts in their independent release sequence', () => {
+    const dsh = releaseFamily('dsh')
+
+    expect(dsh.members(process.cwd()).every(entry => entry.name.startsWith('@deepseek-ai/'))).toBe(true)
+    expect(dsh.members(process.cwd()).some(entry => entry.directory.startsWith('packages/hub/'))).toBe(false)
+    expect(dsh.members(process.cwd()).some(entry => entry.directory === 'apps/hub-web')).toBe(false)
+  })
+
   it('rejects a family whose members disagree on the shared version', () => {
     const dsh = releaseFamily('dsh')
     const members = [member('apps/cli', '@deepseek-ai/dsh'), { ...member('apps/web', '@deepseek-ai/dsh-web-frontend'), version: '0.0.2' }]

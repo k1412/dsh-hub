@@ -2,22 +2,56 @@
 
 English | [中文](CONTRIBUTING.zh.md)
 
-Thank you for your interest in contributing to DeepSeek Harness!
+DSH Hub accepts focused issues and pull requests. The repository is a fork of DeepSeek Harness: Hub code is maintained here, while a change intended for upstream DSH should be isolated from Hub-specific work and proposed to the upstream project under its contribution policy.
 
-We deeply believe in the power of open source communities, and that belief has shaped this project from the very beginning.
+## Product invariants
 
-DeepSeek Harness is still at an early stage and under active development. We are sorry that we cannot accept external pull requests at the moment. However, contributing code to this repository is far from the only way to help. There are many other ways to get involved:
+Contributions must preserve these boundaries:
 
-- Identify and report issues or bugs in GitHub Discussions:
-  - Upvote discussions that you would like to bring to the team's attention. We are a very small team and may not be able to reply to every post, but we monitor them and consider them when allocating resources.
-- Contribute to the ecosystem:
-  - Create a plugin that excites you and share it with others:
-    - Associate your GitHub project with the `dsh-plugin` topic to help others discover your plugin.
-  - Write blog posts and how-to guides about DeepSeek Harness.
-  - Answer questions and help other members of the community.
+- Hub is a single-user, full-authority control plane. Enrolled nodes do not add a second interactive approval layer.
+- Hub is not a DSH runtime and has no local execution mode or Hub-side DSH plugin host.
+- Nodes connect outbound; Connector does not expose or proxy the DSH Web listener.
+- Connector, local Web, and desktop clients share the existing DSH runtime and session owner.
+- Node data remains authoritative; Hub stores control state and explicit artifacts, not a transparent content mirror.
+- A node never supplies executable JavaScript to the authenticated Hub browser origin.
 
-DeepSeek Harness is designed to be deeply customizable. We do not believe that packages in the official repository are inherently more important than packages created by the community. You may consider this repository an idea, an official showcase, and a source of inspiration, but not a mandate from us.
+A product that intentionally changes the full-authority contract, adds node confirmation, or runs DSH inside Hub should be maintained as a separate fork rather than submitted as a behavior change here.
 
-We have already seen exciting projects emerge from the community, and we hope to see the ecosystem continue to grow in its own directions.
+## Before opening a pull request
 
-Into the unknown.
+Open or reference an issue for a behavioral change. Create a topic branch from current `master`, keep unrelated upstream and Hub changes in separate commits or pull requests, and do not rewrite generated or vendored material without following its owning workflow.
+
+Never commit credentials, enrollment codes, Access tokens, private keys, personal identifiers, or deployment-specific hostnames and addresses. Use generic examples in public documentation and `.env.example`; keep live configuration in the deployment secret store.
+
+Every non-trivial change adds or updates an [Agent Note](.agents/notes/README.md). English and Chinese documents change together, retain identical structure and link targets, and refresh their `.i18n.yaml` record.
+
+## Validation
+
+Run the narrowest package tests while developing, then run the Hub gates before requesting review:
+
+```sh
+pnpm install --frozen-lockfile
+pnpm run hub:typecheck
+pnpm run hub:lint
+pnpm run hub:test
+pnpm run hub:web:build
+pnpm run hub:release:pack
+pnpm run hub:release:verify
+pnpm run verify-translation-pairing
+pnpm run verify-agent-note-format
+pnpm run verify-md-links
+pnpm run verify-mermaid
+pnpm run docs:check
+```
+
+Protocol, authentication, storage, plugin transaction, snapshot, terminal, or recovery changes require tests for malformed input and failure behavior in addition to the successful path. Connector changes require a real Cordis Loader composition test and must preserve local Web and desktop coexistence. Deployment changes require a Linux AMD64 container build and an origin-isolation smoke test.
+
+## Pull request and review
+
+Complete the pull request template with the issue, user-visible outcome, validation evidence, security impact, compatibility impact, and documentation changes. Keep the diff reviewable, preserve repository formatting and package boundaries, and respond to review with new commits until approval.
+
+The `Hub CI` checks must pass on Linux and macOS, Windows type-check, documentation, and Linux AMD64 container jobs. CODEOWNERS review is required for Hub protocol, authentication, node authority, deployment, and release workflow paths. Merge by squash after approval so `master` retains one reviewed change per pull request.
+
+## Releases
+
+Hub releases use tags of the form `hub-v<package-version>`. The release workflow verifies tests and packed installation, publishes checksum-protected Node Agent and Connector assets, and publishes a provenance-bearing Linux AMD64 image. Release tags are created only from reviewed `master` commits.

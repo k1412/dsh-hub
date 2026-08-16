@@ -1,0 +1,15 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "lib/types" },
+  "include": ["src"],
+  "references": [
+    { "path": "../../../vendor/cordis" },
+    { "path": "../../../vendor/schemastery" },
+    { "path": "../../host/apiproxy" },
+    { "path": "../../core/session" },
+    { "path": "../hub-capabilities" },
+    { "path": "../hub-node-ipc" },
+    { "path": "../hub-protocol" },
+    { "path": "../../runtime-diagnostics/invariants" }
+  ]
+}

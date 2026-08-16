@@ -140,6 +140,23 @@ const homeAndGuide = pairedPages([
   },
 ])
 
+const hubGuide = pairedPages(([
+  ['index.md', 'DSH Hub', 'DSH Hub'],
+  ['deployment.md', '部署', 'Deployment'],
+  ['node-services.md', '节点服务', 'Node services'],
+  ['operations.md', '运维', 'Operations'],
+  ['architecture.md', '架构', 'Architecture'],
+  ['security.md', '安全', 'Security'],
+] as const).map(([file, rootLabel, enLabel], order): PairedPage => ({
+  source: `docs/hub/${file}`,
+  route: file === 'index.md' ? 'guide/hub/index.md' : `guide/hub/${file}`,
+  label: { root: rootLabel, en: enLabel },
+  sidebar: { root: 'zh-guide', en: 'en-guide' },
+  section: { root: 'DSH Hub', en: 'DSH Hub' },
+  order,
+  ...(file === 'index.md' ? { sourceAliases: ['docs/hub'] } : {}),
+})))
+
 const develop = pairedPages([
   {
     source: 'docs/user/develop/basic/index.md',
@@ -427,7 +444,7 @@ export interface DocsSection {
  */
 const sections: Record<DocsLocale, readonly DocsSection[]> = {
   root: [
-    { label: '入门' }, { label: 'SDK' },
+    { label: '入门' }, { label: 'SDK' }, { label: 'DSH Hub' },
     { label: '基础' }, { label: '框架能力' }, { label: '实战' }, { label: 'Cordis 框架教程' },
     { label: '概念' }, { label: '生成参考' }, { label: 'Cordis API' }, { label: '开发手册' },
     { label: '总览' },
@@ -439,7 +456,7 @@ const sections: Record<DocsLocale, readonly DocsSection[]> = {
     { label: '平台与接入', collapsed: true },
   ],
   en: [
-    { label: 'Guide' }, { label: 'SDK' },
+    { label: 'Guide' }, { label: 'SDK' }, { label: 'DSH Hub' },
     { label: 'Basics' }, { label: 'Framework' }, { label: 'Practice' }, { label: 'Cordis framework tutorial' },
     { label: 'Concepts' }, { label: 'Generated reference' }, { label: 'Cordis Core API' }, { label: 'Cookbook' },
     { label: 'Overview' },
@@ -472,6 +489,7 @@ export function sectionSpec(locale: DocsLocale, label: string): DocsSection & { 
 /** Every canonical page published by the documentation website. */
 export const docsPages: DocsPage[] = [
   ...homeAndGuide,
+  ...hubGuide,
   ...develop,
   ...cordisTutorial,
   ...cordisPrimerReference,

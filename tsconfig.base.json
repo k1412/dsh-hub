@@ -140,6 +140,7 @@
         "./packages/util/*/src/invariant.ts",
         "./packages/mcp/*/src/invariant.ts",
         "./packages/identity/*/src/invariant.ts",
+        "./packages/hub/*/src/invariant.ts",
         "./packages/test-support/*/src/invariant.ts"
       ],
       // host/client package names prefix the group dir (dsh-client-<dir>), so
@@ -225,6 +226,15 @@
       "@deepseek-ai/dsh-sdk-client": ["./packages/sdk/client/src"],
       "@deepseek-ai/dsh-sdk-protocol": ["./packages/sdk/protocol/src"],
       "@deepseek-ai/dsh-sdk-jsonrpc-server": ["./packages/sdk/server/src"],
+      "@k1412/dsh-hub-capabilities": ["./packages/hub/hub-capabilities/src/index.ts"],
+      "@k1412/dsh-hub-connector": ["./packages/hub/hub-connector/src/index.ts"],
+      "@k1412/dsh-hub-node-agent": ["./packages/hub/hub-node-agent/src/index.ts"],
+      "@k1412/dsh-hub-node-ipc": ["./packages/hub/hub-node-ipc/src/index.ts"],
+      "@k1412/dsh-hub-protocol": ["./packages/hub/hub-protocol/src/index.ts"],
+      "@k1412/dsh-hub-server": ["./packages/hub/hub-server/src/index.ts"],
+      "@k1412/dsh-hub-storage": ["./packages/hub/hub-storage/src/index.ts"],
+      "@k1412/dsh-hub-transport": ["./packages/hub/hub-transport/src/index.ts"],
+      "@k1412/dsh-hub-*/invariant": ["./packages/hub/*/src/invariant.ts"],
       "@deepseek-ai/dsh-*": [
         "./packages/core/*/src",
         "./packages/prompt/*/src",
@@ -270,6 +280,7 @@
         "./packages/util/*/src",
         "./packages/mcp/*/src",
         "./packages/identity/*/src",
+        "./packages/hub/*/src",
         "./packages/test-support/*/src",
         "./packages/host/*/src",
         "./packages/client/*/src"

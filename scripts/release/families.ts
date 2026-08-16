@@ -73,6 +73,9 @@ export abstract class ReleaseFamily {
   /** Glob patterns, relative to the repository root, that select this family's manifests. */
   abstract readonly patterns: readonly string[]
 
+  /** Directory prefixes selected by a broad glob but owned by a separate release sequence. */
+  readonly excludedDirectoryPrefixes: readonly string[] = []
+
   /** Git tag prefix this family publishes from. */
   abstract readonly tagPrefix: string
 
@@ -82,13 +85,16 @@ export abstract class ReleaseFamily {
    * @returns Members sorted by directory, with names validated and deduplicated.
    */
   members(root: string): ReleaseMember[] {
-    const manifestPaths = globSync([...this.patterns], { cwd: root }).sort()
+    const manifestPaths = globSync([...this.patterns], { cwd: root })
+      .map(path => path.replaceAll('\\', '/'))
+      .filter(path => !this.excludedDirectoryPrefixes.some(prefix => path.startsWith(prefix)))
+      .sort()
     if (manifestPaths.length === 0) throw new Error(`release family ${this.id} matched no manifests`)
 
     const members: ReleaseMember[] = []
     const seen = new Set<string>()
     for (const manifestPath of manifestPaths) {
-      const normalized = manifestPath.replaceAll('\\', '/')
+      const normalized = manifestPath
       const manifest = readManifest(resolve(root, manifestPath))
       const name = requireString(manifest, 'name', normalized)
       const version = requireString(manifest, 'version', normalized)
@@ -197,6 +203,7 @@ export abstract class ReleaseFamily {
 class DshFamily extends ReleaseFamily {
   readonly id = 'dsh'
   readonly patterns = ['packages/*/*/package.json', 'apps/*/package.json'] as const
+  override readonly excludedDirectoryPrefixes = ['packages/hub/', 'apps/hub-web/'] as const
   readonly tagPrefix = 'dsh-v'
 
   /**
