@@ -129,8 +129,7 @@ export async function buildHubWeb() {
     })
   }
   const graph = { rev: shortHash(JSON.stringify(entries)), entries }
-  const json = JSON.stringify(graph).replaceAll('<', '\\u003c')
-  await writeFile(join(outputRoot, 'boot.js'), `window.__DSH_BOOT__ = ${json};\n`)
+  await writeFile(join(outputRoot, 'boot.js'), renderBootScript(graph))
   const indexPath = join(outputRoot, 'index.html')
   const html = await readFile(indexPath, 'utf8')
   const bootScript = '<script src="/boot.js"></script>'
@@ -140,6 +139,17 @@ export async function buildHubWeb() {
   await cp(join(repositoryRoot, 'THIRD_PARTY_NOTICES.md'), join(outputRoot, 'THIRD_PARTY_NOTICES.md'))
   process.stdout.write(`Hub Web: official shell + ${String(entries.length)} client plugins (${graph.rev})\n`)
   return graph
+}
+
+/**
+ * Render startup state that must exist before the deferred Web entry executes.
+ * @param {unknown} graph - reviewed static client-plugin graph.
+ * @returns {string} classic startup script content.
+ */
+export function renderBootScript(graph) {
+  const json = JSON.stringify(graph).replaceAll('<', '\\u003c')
+  return 'globalThis.__zod_globalConfig = { ...globalThis.__zod_globalConfig, jitless: true };\n'
+    + `window.__DSH_BOOT__ = ${json};\n`
 }
 
 if (process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {

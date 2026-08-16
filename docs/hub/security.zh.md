@@ -44,7 +44,7 @@ Hub 设置能力返回脱敏值和 Secret Slot 状态。快照收集会排除环
 
 ## 浏览器内容安全
 
-Hub 提供一个固定 UI Build，并使用严格的 Content Security Policy、Frame Deny、无第三方脚本、禁止内联脚本执行和禁止运行时加载节点 UI 扩展。节点不能上传 JavaScript 并在 Hub Origin 中执行。
+Hub 提供一个固定 UI Build，并使用严格的 Content Security Policy、Frame Deny、无第三方脚本、禁止内联脚本执行、禁止动态求值和禁止运行时加载节点 UI 扩展。经过审查的官方 Bundle 会在运行时计算布局并注入组件 CSS，因此 Style Policy 允许内联 Style Attribute 和 `<style>` 元素；Bundle Font 可以使用 `data:` URL，而 Script Policy 仍只接受同源静态制品。Hub 会在官方入口运行前选择 Zod 的非 JIT Parser；Loader 仅在 Composition 实际求值表达式节点时才编译表达式求值器。经过审查的 Hub 静态清单不含此类节点，因此节点不能上传 JavaScript 并在 Hub Origin 中执行。
 
 会话事件和终端输出仍属于不受信任的显示数据。UI 以文本而不是 HTML 插入它们。新的富渲染器必须进入经过审查的 Hub Build，且不得求值事件 Payload。
 

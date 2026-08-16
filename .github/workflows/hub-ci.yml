@@ -121,6 +121,10 @@ jobs:
         run: pnpm --filter @deepseek-ai/dsh-web-frontend exec playwright install --with-deps chromium
       - name: Prepare bubblewrap for DSH subprocess sandboxes
         run: bash scripts/prepare-ci-bubblewrap.sh
+      - name: Build Hub Web under the official client roster
+        run: pnpm run hub:web:build
+      - name: Verify Hub Web under the production CSP
+        run: pnpm run hub:web:csp:verify
       - name: Run official GUI unit and component tests
         run: pnpm run test:gui
       - name: Run official Web replay tests

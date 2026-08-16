@@ -84,9 +84,12 @@ const MIME_TYPES: Readonly<Record<string, string>> = {
   '.woff2': 'font/woff2',
 }
 
+/** Browser policy shared with the production boot regression. */
+export const HUB_CONTENT_SECURITY_POLICY = "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; style-src-elem 'self' 'unsafe-inline'"
+
 function securityHeaders(response: ServerResponse): void {
   response.setHeader('Cache-Control', 'no-store')
-  response.setHeader('Content-Security-Policy', "default-src 'self'; base-uri 'none'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self'; style-src 'self'")
+  response.setHeader('Content-Security-Policy', HUB_CONTENT_SECURITY_POLICY)
   response.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
   response.setHeader('Cross-Origin-Resource-Policy', 'same-origin')
   response.setHeader('Permissions-Policy', 'camera=(), geolocation=(), microphone=(), payment=(), usb=()')
