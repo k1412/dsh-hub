@@ -78,6 +78,20 @@ jobs:
       - name: Lint Hub sources
         shell: pwsh
         run: pnpm run hub:lint
+      - name: Parse Windows node installer
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'deploy/node/install-node.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          ) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
       - name: Build Hub Web
         shell: pwsh
         run: pnpm run hub:web:build:contracts-ready

@@ -96,6 +96,31 @@
   }
 }
 
+@media (max-width: 560px) {
+  .root {
+    padding: 0 8px;
+  }
+
+  .headline {
+    grid-template-columns: 28px auto auto;
+    column-gap: 7px;
+    font-size: 20px;
+    line-height: 26px;
+  }
+
+  .fish {
+    width: 28px;
+    height: auto;
+  }
+
+  .previewBadge {
+    margin-left: -2px;
+    padding: 0 6px;
+    font-size: 10px;
+    line-height: 16px;
+  }
+}
+
 /* Workspace row sits 12px above the input card (figma y80 → y112). The blue
    glow lives with the owner (ConversationRoot .heroGlow) so it can center on
    the input card. */

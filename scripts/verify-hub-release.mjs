@@ -3,7 +3,7 @@
 /** Install packed Hub node assets into a clean prefix and verify their release shape. */
 
 import { spawnSync } from 'node:child_process'
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { access, mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -48,6 +48,23 @@ try {
     access(join(agentRoot, 'lib', 'bin.js')),
     access(join(prefix, 'node_modules', '.bin', process.platform === 'win32' ? 'dsh-hub-node.cmd' : 'dsh-hub-node')),
   ])
+  const [unixInstaller, windowsInstaller, unixMetadata] = await Promise.all([
+    readFile(join(releaseDirectory, 'install-node.sh'), 'utf8'),
+    readFile(join(releaseDirectory, 'install-node.ps1'), 'utf8'),
+    stat(join(releaseDirectory, 'install-node.sh')),
+  ])
+  if (unixInstaller.includes('@VERSION@') || windowsInstaller.includes('@VERSION@')
+    || !unixInstaller.includes(`DSH_HUB_RELEASE_VERSION='${version}'`)
+    || !windowsInstaller.includes(`$ReleaseVersion = '${version}'`)
+    || (unixMetadata.mode & 0o111) === 0) {
+    throw new Error('packed one-command installers are incomplete or unversioned')
+  }
+  const shellChecked = spawnSync('bash', ['-n', join(releaseDirectory, 'install-node.sh')], {
+    stdio: 'inherit',
+    shell: false,
+  })
+  if (shellChecked.error !== undefined) throw shellChecked.error
+  if (shellChecked.status !== 0) process.exit(shellChecked.status ?? 1)
   const checked = spawnSync(process.execPath, ['--check', join(agentRoot, 'lib', 'bin.js')], {
     stdio: 'inherit',
     shell: false,

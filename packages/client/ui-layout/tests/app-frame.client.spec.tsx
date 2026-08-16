@@ -11,7 +11,7 @@
  * resizes are driven through the ResizeObserver stub.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, render } from '@testing-library/react'
+import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { useSyncExternalStore } from 'react'
 import { AppFrame } from '@deepseek-ai/dsh-client-ui-layout/src/client/AppFrame.tsx'
 import type { AppFrameProps } from '@deepseek-ai/dsh-client-ui-layout/src/client/AppFrame.tsx'
@@ -303,6 +303,22 @@ describe('AppFrame — narrow-viewport auto-collapse', () => {
     expect(frame.querySelectorAll('[class*="handle"]')).toHaveLength(1)
     act(() => { instance.actions.toggleSidebar() })
     expect(tracks(frame)).toEqual([SIDEBAR_COLLAPSED, 0])
+  })
+
+  it('opens phone navigation as an overlay while retaining the compact grid track', () => {
+    frameWidth = 390
+    const { frame, instance, slotCalls } = mountFrame()
+    expect(tracks(frame)).toEqual([SIDEBAR_COLLAPSED, 0])
+
+    act(() => { instance.actions.toggleSidebar() })
+
+    expect(tracks(frame)).toEqual([SIDEBAR_COLLAPSED, 0])
+    expect(frame.hasAttribute('data-mobile-sidebar-open')).toBe(true)
+    expect(slotCalls.filter(c => c.key === 'sidebar').at(-1)!.props).toEqual({ collapsed: false, width: 280 })
+    expect(frame.querySelectorAll('[class*="handle"]')).toHaveLength(0)
+
+    fireEvent.click(frame.querySelector('[class*="mobileSidebarMask"]')!)
+    expect(frame.hasAttribute('data-mobile-sidebar-open')).toBe(false)
   })
 
   it('a wide-closed preference re-expands at the contract default while narrow', () => {

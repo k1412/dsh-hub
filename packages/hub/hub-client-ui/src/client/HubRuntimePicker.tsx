@@ -88,7 +88,7 @@ export function HubRuntimePicker({ selectedWorkspaceId, onTargetChange, t }: Hub
   const selectedRuntime = selected === undefined ? undefined : runtimesByKey.get(runtimeKey(selected))
   const selectedLabel = selectedRuntime === undefined
     ? placeholder
-    : `${names.get(selectedRuntime.nodeId) ?? selectedRuntime.nodeId} · ${selectedRuntime.runtimeId}`
+    : names.get(selectedRuntime.nodeId) ?? selectedRuntime.nodeId
   const items: MenuEntry[] = runtimes.map(runtime => ({
     id: runtimeKey(runtime),
     label: `${names.get(runtime.nodeId) ?? runtime.nodeId} · ${runtime.runtimeId}`,
@@ -114,7 +114,12 @@ export function HubRuntimePicker({ selectedWorkspaceId, onTargetChange, t }: Hub
           onClick={() => { setMenuOpen(open => !open) }}
         >
           <IconApiOutline14 className={css.icon} size={16} />
-          <span className={css.label}>{selectedLabel}</span>
+          <span className={css.label}>
+            {selectedLabel}
+            {selectedRuntime === undefined ? null : (
+              <span className={css.runtimeSuffix}> · {selectedRuntime.runtimeId}</span>
+            )}
+          </span>
           <IconChevronDownOutline14 className={css.chevron} size={12} />
         </button>
       )}

@@ -7,6 +7,7 @@ import {
   type EnrollmentGrant, type FleetSnapshot, type HubNode, type HubRuntime,
 } from './api.ts'
 import { AdvancedDiagnostics } from './AdvancedDiagnostics.tsx'
+import { nodeInstallCommand, type NodeInstallPlatform } from './install-command.ts'
 import { readRuntimeTarget, runtimeKey, supportsOfficialWeb } from './runtime-target.ts'
 import css from './HubSettings.module.css'
 
@@ -41,6 +42,8 @@ export function HubNodesSection(_props: HubNodesSectionProps): ReactNode {
   const [displayName, setDisplayName] = useState('')
   const [nodeId, setNodeId] = useState('')
   const [nodeIdEdited, setNodeIdEdited] = useState(false)
+  const [installPlatform, setInstallPlatform] = useState<NodeInstallPlatform>('unix')
+  const [copied, setCopied] = useState(false)
   const activeKey = currentRuntimeKey()
 
   const load = async (): Promise<void> => {
@@ -91,6 +94,14 @@ export function HubNodesSection(_props: HubNodesSectionProps): ReactNode {
       .finally(() => { setBusy(undefined) })
   }
 
+  const copyInstallCommand = (): void => {
+    if (grant === undefined) return
+    setError(undefined)
+    void navigator.clipboard.writeText(nodeInstallCommand(grant, globalThis.location.origin, installPlatform))
+      .then(() => { setCopied(true) })
+      .catch((reason: unknown) => { setError(messageOf(reason)) })
+  }
+
   const cancel = (pendingNodeId: string): void => {
     setBusy(`cancel:${pendingNodeId}`)
     setError(undefined)
@@ -133,19 +144,38 @@ export function HubNodesSection(_props: HubNodesSectionProps): ReactNode {
         </form>
         {grant === undefined ? null : (
           <div className={css.secretPanel} role="status">
-            <strong>一次性注册码</strong>
-            <p>请在 {new Date(grant.expiresAt).toLocaleTimeString()} 前复制到目标节点；关闭或刷新后不能再次查看。</p>
-            <code>{grant.code}</code>
-            <button className={css.secondaryButton} type="button" onClick={() => { void navigator.clipboard.writeText(grant.code) }}>复制注册码</button>
+            <strong>在目标电脑运行一个命令</strong>
+            <p>
+              命令内的注册码在 {new Date(grant.expiresAt).toLocaleTimeString()} 前有效。安装器会校验 Release、安装 DSH Connector
+              插件和 Node Agent 服务，并通过隐藏提示读取 Cloudflare Service Token。
+            </p>
+            <div className={css.platformTabs} role="tablist" aria-label="目标系统">
+              <button
+                className={installPlatform === 'unix' ? css.activeButton : css.secondaryButton}
+                role="tab"
+                aria-selected={installPlatform === 'unix'}
+                type="button"
+                onClick={() => { setInstallPlatform('unix'); setCopied(false) }}
+              >Linux / macOS</button>
+              <button
+                className={installPlatform === 'windows' ? css.activeButton : css.secondaryButton}
+                role="tab"
+                aria-selected={installPlatform === 'windows'}
+                type="button"
+                onClick={() => { setInstallPlatform('windows'); setCopied(false) }}
+              >Windows</button>
+            </div>
+            <pre className={css.installCommand}>
+              {nodeInstallCommand(grant, globalThis.location.origin, installPlatform)}
+            </pre>
+            <button className={css.primaryButton} type="button" onClick={copyInstallCommand}>{copied ? '已复制' : '复制一键安装命令'}</button>
             <details className={css.enrollmentHelp}>
-              <summary>接下来如何接入节点</summary>
-              <ol>
-                <li>为这台节点创建一个独立的 Cloudflare Access Service Token；不要与其他节点共用。</li>
-                <li>在节点安装发布包中的 <code>dsh-hub-node-agent</code>，准备 DSH Profile 的绝对路径。</li>
-                <li>在节点本机设置注册码与 Service Token Secret 环境变量，再运行下面的初始化命令。</li>
-                <li>按部署文档把 Node Agent 注册为系统服务；节点上线后，本页会显示它和对应 Runtime。</li>
-              </ol>
-              <pre>{`DSH_HUB_ENROLLMENT_CODE='<上方注册码>' \\\nDSH_HUB_ACCESS_CLIENT_SECRET='<节点 Service Token Secret>' \\\ndsh-hub-node init \\\n  --hub '${globalThis.location.origin}' \\\n  --node '${grant.nodeId}' \\\n  --access-client-id '<节点 Service Token Client ID>' \\\n  --profile-directory '<DSH Profile 绝对路径>' \\\n  --runtime-id 'default' \\\n  --install-connector '@k1412/dsh-hub-connector@0.1.0-rc.7'`}</pre>
+              <summary>为什么仍会询问 Cloudflare 凭据？</summary>
+              <p>
+                每个节点使用独立 Service Token，才能单独轮换或撤销。Connector 已是 DSH Bundle 插件；Node Agent 作为同账户
+                Sidecar 保持 WSS、身份和断线恢复，不会创建第二个 DSH Runtime。
+              </p>
+              <code className={css.rawCode}>{grant.code}</code>
             </details>
           </div>
         )}

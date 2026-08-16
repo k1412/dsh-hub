@@ -9,7 +9,7 @@ This tutorial installs one Hub with Docker Compose, places it behind Cloudflare 
 - A Linux Docker host with Docker Engine and Compose v2.
 - An HTTPS hostname routed through Cloudflare Access to a trusted reverse proxy.
 - A Cloudflare Access self-hosted application with one human policy and one Service Token policy.
-- Node.js 22.19 or later, `pnpm`, and DSH on every node. The target DSH composition must provide the transport-independent `@deepseek-ai/dsh-host-apiproxy` service; the standard Web profile already provides it. Install the platform C/C++ build toolchain and Python required by `node-pty` before installing the Node Agent.
+- Node.js 22.19 or later, `npm`, and DSH on every node. The target DSH composition must provide the transport-independent `@deepseek-ai/dsh-host-apiproxy` service; the standard Web profile already provides it. Install the platform C/C++ build toolchain and Python required by `node-pty` before installing the Node Agent.
 - A private route from the reverse proxy to the Hub origin, either loopback, a private network, or an authenticated overlay network.
 
 ## 1. Configure Cloudflare Access
@@ -45,7 +45,9 @@ Verify the public hostname in a private browser window. Cloudflare Access must a
 
 ## 4. Create a node enrollment
 
-Use the Hub UI or the authenticated REST endpoint to create a short-lived enrollment grant. Choose a stable node ID and a descriptive display name. The one-time enrollment code is returned once and is stored by Hub only as a hash. An unattended deployment may stop Hub and run the offline administration command through the same Compose project. Never let the offline command and Hub Server write the state volume concurrently:
+Open **Settings → Hub nodes**, enter a stable node ID and a descriptive display name, and create a short-lived enrollment grant. The one-time enrollment code is returned once and is stored by Hub only as a hash. The page immediately produces Linux/macOS and Windows one-command installers; select the target system and copy its command.
+
+An unattended deployment may instead stop Hub and run the offline administration command through the same Compose project. Never let the offline command and Hub Server write the state volume concurrently:
 
 ```bash
 docker compose stop hub
@@ -54,43 +56,23 @@ docker compose run --rm hub node /app/hub-server.mjs create-enrollment \
 docker compose up -d hub
 ```
 
-The output contains the one-time code. Write it directly to the target node's owner-only configuration; never place it in shell history, logs, tickets, or Git. Offline creation is recorded in the audit chain with the `local-admin` actor.
+The offline output contains the one-time code. Pass it directly to the target node; never place it in logs, tickets, or Git. The UI-generated one-command installer places this 15-minute, single-consumption code in shell history; remove that history entry according to the node's local policy after consumption. Offline creation is recorded in the audit chain with the `local-admin` actor.
 
 Create a separate Cloudflare Access Service Token for the node. Do not reuse a token across nodes: per-node tokens allow independent rotation and revocation, and the Hub permanently binds the Service Token identity to the enrolled Ed25519 node key.
 
-## 5. Install the node packages
+## 5. Run the one-command installer
 
-Download the Node Agent, Connector, and checksum manifest from the same release. Verify both artifacts before installation. The following example keeps secrets out of command arguments; enter both values at the hidden prompts.
+Paste and run the single command from the Hub UI on the target computer under the same operating-system account that runs DSH. The installer performs these steps:
 
-```sh
-VERSION=0.1.0-rc.7
-RELEASE="https://github.com/k1412/dsh-hub/releases/download/hub-v${VERSION}"
-curl --fail --location --remote-name "${RELEASE}/SHA256SUMS"
-curl --fail --location --remote-name "${RELEASE}/k1412-dsh-hub-node-agent-${VERSION}.tgz"
-curl --fail --location --remote-name "${RELEASE}/k1412-dsh-hub-connector-${VERSION}.tgz"
-if command -v sha256sum >/dev/null; then
-  sha256sum --check SHA256SUMS
-else
-  shasum -a 256 --check SHA256SUMS
-fi
-npm install --global "./k1412-dsh-hub-node-agent-${VERSION}.tgz"
-read -rsp "Access Client Secret: " DSH_HUB_ACCESS_CLIENT_SECRET; echo
-read -rsp "Enrollment Code: " DSH_HUB_ENROLLMENT_CODE; echo
-export DSH_HUB_ACCESS_CLIENT_SECRET DSH_HUB_ENROLLMENT_CODE
-dsh-hub-node init \
-  --hub https://hub.example.com \
-  --node workstation-1 \
-  --access-client-id replace-with-service-token-client-id \
-  --profile web \
-  --runtime-id default \
-  --profile-directory "${DSH_HOME:-$HOME/.dsh}/profiles/web" \
-  --install-connector "$(pwd)/k1412-dsh-hub-connector-${VERSION}.tgz"
-unset DSH_HUB_ACCESS_CLIENT_SECRET DSH_HUB_ENROLLMENT_CODE
-```
+1. Downloads the Node Agent, Connector, and `SHA256SUMS` from one immutable GitHub Release and verifies both artifacts before installation.
+2. Installs Node Agent under `~/.dsh-hub/runtime/<version>` without modifying the global npm directory or requesting root authority.
+3. Uses `dsh-hub-node init` to fetch and pin the Hub public key and create an Ed25519 node identity, Connector IPC secret, and owner-only configuration.
+4. Installs Connector into the existing `web` profile as a DSH bundle plugin; it contributes one Cordis row and does not alter the Web listener, frontend bundle, or session storage.
+5. Installs and starts a systemd user service on Linux, a LaunchAgent on macOS, or a current-user logon task on Windows.
 
-`init` fetches and pins the Hub public key through the Service Token, writes an owner-only Node Agent configuration, creates a persistent node identity and Connector IPC secret, and optionally installs the Connector into the selected DSH profile. The Connector bundle contributes one Cordis row, consumes the existing Host gateway, and does not alter the Web listener or frontend bundle.
+The installer prompts normally for the node's Cloudflare Access Client ID and reads the Client Secret through a hidden prompt. The long-lived Service Token secret is absent from the copied command, process arguments, and shell history. If DSH uses a profile other than `web`, append `--profile <name>` to the Linux/macOS command. Advanced installations or custom supervisors can use `--no-service` and follow the [node service guide](node-services.md).
 
-Run the Node Agent through the platform service manager under the same operating-system account as DSH. Use the printed configuration path as `dsh-hub-node --config <path>`. Configure automatic restart, a private home directory, and no privilege elevation. The [node service guide](node-services.md) provides Linux, macOS, and Windows examples.
+Connector is already the client-installed DSH plugin. Node Agent deliberately remains a same-account sidecar: it retains the one node identity, WSS reconnect state, and durable command journal while a DSH profile restarts or stops, and lets multiple profiles on one machine share one node connection. It neither starts a second DSH runtime nor opens an inbound port.
 
 ## 6. Restart the existing DSH profile
 

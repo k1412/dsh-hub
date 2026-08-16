@@ -16,6 +16,8 @@ DSH Hub is a single-user control plane, not a DSH runtime. It authenticates the 
 
 Each controlled machine installs two cooperating components. Hub Connector is a Cordis plugin loaded into an existing DSH composition that provides the transport-independent Host `ApiProxy` and Typert Gateway services; it uses them to expose the standard DSH HTTP and event protocols plus Hub capabilities. Node Agent is a separate process under the DSH-owning operating-system account; it owns node identity, durable WSS delivery, local IPC, plugin artifact activation, snapshots, size-bounded file operations, and PTY streams represented by audited commands.
 
+One released installer owns the end-user boundary for both components. The enrollment page renders one copyable Linux/macOS or Windows command containing only the short-lived, single-use Hub grant. The versioned installer downloads the exact Node Agent and Connector release assets, verifies their checksums, installs Connector through its `dsh.bundle` into the selected existing profile, and installs Node Agent under a current-user service manager. It reads the long-lived Cloudflare Service Token secret through a hidden prompt. The two-process implementation is therefore not a two-step product workflow.
+
 The Connector does not depend on the optional Web plugin or proxy a node-local Web listener. The standard Web profile already provides the Host services; other compositions provide them explicitly. When local Web, a desktop client, and Hub Connector are loaded against the same runtime, all three act on the same live session owner. Resource identity is `{nodeId, runtimeId, resourceId}`. Local presentation state remains local, while session messages, queue state, cancellations, approvals, and questions are authoritative in DSH and become visible through each surface's normal projection.
 
 ## Authority and isolation
@@ -52,6 +54,8 @@ Connector composition tests exercise one shared Host API and event gateway throu
 
 The Hub build test pins the complete official client roster, the browser directory-browse flow, and the Hub Settings contribution while excluding the native filesystem picker. A built-page Chromium check serves that roster with the production Content Security Policy and requires the Hub Settings bundle and application root to load without policy or page errors. The official GUI component inventory and keyless Chromium replay remain required, so session creation, project grouping, working-directory selection, streaming, scrolling, error recovery, and mobile behavior cannot regress behind a Hub-specific replacement. Fleet-routing tests cover multi-Runtime list and search aggregation, opaque identity round trips, owner-directed history and chat, folder-first Workspace labels with attached nodes, combined workspace-order and archive snapshots, malformed and cross-Runtime identity rejection, and multiplexed official events. Storage and server tests cover row-preserving schema migration, Connector baselines, WSS projection, and REST output.
 
+Release verification checks that both platform installers contain the tagged version, contain no unresolved template marker, and that the Unix installer is executable and passes shell parsing. The Windows CI job parses the PowerShell installer. Browser verification also runs at a 390 px viewport, opens navigation as an overlay without shrinking the conversation, closes it through the backdrop, and requires Settings to occupy the full viewport without horizontal overflow.
+
 ## Alternatives considered
 
 **Publish or reverse-proxy each node's local Web listener.** This multiplies public origins, couples the control plane to a browser transport, and prevents Hub from exposing a capability missing from the local Web API.
@@ -61,6 +65,8 @@ The Hub build test pins the complete official client roster, the browser directo
 **Run one complete DSH instance inside Hub.** This makes the control plane an execution host with a privileged special mode and does not solve access to sessions whose authoritative runtimes remain on other nodes.
 
 **Run a second headless DSH process beside the local UI.** Two runtime owners can diverge in memory even when they share a profile directory. Loading Connector into the existing composition preserves a single owner and makes local and remote clients cooperate.
+
+**Make the Connector plugin own node identity and the Hub WSS connection.** The connection would disappear whenever its profile stops or reloads, so it could not preserve acknowledgements and pending commands across DSH restarts. Multiple profiles would also contend for one machine identity or appear as unrelated nodes. A same-account Node Agent preserves one durable node boundary while the one-command installer keeps this split out of the normal setup workflow.
 
 **Mirror all node content into a central database or object store.** This introduces an unnecessary second source of truth, expands the credential and privacy boundary, and requires arbitrary cache retention and invalidation policies.
 

@@ -22,6 +22,7 @@ vi.mock('../src/client/api.ts', async original => ({
 import { HubNodesSection } from '../src/client/HubNodesSection.tsx'
 import { HubPluginsSection } from '../src/client/HubPluginsSection.tsx'
 import { HubRuntimePicker } from '../src/client/HubRuntimePicker.tsx'
+import { nodeInstallCommand } from '../src/client/install-command.ts'
 import { terminalSocketUrl } from '../src/client/AdvancedDiagnostics.tsx'
 import { zh } from '../src/client/locales.ts'
 
@@ -61,10 +62,15 @@ const fleet: FleetSnapshot = {
 
 const unusedHook = (() => { throw new Error('not used by Hub Settings') }) as never
 const hubT = makeTranslate(zh)
+const clipboardWrite = vi.fn<(text: string) => Promise<void>>()
 
 beforeEach(() => {
   localStorage.clear()
   history.replaceState({}, '', '/?nodeId=nas-home&runtimeId=web')
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: clipboardWrite.mockResolvedValue(undefined) },
+  })
   api.readFleet.mockResolvedValue(fleet)
   api.createEnrollment.mockResolvedValue({
     nodeId: 'work-pc', displayName: 'Work PC', createdAt: 1_000, expiresAt: 60_000, code: 'one-time-code',
@@ -177,9 +183,31 @@ describe('Hub management Settings pages', () => {
     fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: 'Work PC' } })
     expect(screen.getByLabelText('节点 ID')).toHaveProperty('value', 'work-pc')
     fireEvent.click(screen.getByRole('button', { name: '生成注册码' }))
-    expect(await screen.findByText('one-time-code')).toBeTruthy()
-    fireEvent.click(screen.getByText('接下来如何接入节点'))
-    expect(screen.getByText(/dsh-hub-node init/)).toBeTruthy()
+    expect(await screen.findByText(/install-node\.sh/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '复制一键安装命令' }))
+    await waitFor(() => {
+      expect(clipboardWrite).toHaveBeenCalledWith(expect.stringContaining('one-time-code'))
+    })
+    expect(clipboardWrite).not.toHaveBeenCalledWith(expect.stringContaining('ACCESS_CLIENT_SECRET'))
+    expect(screen.getByRole('button', { name: '已复制' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Windows' }))
+    expect(screen.getByText(/install-node\.ps1/)).toBeTruthy()
+    fireEvent.click(screen.getByText('为什么仍会询问 Cloudflare 凭据？'))
+    expect(screen.getByText(/DSH Bundle 插件/)).toBeTruthy()
+  })
+
+  it('quotes one-command enrollment values without placing the long-lived Access secret in history', () => {
+    const grant = { nodeId: "mac-'neo", code: "short-'code" }
+    const unix = nodeInstallCommand(grant, 'https://agent.k1412.top', 'unix')
+    const windows = nodeInstallCommand(grant, 'https://agent.k1412.top', 'windows')
+
+    expect(unix).toContain("--node 'mac-'\"'\"'neo'")
+    expect(windows).toContain("$env:DSH_HUB_NODE_ID='mac-''neo'")
+    expect(unix).toContain('/releases/download/hub-v0.1.0-rc.8/install-node.sh')
+    expect(windows).toContain('/releases/download/hub-v0.1.0-rc.8/install-node.ps1')
+    expect(unix).not.toContain('DSH_HUB_ACCESS_CLIENT_SECRET')
+    expect(windows).not.toContain('DSH_HUB_ACCESS_CLIENT_SECRET')
   })
 
   it('cancels pending registration, opens another runtime, and revokes an enrolled node only after confirmation', async () => {

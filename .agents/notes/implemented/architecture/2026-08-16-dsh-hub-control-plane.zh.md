@@ -16,6 +16,8 @@ DSH Hub 是单用户控制平面，不是 DSH Runtime。它负责认证操作者
 
 每台受控机器安装两个协作组件。Hub Connector 是加载到现有 DSH Composition 中的 Cordis 插件；该 Composition 提供与传输无关的 Host `ApiProxy` 和 Typert Gateway Service，Connector 通过这些 Service 公开标准 DSH HTTP 与事件协议以及 Hub 能力。Node Agent 是运行在 DSH 所属操作系统账户下的独立进程，负责节点身份、持久化 WSS 交付、本地 IPC、插件制品激活、快照、受大小限制的文件操作，以及由已审计命令表示的 PTY 流。
 
+一个已发行安装器同时拥有这两个组件的最终用户边界。注册页会生成一条可复制的 Linux／macOS 或 Windows 命令，其中只包含短期且只能使用一次的 Hub 授权。带版本的安装器下载完全匹配的 Node Agent 和 Connector Release 产物、验证校验和、通过 Connector 的 `dsh.bundle` 把它安装进选定的现有 Profile，并在当前用户的 Service Manager 下安装 Node Agent。长期 Cloudflare Service Token Secret 通过隐藏提示读取。因此，双进程实现不是两步产品工作流。
+
 Connector 不依赖可选 Web 插件，也不代理节点本地 Web 监听器。标准 Web Profile 已提供 Host Service；其他 Composition 会显式提供它们。当本地 Web、桌面客户端与 Hub Connector 连接同一个 Runtime 时，三者操作同一个实时会话所有者。资源身份为 `{nodeId, runtimeId, resourceId}`。本地显示状态留在本地；会话消息、队列状态、取消、批准和问题以 DSH 为权威，并通过各界面的正常投影显示。
 
 ## Authority and isolation
@@ -52,6 +54,8 @@ Connector Composition 测试让本地 Web、桌面端和 Hub 调用方通过同�
 
 Hub 构建测试固定完整官方客户端清单、浏览器目录浏览流程及 Hub 设置页贡献，同时排除本地文件系统选择器。构建页面的 Chromium 检查会使用生产 Content Security Policy 提供该清单，并要求 Hub 设置 Bundle 和应用根节点在无 Policy Error 或 Page Error 的情况下加载。官方 GUI 组件清单与无密钥 Chromium 回放仍是必需项，因此会话创建、项目分组、工作目录选择、流式输出、滚动、错误恢复和移动端行为不能在 Hub 专用替代品中退化。节点集合路由测试覆盖多 Runtime 列表与搜索汇总、不透明身份往返、按所有者路由历史与聊天、文件夹优先且附带节点的 Workspace 标签、工作区顺序与归档快照合并、畸形及跨 Runtime 身份拒绝，以及官方事件多路复用。存储与服务端测试覆盖保行 Schema 迁移、Connector 基线、WSS 投影和 REST 输出。
 
+Release 验证会检查两个平台安装器都包含 Tag 版本、不含未解析模板标记，并要求 Unix 安装器可执行且通过 Shell 解析。Windows CI Job 会解析 PowerShell 安装器。浏览器验证还会使用 390 px 视口，要求导航以覆盖层打开而不缩小会话区域、可通过遮罩关闭，并要求 Settings 占满视口且没有横向溢出。
+
 ## Alternatives considered
 
 **公开或反向代理每个节点的本地 Web 监听器。** 这会增加公开源站数量、让控制平面耦合浏览器传输，而且 Hub 无法提供本地 Web API 尚未包含的能力。
@@ -61,6 +65,8 @@ Hub 构建测试固定完整官方客户端清单、浏览器目录浏览流程�
 **在 Hub 内运行一个完整 DSH 实例。** 这会让控制平面成为带特权特殊模式的执行宿主，并且不能解决权威 Runtime 位于其他节点的会话访问问题。
 
 **在本地 UI 旁运行第二个 Headless DSH 进程。** 即使两个 Runtime 所有者共享 Profile 目录，其内存状态仍可能分叉。把 Connector 加载到现有 Composition 中可以保留单一所有者，并让本地和远程客户端协作。
+
+**让 Connector 插件拥有节点身份和 Hub WSS 连接。** Profile 停止或重新加载时，该连接也会消失，因此无法跨 DSH 重启保留确认位置和待处理命令。多个 Profile 还会争用同一机器身份，或被显示成互不相关的节点。同账户 Node Agent 保留一个可靠节点边界，而一键安装器让这种拆分不会进入日常安装工作流。
 
 **把全部节点内容镜像到中心数据库或对象存储。** 这会引入不必要的第二事实源、扩大凭据和隐私边界，并要求任意的缓存保留与失效策略。
 
