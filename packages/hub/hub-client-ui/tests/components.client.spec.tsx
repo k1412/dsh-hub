@@ -24,7 +24,6 @@ import { HubPluginsSection } from '../src/client/HubPluginsSection.tsx'
 import { HubRuntimePicker } from '../src/client/HubRuntimePicker.tsx'
 import { terminalSocketUrl } from '../src/client/AdvancedDiagnostics.tsx'
 import { zh } from '../src/client/locales.ts'
-import { runtimeKey } from '../src/client/runtime-target.ts'
 
 const runtime: HubRuntime = {
   nodeId: 'nas-home',
@@ -129,9 +128,11 @@ describe('Hub management Settings pages', () => {
       useWorkspaces={unusedHook}
     />)
 
-    const picker = await screen.findByRole('combobox', { name: '节点与 Runtime' })
-    expect(picker).toHaveProperty('value', runtimeKey(runtime))
-    fireEvent.change(picker, { target: { value: runtimeKey(secondRuntime) } })
+    const picker = await screen.findByRole('button', { name: '节点与 Runtime' })
+    expect(picker.textContent).toContain('Home NAS · web')
+    fireEvent.click(picker)
+    expect(picker.getAttribute('aria-expanded')).toBe('true')
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mac Neo · desktop' }))
     expect(onTargetChange).toHaveBeenCalledOnce()
     expect(new URL(location.href).searchParams.get('nodeId')).toBe('mac-neo')
     expect(new URL(location.href).searchParams.get('runtimeId')).toBe('desktop')
@@ -152,8 +153,8 @@ describe('Hub management Settings pages', () => {
       useWorkspaces={unusedHook}
     />)
 
-    const picker = await screen.findByRole('combobox', { name: '节点与 Runtime' })
-    await waitFor(() => { expect(picker).toHaveProperty('value', runtimeKey(secondRuntime)) })
+    const picker = await screen.findByRole('button', { name: '节点与 Runtime' })
+    await waitFor(() => { expect(picker.textContent).toContain('mac-neo · desktop') })
     expect(onTargetChange).not.toHaveBeenCalled()
     expect(new URL(location.href).searchParams.get('nodeId')).toBe('mac-neo')
   })

@@ -31,7 +31,7 @@ describe('fleet Web identity routing', () => {
         agentId: 'session-one',
       },
     }, nas) as Record<string, unknown>
-    expect(value.title).toBe('Home NAS · Project')
+    expect(value.title).toBe('Project · Home NAS')
     expect(decodeFleetPayload(value)).toMatchObject({
       value: {
         workspaceId: 'workspace-one',

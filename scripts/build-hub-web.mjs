@@ -17,6 +17,14 @@ const jsType = new yaml.Type('tag:yaml.org,2002:js', {
 })
 const patchSchema = yaml.DEFAULT_SCHEMA.extend([jsType])
 
+/** Reviewed browser-only rows required by the Hub composition. */
+export const HUB_CLIENT_ROWS = Object.freeze([
+  // Hub does not run the official Host directory-picker auto-composer. The
+  // browser flow still calls the selected node through the official Web API.
+  { id: 'hub-directory-picker-browse', name: '@deepseek-ai/dsh-client-ui-directory-picker-browse' },
+  { id: 'hub-client-ui', name: '@k1412/dsh-hub-client-ui' },
+])
+
 function shortHash(value) {
   return createHash('sha1').update(value).digest('hex').slice(0, 12)
 }
@@ -96,7 +104,7 @@ export async function buildHubWeb() {
     parsePatch(join(repositoryRoot, 'packages', 'bundle', 'web-app', 'cordis.patch.yml')),
   ])
   const rows = composeRows(patches)
-  rows.push({ id: 'hub-client-ui', name: '@k1412/dsh-hub-client-ui' })
+  rows.push(...HUB_CLIENT_ROWS)
   const entries = []
   for (const row of rows) {
     if (row.disabled === true || typeof row.name !== 'string') continue

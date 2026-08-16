@@ -338,7 +338,7 @@ describe('Hub HTTP server', () => {
       } }
     }
     expect(workspaceBody.result.value.items.map(item => item.title)).toEqual([
-      'Desktop · Project', 'NAS · Project',
+      'Project · Desktop', 'Project · NAS',
     ])
     expect(workspaceBody.result.value.archivedSessionIds.map(id => decodeFleetId(id)?.sourceId)).toEqual([
       'desktop-node-archived', 'nas-node-archived',
