@@ -1,7 +1,7 @@
 {
   "name": "@k1412/dsh-hub-server",
   "description": "Authenticated HTTP, SSE, PTY, and Agent WebSocket server for DSH Hub",
-  "version": "0.1.0-rc.8",
+  "version": "0.1.0-rc.9",
   "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",

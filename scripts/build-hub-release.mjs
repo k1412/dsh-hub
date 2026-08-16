@@ -3,7 +3,8 @@
 /** Build self-contained Hub Node Agent and DSH Connector release tarballs. */
 
 import { spawn } from 'node:child_process'
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { build } from 'esbuild'
@@ -42,6 +43,16 @@ async function installScript(source, destination, version, executable = false) {
   if (!template.includes('@VERSION@')) throw new Error(`${source} is missing its release version marker`)
   await writeFile(join(output, destination), template.replaceAll('@VERSION@', version))
   if (executable) await chmod(join(output, destination), 0o755)
+}
+
+async function writeChecksums() {
+  const assets = (await readdir(output)).filter(file => file.endsWith('.tgz')).sort()
+  if (assets.length !== 2) throw new Error(`expected two packed Hub assets, received ${String(assets.length)}`)
+  const lines = await Promise.all(assets.map(async (asset) => {
+    const digest = createHash('sha256').update(await readFile(join(output, asset))).digest('hex')
+    return `${digest}  ${asset}`
+  }))
+  await writeFile(join(output, 'SHA256SUMS'), `${lines.join('\n')}\n`)
 }
 
 try {
@@ -133,9 +144,10 @@ try {
     installScript('deploy/node/install-node.sh', 'install-node.sh', agentManifest.version, true),
     installScript('deploy/node/install-node.ps1', 'install-node.ps1', agentManifest.version),
   ])
+  await writeChecksums()
 
-  const files = (await import('node:fs/promises')).readdir(output)
-  process.stdout.write(`Hub release assets: ${(await files).map(file => basename(file)).join(', ')}\n`)
+  const files = await readdir(output)
+  process.stdout.write(`Hub release assets: ${files.map(file => basename(file)).join(', ')}\n`)
 } finally {
   await rm(temporary, { recursive: true, force: true })
 }
