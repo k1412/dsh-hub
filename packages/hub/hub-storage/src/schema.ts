@@ -5,7 +5,7 @@ import { chmod, mkdir, open } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 
 /** Current Hub control-plane schema version. */
-export const HUB_STORAGE_SCHEMA_VERSION = 1
+export const HUB_STORAGE_SCHEMA_VERSION = 2
 
 /**
  * Resolve, owner-create, configure, and migrate one Hub database.
@@ -47,13 +47,14 @@ function configure(database: DatabaseSync): void {
   database.exec('PRAGMA busy_timeout = 5000')
   database.exec('PRAGMA trusted_schema = OFF')
   const version = (database.prepare('PRAGMA user_version').get() as { user_version: number }).user_version
-  if (version !== 0 && version !== HUB_STORAGE_SCHEMA_VERSION) {
+  if (version < 0 || version > HUB_STORAGE_SCHEMA_VERSION) {
     throw new Error(`Hub database schema ${String(version)} is incompatible with ${String(HUB_STORAGE_SCHEMA_VERSION)}`)
   }
-  if (version === 0) materializeV1(database)
+  if (version === 0) materializeV2(database)
+  else if (version === 1) migrateV1ToV2(database)
 }
 
-function materializeV1(database: DatabaseSync): void {
+function materializeV2(database: DatabaseSync): void {
   database.exec(`
     BEGIN IMMEDIATE;
 
@@ -102,6 +103,7 @@ function materializeV1(database: DatabaseSync): void {
       runtime_id     TEXT NOT NULL,
       source_id      TEXT NOT NULL,
       title          TEXT,
+      workspace_path TEXT,
       updated_at     INTEGER NOT NULL,
       running        INTEGER NOT NULL CHECK (running IN (0, 1)),
       stale          INTEGER NOT NULL CHECK (stale IN (0, 1)),
@@ -173,7 +175,16 @@ function materializeV1(database: DatabaseSync): void {
       SELECT RAISE(ABORT, 'audit_log is append-only');
     END;
 
-    PRAGMA user_version = 1;
+    PRAGMA user_version = 2;
+    COMMIT;
+  `)
+}
+
+function migrateV1ToV2(database: DatabaseSync): void {
+  database.exec(`
+    BEGIN IMMEDIATE;
+    ALTER TABLE session_index ADD COLUMN workspace_path TEXT;
+    PRAGMA user_version = 2;
     COMMIT;
   `)
 }

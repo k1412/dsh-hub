@@ -40,6 +40,8 @@ Run `verify-backup` before copying the files into the fresh volume. Use an isola
 
 Create and export a fresh backup, read the release notes, pin the new immutable image digest, pull it, and recreate the container. Verify health, human login, node reconnection, session baseline loading, a read command, SSE refresh, and one terminal open and close.
 
+Hub performs only known one-step database migrations at startup. The schema-v1-to-v2 migration retains every session-index row and adds a nullable project working-directory field, which nodes populate when they resend their baselines. A migrated database cannot be opened by an older image that understands only v1. To roll back the image, stop Hub and restore the complete pre-upgrade backup created and verified with that older image; never let the old image write the migrated volume directly.
+
 Hub protocol negotiation is exact. Upgrade nodes when the new Hub no longer accepts their protocol or capability versions. A Hub release must not silently reinterpret an older capability descriptor.
 
 ## Upgrade a node

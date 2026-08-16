@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { generateHubIdentity, HubNodeId } from '@k1412/dsh-hub-protocol'
+import { generateHubIdentity, HubNodeId, HubRuntimeId } from '@k1412/dsh-hub-protocol'
 import { HubStorage } from '@k1412/dsh-hub-storage'
 import type { HubAccessVerifier } from '../src/server.ts'
 import { HubOriginGuard } from '../src/auth.ts'
@@ -103,6 +103,48 @@ describe('Hub HTTP server', () => {
 
     const nodes = await fetch(`${base}/hub/v1/nodes`, { headers: requestHeaders('human') })
     await expect(nodes.json()).resolves.toEqual({ nodes: [], runtimes: [] })
+  })
+
+  it('returns project paths from the minimal session index without session content', async () => {
+    const { base, storage } = await fixture()
+    const grant = storage.control.createEnrollment(HubNodeId('node-project'), 'Project Node', Date.now() + 60_000)
+    const node = storage.control.consumeEnrollment(grant.code, 'public-key', 'service-id')
+    const runtimeId = HubRuntimeId('web')
+    storage.control.upsertRuntime({
+      nodeId: node.nodeId,
+      runtimeId,
+      bootId: 'runtime-boot-project',
+      dshVersion: '0.1.0',
+      connectorVersion: '0.1.0',
+      capabilities: [],
+      online: true,
+      lastSeenAt: 1_000,
+    })
+    storage.control.upsertSessionIndex({
+      hubSessionId: 'hub-project-session',
+      nodeId: node.nodeId,
+      runtimeId,
+      sourceId: 'source-project-session',
+      title: 'Indexed title',
+      workspacePath: '/workspace/project',
+      updatedAt: 1_001,
+      running: false,
+      stale: false,
+    })
+
+    const response = await fetch(`${base}/hub/v1/sessions`, { headers: requestHeaders('human') })
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ sessions: [{
+      hubSessionId: 'hub-project-session',
+      nodeId: 'node-project',
+      runtimeId: 'web',
+      sourceId: 'source-project-session',
+      title: 'Indexed title',
+      workspacePath: '/workspace/project',
+      updatedAt: 1_001,
+      running: false,
+      stale: false,
+    }] })
   })
 
   it('returns audit history and redacts a completed command after explicit acknowledgement', async () => {

@@ -506,7 +506,13 @@ export class HubAgentRegistry {
       }
       const payload = stream.frame.parse(body.payload) as HubJson
       if (body.capability === 'dsh.sessions' && body.stream === 'index') {
-        const baseline = payload as { sessions: Array<{ sessionId: string; title?: string; updatedAt: number; running: boolean }> }
+        const baseline = payload as { sessions: Array<{
+          sessionId: string
+          title?: string
+          workspacePath?: string
+          updatedAt: number
+          running: boolean
+        }> }
         this.storage.control.replaceSessionIndex(
           connection.nodeId,
           HubRuntimeId(body.runtimeId),
@@ -516,6 +522,7 @@ export class HubAgentRegistry {
             runtimeId: HubRuntimeId(body.runtimeId),
             sourceId: session.sessionId,
             ...(session.title === undefined ? {} : { title: session.title }),
+            ...(session.workspacePath === undefined ? {} : { workspacePath: session.workspacePath }),
             updatedAt: session.updatedAt,
             running: session.running,
             stale: false,

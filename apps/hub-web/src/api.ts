@@ -21,6 +21,7 @@ export interface HubSession {
   runtimeId: string
   sourceId: string
   title?: string
+  workspacePath?: string
   updatedAt: number
   running: boolean
   stale: boolean

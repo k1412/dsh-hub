@@ -165,6 +165,35 @@ describe('Hub Agent WebSocket integration', () => {
     peer.enqueueAcknowledgement()
     await Promise.all(peer.renderPending().map(frame => send(socket, frame)))
 
+    peer.enqueue({
+      type: 'stream.frame',
+      runtimeId,
+      capability: 'dsh.sessions',
+      streamId: HubMessageId('session-index-stream-01'),
+      stream: 'index',
+      frameSequence: 1,
+      payload: {
+        revision: 1,
+        sessions: [{
+          sessionId: 'session-project-one',
+          title: 'Project conversation',
+          workspacePath: '/workspace/project-one',
+          updatedAt: 3_000,
+          running: false,
+          eventSequence: 4,
+        }],
+      },
+    })
+    await Promise.all(peer.renderPending().map(frame => send(socket, frame)))
+    await vi.waitFor(() => { expect(storage.control.listSessionIndex(nodeId)).toMatchObject([{
+      nodeId,
+      runtimeId,
+      sourceId: 'session-project-one',
+      title: 'Project conversation',
+      workspacePath: '/workspace/project-one',
+      stale: false,
+    }]) })
+
     const command = await server.agents.invoke(
       nodeId,
       runtimeId,
@@ -174,15 +203,18 @@ describe('Hub Agent WebSocket integration', () => {
       { limit: 100 },
       'human:operator@example.com',
     )
-    let receivedCommand
-    do {
-      receivedCommand = peer.receive(await next())
-    } while (receivedCommand.kind === 'duplicate')
-    expect(receivedCommand.kind).toBe('accepted')
-    if (receivedCommand.kind !== 'accepted') throw new Error('invalid command')
-    const claimedCommand = nodeJournal.claimInbound(receivedCommand.record.sequence)
+    let claimedCommand: ReturnType<typeof nodeJournal.claimInbound>
+    while (claimedCommand === undefined) {
+      const receivedCommand = peer.receive(await next())
+      if (receivedCommand.kind === 'duplicate') continue
+      expect(receivedCommand.kind).toBe('accepted')
+      if (receivedCommand.kind !== 'accepted') throw new Error('invalid command')
+      const claimed = nodeJournal.claimInbound(receivedCommand.record.sequence)
+      if (claimed === undefined) continue
+      nodeJournal.completeInbound(receivedCommand.record.sequence)
+      if (claimed.body.type !== 'transport.ack') claimedCommand = claimed
+    }
     expect(claimedCommand?.body).toMatchObject({ type: 'capability.invoke', commandId: command.commandId })
-    nodeJournal.completeInbound(receivedCommand.record.sequence)
     peer.enqueue({
       type: 'capability.result',
       commandId: command.commandId,

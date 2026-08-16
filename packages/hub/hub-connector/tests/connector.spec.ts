@@ -145,6 +145,17 @@ describe('Hub Connector coexistence', () => {
     await context.loader.await()
     await baseline
 
+    await vi.waitFor(() => { expect(bodies.some(body => body.type === 'stream.frame'
+      && body.runtimeId === 'loader-runtime' && body.capability === 'dsh.sessions'
+      && body.stream === 'index')).toBe(true) })
+    const index = bodies.find(body => body.type === 'stream.frame'
+      && body.runtimeId === 'loader-runtime' && body.capability === 'dsh.sessions'
+      && body.stream === 'index')
+    if (index?.type !== 'stream.frame') throw new Error('Connector session index was not published')
+    expect(index.payload).toMatchObject({
+      sessions: [{ sessionId: 'loader-shared-session', workspacePath: root }],
+    })
+
     await server.send('loader-runtime', {
       type: 'capability.invoke',
       commandId: 'command-loader-0001',

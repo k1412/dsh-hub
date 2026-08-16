@@ -58,6 +58,7 @@ export interface HubSessionIndexInput {
   runtimeId: HubRuntimeIdType
   sourceId: string
   title?: string
+  workspacePath?: string
   updatedAt: number
   running: boolean
   stale: boolean
@@ -401,16 +402,17 @@ export class HubControlStore {
   public upsertSessionIndex(input: HubSessionIndexInput): void {
     this.database.prepare(`
       INSERT INTO session_index (
-        hub_session_id, node_id, runtime_id, source_id, title, updated_at, running, stale
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        hub_session_id, node_id, runtime_id, source_id, title, workspace_path, updated_at, running, stale
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (node_id, runtime_id, source_id) DO UPDATE SET
         hub_session_id = excluded.hub_session_id,
         title = excluded.title,
+        workspace_path = excluded.workspace_path,
         updated_at = excluded.updated_at,
         running = excluded.running,
         stale = excluded.stale
     `).run(
-      input.hubSessionId, input.nodeId, input.runtimeId, input.sourceId, input.title ?? null,
+      input.hubSessionId, input.nodeId, input.runtimeId, input.sourceId, input.title ?? null, input.workspacePath ?? null,
       input.updatedAt, input.running ? 1 : 0, input.stale ? 1 : 0,
     )
   }
@@ -453,6 +455,8 @@ export class HubControlStore {
       }
       const title = optionalString(row.title)
       if (title !== undefined) record.title = title
+      const workspacePath = optionalString(row.workspace_path)
+      if (workspacePath !== undefined) record.workspacePath = workspacePath
       return record
     })
   }

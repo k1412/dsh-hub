@@ -4,6 +4,11 @@ import {
   type ConversationMessage, type HubAuditRecord, type HubCommand, type HubEnrollmentGrant,
   type HubNode, type HubRuntime, type HubSession,
 } from './api.ts'
+import {
+  bindNewSessionDialog, decodeRuntimeTarget, directoryChoices, encodeRuntimeTarget, newSessionDialog, parentDirectory,
+  type DirectoryChoice,
+} from './new-session.ts'
+import { bindProjectSessionList, projectSessionList, sessionProjectGroups } from './session-groups.ts'
 
 type View = 'chat' | 'fleet' | 'terminal' | 'files' | 'plugins' | 'snapshots' | 'settings' | 'activity'
 
@@ -22,6 +27,15 @@ interface State {
   busy: boolean
   error: string | undefined
   mobileSidebar: boolean
+  newSessionOpen: boolean
+  newSessionTarget: string
+  newSessionWorkspacePath: string
+  newSessionTitle: string
+  newSessionBrowsePath: string | undefined
+  newSessionDirectories: DirectoryChoice[]
+  newSessionWorkspaceLoading: boolean
+  newSessionCreating: boolean
+  newSessionError: string | undefined
 }
 
 const state: State = {
@@ -39,11 +53,22 @@ const state: State = {
   busy: false,
   error: undefined,
   mobileSidebar: false,
+  newSessionOpen: false,
+  newSessionTarget: '',
+  newSessionWorkspacePath: '',
+  newSessionTitle: '',
+  newSessionBrowsePath: undefined,
+  newSessionDirectories: [],
+  newSessionWorkspaceLoading: false,
+  newSessionCreating: false,
+  newSessionError: undefined,
 }
 
 const root = document.querySelector<HTMLDivElement>('#app') as HTMLDivElement
 let terminalSocket: WebSocket | undefined
 let terminalText = ''
+let workspaceLoadSequence = 0
+let createSessionSequence = 0
 
 function formString(data: FormData, name: string): string {
   const value = data.get(name)
@@ -88,6 +113,7 @@ function icon(name: 'menu' | 'plus' | 'send' | 'close'): string {
 function sidebar(): string {
   const sessions = state.sessions.filter(session =>
     state.selectedNode === undefined || session.nodeId === state.selectedNode)
+  const projects = sessionProjectGroups(sessions, state.nodes)
   return `<aside class="sidebar ${state.mobileSidebar ? 'open' : ''}">
     <div class="brand"><span class="brand-mark">D</span><span>DSH Hub</span>
       <button class="icon mobile-close" data-action="sidebar-close" aria-label="关闭导航">${icon('close')}</button>
@@ -101,12 +127,9 @@ function sidebar(): string {
       <span class="status ${node.online ? 'online' : ''}"></span><span>${escape(node.displayName)}</span>
       <small>${state.sessions.filter(session => session.nodeId === node.nodeId).length}</small>
     </button>`).join('')}
-    <div class="filter-label sessions-label">会话</div>
+    <div class="filter-label sessions-label">项目</div>
     <nav class="session-list">
-      ${sessions.map(session => `<button class="session-row ${state.selectedSession === session.hubSessionId ? 'active' : ''}" data-session="${escape(session.hubSessionId)}">
-        <span>${escape(session.title || '未命名会话')}</span>
-        <small>${new Date(session.updatedAt).toLocaleDateString()}</small>
-      </button>`).join('') || '<p class="empty-list">该范围内暂无会话</p>'}
+      ${projectSessionList(projects, state.selectedSession, state.selectedNode === undefined)}
     </nav>
     <div class="sidebar-footer"><span class="status ${state.nodes.some(node => node.online) ? 'online' : ''}"></span>${state.nodes.filter(node => node.online).length} 个节点在线</div>
   </aside>`
@@ -160,6 +183,19 @@ function fleet(): string {
 
 function capabilityAvailable(runtime: HubRuntime, capability: string): boolean {
   return runtime.capabilities.some(item => item.name === capability)
+}
+
+function sessionRuntimes(): HubRuntime[] {
+  return state.runtimes.filter(runtime => runtime.online && capabilityAvailable(runtime, 'dsh.sessions'))
+}
+
+function runtimeForTarget(target: string): HubRuntime | undefined {
+  try {
+    const decoded = decodeRuntimeTarget(target)
+    return state.runtimes.find(runtime => runtime.nodeId === decoded.nodeId && runtime.runtimeId === decoded.runtimeId)
+  } catch {
+    return undefined
+  }
 }
 
 function capabilityPanel(kind: 'plugins' | 'snapshots' | 'settings'): string {
@@ -243,7 +279,22 @@ function render(): void {
     ${navigation.map(([view, label]) => `<button data-view="${view}" class="${state.view === view ? 'active' : ''}">${label}</button>`).join('')}
   </nav>${state.mobileSidebar ? '<button class="scrim" data-action="sidebar-close" aria-label="关闭导航"></button>' : ''}</div>
   ${state.error ? `<div class="toast" role="alert">${escape(state.error)}<button data-action="clear-error">×</button></div>` : ''}
-  <dialog id="new-dialog"><form method="dialog" id="new-form"><h2>新建会话</h2><label>节点 Runtime<select name="target" required>${state.runtimes.filter(runtime => runtime.online && capabilityAvailable(runtime, 'dsh.sessions')).map(runtime => `<option value="${escape(`${runtime.nodeId}\0${runtime.runtimeId}`)}">${escape(`${state.nodes.find(node => node.nodeId === runtime.nodeId)?.displayName || runtime.nodeId} · ${runtime.runtimeId}`)}</option>`).join('')}</select></label><label>工作目录（可选）<input name="workspacePath"></label><label>标题（可选）<input name="title"></label><div class="dialog-actions"><button value="cancel">取消</button><button value="default" data-action="create-session">创建</button></div></form></dialog>`
+  ${newSessionDialog({
+    open: state.newSessionOpen,
+    runtimes: sessionRuntimes().map(runtime => ({
+      nodeId: runtime.nodeId,
+      runtimeId: runtime.runtimeId,
+      label: `${state.nodes.find(node => node.nodeId === runtime.nodeId)?.displayName || runtime.nodeId} · ${runtime.runtimeId}`,
+    })),
+    target: state.newSessionTarget,
+    workspacePath: state.newSessionWorkspacePath,
+    title: state.newSessionTitle,
+    ...(state.newSessionBrowsePath === undefined ? {} : { browsePath: state.newSessionBrowsePath }),
+    directories: state.newSessionDirectories,
+    workspaceLoading: state.newSessionWorkspaceLoading,
+    creating: state.newSessionCreating,
+    ...(state.newSessionError === undefined ? {} : { error: state.newSessionError }),
+  })}`
   bind()
 }
 
@@ -263,12 +314,12 @@ function bind(): void {
     if (state.view === 'activity') void loadActivity()
     else render()
   }) })
-  root.querySelectorAll<HTMLElement>('[data-session]').forEach((element) => { element.addEventListener('click', () => {
-    state.selectedSession = element.dataset.session
+  bindProjectSessionList(root, (hubSessionId) => {
+    state.selectedSession = hubSessionId
     state.view = 'chat'
     state.mobileSidebar = false
     void loadConversation()
-  }) })
+  })
   root.querySelectorAll<HTMLElement>('[data-runtime-node]').forEach((element) => { element.addEventListener('click', () => {
     state.selectedNode = element.dataset.runtimeNode
     state.view = 'chat'
@@ -277,9 +328,24 @@ function bind(): void {
   root.querySelector('[data-action="sidebar-open"]')?.addEventListener('click', () => { state.mobileSidebar = true; render() })
   root.querySelectorAll('[data-action="sidebar-close"]').forEach((element) => { element.addEventListener('click', () => { state.mobileSidebar = false; render() }) })
   root.querySelector('[data-action="clear-error"]')?.addEventListener('click', () => { state.error = undefined; render() })
-  root.querySelector('[data-action="new-session"]')?.addEventListener('click', () => { (root.querySelector('#new-dialog') as HTMLDialogElement).showModal() })
+  root.querySelector('[data-action="new-session"]')?.addEventListener('click', openNewSession)
   root.querySelector('[data-action="refresh-activity"]')?.addEventListener('click', () => { void loadActivity() })
-  root.querySelector('#new-form')?.addEventListener('submit', (event) => { void createSession(event) })
+  const dialog = root.querySelector<HTMLDialogElement>('#new-dialog')
+  if (dialog !== null) {
+    bindNewSessionDialog(dialog, {
+      close: closeNewSession,
+      submit: (event) => { void createSession(event) },
+      target: changeNewSessionTarget,
+      workspacePath: (value) => { state.newSessionWorkspacePath = value },
+      title: (value) => { state.newSessionTitle = value },
+      directory: (path) => { void browseWorkspace(path) },
+      parent: () => {
+        if (state.newSessionBrowsePath !== undefined) void browseWorkspace(parentDirectory(state.newSessionBrowsePath))
+      },
+      refresh: () => { void loadWorkspacePicker(state.newSessionTarget, state.newSessionBrowsePath) },
+    })
+    if (dialog.dataset.requestOpen === 'true') dialog.showModal()
+  }
   root.querySelector('#composer')?.addEventListener('submit', (event) => { void sendMessage(event) })
   root.querySelector('#enrollment-form')?.addEventListener('submit', (event) => { void enroll(event) })
   root.querySelector('#terminal-open')?.addEventListener('submit', (event) => { openTerminal(event) })
@@ -403,14 +469,122 @@ async function sendMessage(event: Event): Promise<void> {
   }
 }
 
-async function createSession(event: Event): Promise<void> {
-  event.preventDefault()
-  const data = new FormData(event.currentTarget as HTMLFormElement)
-  const [nodeId, runtimeId] = formString(data, 'target').split('\0')
-  if (!nodeId || !runtimeId) return
+function openNewSession(): void {
+  createSessionSequence += 1
+  const runtimes = sessionRuntimes()
+  const preferred = activeRuntime()
+  const runtime = runtimes.find(candidate => candidate.nodeId === preferred?.nodeId
+    && candidate.runtimeId === preferred.runtimeId) ?? runtimes[0]
+  state.newSessionOpen = true
+  state.newSessionTarget = runtime === undefined ? '' : encodeRuntimeTarget(runtime.nodeId, runtime.runtimeId)
+  state.newSessionWorkspacePath = ''
+  state.newSessionTitle = ''
+  state.newSessionBrowsePath = undefined
+  state.newSessionDirectories = []
+  state.newSessionWorkspaceLoading = runtime !== undefined
+  state.newSessionCreating = false
+  state.newSessionError = undefined
+  render()
+  if (runtime !== undefined) void loadWorkspacePicker(state.newSessionTarget)
+}
+
+function closeNewSession(): void {
+  workspaceLoadSequence += 1
+  createSessionSequence += 1
+  state.newSessionOpen = false
+  state.newSessionWorkspaceLoading = false
+  state.newSessionCreating = false
+  state.newSessionError = undefined
+  render()
+}
+
+function changeNewSessionTarget(target: string): void {
+  workspaceLoadSequence += 1
+  state.newSessionTarget = target
+  state.newSessionWorkspacePath = ''
+  state.newSessionBrowsePath = undefined
+  state.newSessionDirectories = []
+  state.newSessionWorkspaceLoading = true
+  state.newSessionError = undefined
+  render()
+  void loadWorkspacePicker(target)
+}
+
+async function browseWorkspace(path: string): Promise<void> {
+  state.newSessionWorkspacePath = path
+  await loadWorkspacePicker(state.newSessionTarget, path)
+}
+
+async function loadWorkspacePicker(target: string, requestedPath?: string): Promise<void> {
+  const sequence = ++workspaceLoadSequence
+  const runtime = runtimeForTarget(target)
+  if (runtime === undefined) {
+    state.newSessionWorkspaceLoading = false
+    state.newSessionError = '节点 Runtime 标识无效，请重新选择'
+    render()
+    return
+  }
+  state.newSessionWorkspaceLoading = true
+  state.newSessionError = undefined
+  render()
   try {
+    let path = requestedPath
+    if (path === undefined) {
+      const command = await invoke({
+        nodeId: runtime.nodeId,
+        runtimeId: runtime.runtimeId,
+        capability: 'dsh.runtime',
+        operation: 'health',
+        payload: {},
+      })
+      const details = (command.result as { details?: unknown } | undefined)?.details
+      const cwd = typeof details === 'object' && details !== null && 'cwd' in details
+        ? (details as { cwd?: unknown }).cwd
+        : undefined
+      if (typeof cwd !== 'string' || cwd === '') throw new Error('节点未返回默认工作目录，请直接输入完整路径')
+      path = cwd
+    }
+    let directories: DirectoryChoice[] = []
+    if (capabilityAvailable(runtime, 'dsh.files')) {
+      const command = await invoke({
+        nodeId: runtime.nodeId,
+        runtimeId: runtime.runtimeId,
+        capability: 'dsh.files',
+        operation: 'list',
+        payload: { path, limit: 500 },
+      })
+      const entries = (command.result as { entries?: unknown } | undefined)?.entries
+      directories = directoryChoices(entries)
+    }
+    if (sequence !== workspaceLoadSequence || !state.newSessionOpen) return
+    state.newSessionBrowsePath = path
+    if (state.newSessionWorkspacePath === '' || requestedPath !== undefined) state.newSessionWorkspacePath = path
+    state.newSessionDirectories = directories
+  } catch (error) {
+    if (sequence !== workspaceLoadSequence || !state.newSessionOpen) return
+    state.newSessionError = error instanceof Error ? error.message : String(error)
+    state.newSessionDirectories = []
+  } finally {
+    if (sequence === workspaceLoadSequence && state.newSessionOpen) {
+      state.newSessionWorkspaceLoading = false
+      render()
+    }
+  }
+}
+
+async function createSession(event: SubmitEvent): Promise<void> {
+  const data = new FormData(event.currentTarget as HTMLFormElement)
+  const sequence = ++createSessionSequence
+  try {
+    const { nodeId, runtimeId } = decodeRuntimeTarget(formString(data, 'target'))
     const workspacePath = formString(data, 'workspacePath').trim()
     const title = formString(data, 'title').trim()
+    state.newSessionTarget = formString(data, 'target')
+    state.newSessionWorkspacePath = workspacePath
+    state.newSessionTitle = title
+    state.newSessionCreating = true
+    state.newSessionError = undefined
+    render()
     const command = await invoke({
       nodeId,
       runtimeId,
@@ -422,14 +596,33 @@ async function createSession(event: Event): Promise<void> {
         ...(title === '' ? {} : { title }),
       },
     })
-    await refresh(false)
+    if (sequence !== createSessionSequence) {
+      await refresh(false)
+      return
+    }
     const created = command.result as { sessionId?: string } | undefined
-    state.selectedSession = state.sessions.find(session =>
-      session.nodeId === nodeId && session.runtimeId === runtimeId
-      && session.sourceId === created?.sessionId)?.hubSessionId
+    let indexed: HubSession | undefined
+    for (let attempt = 0; attempt < 20 && indexed === undefined; attempt += 1) {
+      if (sequence !== createSessionSequence) return
+      const next = await baseline()
+      state.nodes = next.nodes
+      state.runtimes = next.runtimes
+      state.sessions = next.sessions
+      indexed = state.sessions.find(session => session.nodeId === nodeId && session.runtimeId === runtimeId
+        && session.sourceId === created?.sessionId)
+      if (indexed === undefined) await new Promise(resolve => setTimeout(resolve, 150))
+    }
+    state.selectedSession = indexed?.hubSessionId
+    state.selectedNode = nodeId
+    state.view = 'chat'
+    state.newSessionOpen = false
+    state.newSessionCreating = false
+    if (indexed === undefined) state.error = '会话已在节点创建，Hub 正在同步会话索引，请稍后刷新。'
     render()
   } catch (error) {
-    state.error = error instanceof Error ? error.message : String(error)
+    if (sequence !== createSessionSequence) return
+    state.newSessionCreating = false
+    state.newSessionError = error instanceof Error ? error.message : String(error)
     render()
   }
 }

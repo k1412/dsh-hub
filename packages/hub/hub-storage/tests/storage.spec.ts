@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { DatabaseSync } from 'node:sqlite'
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -85,6 +86,7 @@ describe('Hub control storage', () => {
       runtimeId,
       sourceId: 'local-session-1',
       title: 'Minimal title',
+      workspacePath: '/workspace/project',
       updatedAt: 3_001,
       running: false,
       stale: false,
@@ -102,6 +104,17 @@ describe('Hub control storage', () => {
       createdAt: 3_002,
     })
     expect(command.status).toBe('pending')
+    expect(storage.control.listSessionIndex(nodeId)).toEqual([{
+      hubSessionId: 'hub-session-1',
+      nodeId,
+      runtimeId,
+      sourceId: 'local-session-1',
+      title: 'Minimal title',
+      workspacePath: '/workspace/project',
+      updatedAt: 3_001,
+      running: false,
+      stale: false,
+    }])
     expect(storage.control.listRecoverableCommands(nodeId)).toHaveLength(1)
     storage.control.transitionCommand(command.commandId, 'sent', undefined, 3_003)
     storage.control.transitionCommand(command.commandId, 'running', undefined, 3_004)
@@ -111,6 +124,36 @@ describe('Hub control storage', () => {
     expect(() => storage.control.transitionCommand(command.commandId, 'error', { code: 'late' }, 3_006)).toThrow(/illegal/)
     storage.control.redactTerminalCommandContent(command.commandId)
     storage.close()
+  })
+
+  it('migrates v1 session indexes in place and preserves their rows', async () => {
+    const root = await temporaryRoot()
+    const path = join(root, 'hub-v1.db')
+    const legacy = new DatabaseSync(path)
+    legacy.exec(`
+      CREATE TABLE session_index (
+        hub_session_id TEXT PRIMARY KEY,
+        node_id TEXT NOT NULL,
+        runtime_id TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        title TEXT,
+        updated_at INTEGER NOT NULL,
+        running INTEGER NOT NULL,
+        stale INTEGER NOT NULL,
+        UNIQUE (node_id, runtime_id, source_id)
+      ) STRICT;
+      INSERT INTO session_index VALUES ('hub-old', 'node-old', 'runtime-old', 'session-old', 'Old', 42, 0, 0);
+      PRAGMA user_version = 1;
+    `)
+    legacy.close()
+
+    const migrated = await openHubDatabase(path)
+    expect((migrated.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(2)
+    expect(migrated.prepare('PRAGMA table_info(session_index)').all().map(row => (row as { name: string }).name))
+      .toContain('workspace_path')
+    expect(migrated.prepare('SELECT hub_session_id, workspace_path FROM session_index').get())
+      .toEqual({ hub_session_id: 'hub-old', workspace_path: null })
+    migrated.close()
   })
 
   it('chains audit records and makes the table append-only', async () => {
