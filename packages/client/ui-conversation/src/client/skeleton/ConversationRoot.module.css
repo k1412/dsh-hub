@@ -363,3 +363,19 @@
 .root[data-phase='settling'] .composerSeat {
   visibility: hidden;
 }
+
+@media (max-width: 560px) {
+  .root {
+    --dsh-composer-side-clearance: 8px;
+  }
+
+  .heroWorkspaceRow {
+    flex-wrap: wrap;
+    row-gap: 4px;
+    padding: 0 8px;
+  }
+
+  .composerHero {
+    padding-bottom: 16px;
+  }
+}

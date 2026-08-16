@@ -76,5 +76,4 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            dist/hub-release/*.tgz
-            dist/hub-release/SHA256SUMS
+            dist/hub-release/*

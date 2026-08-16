@@ -117,3 +117,22 @@
 .overlayLayer > * {
   pointer-events: auto;
 }
+
+@media (max-width: 640px) {
+  .mobileSidebarMask {
+    position: absolute;
+    inset: 0;
+    z-index: 9;
+    background: var(--dsw-alias-bg-mask-1);
+    backdrop-filter: var(--dsw-mask-blur);
+  }
+
+  .frame[data-mobile-sidebar-open] .sidebarCol {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 10;
+    width: min(280px, calc(100vw - 32px));
+    border-right-color: var(--dsw-alias-border-l2);
+    box-shadow: var(--dsw-shadow-lv3);
+  }
+}

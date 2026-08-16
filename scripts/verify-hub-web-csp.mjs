@@ -105,6 +105,79 @@ try {
     ].join('\n')}`)
   }
   process.stdout.write('Hub Web: strict CSP boot and directory flow verified\n')
+
+  const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' })
+  const mobileErrors = []
+  mobile.on('pageerror', error => mobileErrors.push(error.message))
+  await mobile.goto(`http://127.0.0.1:${address.port}/?nodeId=fixture-node&runtimeId=fixture-runtime`, {
+    waitUntil: 'domcontentloaded',
+  })
+  await mobile.locator('#root').waitFor({ state: 'attached' })
+  await mobile.waitForFunction(() => document.querySelector('#root')?.childElementCount !== 0)
+
+  const frame = mobile.locator('#root > [data-slot="root"] > div').first()
+  await frame.waitFor()
+  if (await frame.getAttribute('data-sidebar-collapsed') !== 'true') {
+    throw new Error('Hub Web mobile sidebar did not start in its compact state')
+  }
+  const tracksBefore = await frame.evaluate(element => getComputedStyle(element).gridTemplateColumns)
+  await frame.locator('button').first().click()
+  await mobile.waitForFunction(() => document.querySelector('[data-mobile-sidebar-open]') !== null)
+  const tracksAfter = await frame.evaluate(element => getComputedStyle(element).gridTemplateColumns)
+  if (tracksAfter !== tracksBefore) {
+    throw new Error('Hub Web mobile sidebar reduced the conversation instead of opening as an overlay')
+  }
+  await frame.locator('[class*="mobileSidebarMask"]').click({ position: { x: 360, y: 200 } })
+  await mobile.waitForFunction(() => document.querySelector('[data-mobile-sidebar-open]') === null)
+
+  const composer = mobile.locator('[data-composer-card]').first()
+  const runtimePicker = mobile.getByRole('button', { name: '节点与 Runtime' })
+  await Promise.all([composer.waitFor(), runtimePicker.waitFor()])
+  const [composerBox, runtimePickerBox] = await Promise.all([
+    composer.boundingBox(),
+    runtimePicker.boundingBox(),
+  ])
+  if (
+    composerBox === null
+    || runtimePickerBox === null
+    || composerBox.x < 0
+    || composerBox.x + composerBox.width > 390
+    || composerBox.width < 300
+    || runtimePickerBox.width > 210
+  ) {
+    throw new Error(`Hub Web mobile composer geometry regressed: ${JSON.stringify({ composerBox, runtimePickerBox })}`)
+  }
+
+  await mobile.locator('button[aria-haspopup="dialog"]').click()
+  const settings = mobile.locator('[role="dialog"]')
+  await settings.waitFor()
+  const mobileGeometry = await settings.evaluate((dialog) => {
+    const rectangle = dialog.getBoundingClientRect()
+    const navigation = dialog.querySelector('nav')
+    const content = navigation?.nextElementSibling
+    return {
+      width: rectangle.width,
+      height: rectangle.height,
+      navigationWidth: navigation?.getBoundingClientRect().width ?? 0,
+      contentWidth: content?.getBoundingClientRect().width ?? 0,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: globalThis.innerWidth,
+    }
+  })
+  if (
+    mobileGeometry.width < 389
+    || mobileGeometry.height < 843
+    || mobileGeometry.navigationWidth < 360
+    || mobileGeometry.contentWidth < 360
+    || mobileGeometry.documentWidth > mobileGeometry.viewportWidth
+  ) {
+    throw new Error(`Hub Web mobile Settings geometry regressed: ${JSON.stringify(mobileGeometry)}`)
+  }
+  if (mobileErrors.length > 0) {
+    throw new Error(`Hub Web mobile UI raised page errors:\n${mobileErrors.join('\n')}`)
+  }
+  await mobile.close()
+  process.stdout.write('Hub Web: 390px sidebar and full-screen Settings verified\n')
 } finally {
   await browser?.close()
   await new Promise(resolveClose => server.close(resolveClose))

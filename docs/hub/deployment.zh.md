@@ -9,7 +9,7 @@
 - 一台安装 Docker Engine 和 Compose v2 的 Linux Docker 主机。
 - 一个通过 Cloudflare Access 路由到受信任反向代理的 HTTPS 主机名。
 - 一个同时配置人员策略和 Service Token 策略的 Cloudflare Access Self-hosted Application。
-- 每个节点安装 Node.js 22.19 或更高版本、`pnpm` 和 DSH。目标 DSH 组合必须提供与传输无关的 `@deepseek-ai/dsh-host-apiproxy` Service；标准 Web Profile 已提供该 Service。安装 Node Agent 前，还应安装 `node-pty` 在该平台所需的 C/C++ 构建工具链和 Python。
+- 每个节点安装 Node.js 22.19 或更高版本、`npm` 和 DSH。目标 DSH 组合必须提供与传输无关的 `@deepseek-ai/dsh-host-apiproxy` Service；标准 Web Profile 已提供该 Service。安装 Node Agent 前，还应安装 `node-pty` 在该平台所需的 C/C++ 构建工具链和 Python。
 - 反向代理到 Hub Origin 的私有路径，可以是回环、私有网络或经过认证的 Overlay Network。
 
 ## 1. 配置 Cloudflare Access
@@ -45,7 +45,9 @@ docker compose ps
 
 ## 4. 创建节点注册
 
-通过 Hub UI 或已认证 REST Endpoint 创建短期注册授权。选择稳定的节点 ID 和清晰的显示名称。一次性注册代码只返回一次，Hub 仅保存其哈希。无人值守部署也可以先停止 Hub，再通过同一 Compose 项目执行离线管理命令；不得让离线命令与 Hub Server 并发写入状态 Volume：
+打开 **设置 → Hub 节点**，输入稳定的节点 ID 和清晰的显示名称，然后生成短期注册授权。一次性注册代码只返回一次，Hub 仅保存其哈希。页面会立即生成 Linux／macOS 和 Windows 两种一键安装命令；选择目标系统并复制对应命令。
+
+无人值守部署也可以先停止 Hub，再通过同一 Compose 项目执行离线管理命令；不得让离线命令与 Hub Server 并发写入状态 Volume：
 
 ```bash
 docker compose stop hub
@@ -54,43 +56,23 @@ docker compose run --rm hub node /app/hub-server.mjs create-enrollment \
 docker compose up -d hub
 ```
 
-命令输出包含一次性代码，必须直接写入目标节点的仅所有者可读配置，不得进入 Shell 历史、日志、工单或 Git。离线创建操作会以 `local-admin` 身份进入审计链。
+离线命令输出包含一次性代码，必须直接传给目标节点，不得写入日志、工单或 Git。Hub UI 生成的一键命令会把这个 15 分钟有效、只能消费一次的代码放入 Shell 历史；消费后应按本机策略清理该历史项。离线创建操作会以 `local-admin` 身份进入审计链。
 
 为该节点创建独立的 Cloudflare Access Service Token。不要在多个节点间复用 Token：逐节点 Token 可以独立轮换和吊销，Hub 还会将 Service Token 身份永久绑定到已注册的 Ed25519 节点密钥。
 
-## 5. 安装节点包
+## 5. 运行一键安装命令
 
-从同一个 Release 下载 Node Agent、Connector 和校验和清单，并在安装前验证两个制品。以下示例不会把机密放入命令参数；请在隐藏提示中输入两个值。
+在目标电脑上以运行 DSH 的同一操作系统账户粘贴并运行 Hub UI 给出的一个命令。安装器会依次：
 
-```sh
-VERSION=0.1.0-rc.7
-RELEASE="https://github.com/k1412/dsh-hub/releases/download/hub-v${VERSION}"
-curl --fail --location --remote-name "${RELEASE}/SHA256SUMS"
-curl --fail --location --remote-name "${RELEASE}/k1412-dsh-hub-node-agent-${VERSION}.tgz"
-curl --fail --location --remote-name "${RELEASE}/k1412-dsh-hub-connector-${VERSION}.tgz"
-if command -v sha256sum >/dev/null; then
-  sha256sum --check SHA256SUMS
-else
-  shasum -a 256 --check SHA256SUMS
-fi
-npm install --global "./k1412-dsh-hub-node-agent-${VERSION}.tgz"
-read -rsp "Access Client Secret: " DSH_HUB_ACCESS_CLIENT_SECRET; echo
-read -rsp "Enrollment Code: " DSH_HUB_ENROLLMENT_CODE; echo
-export DSH_HUB_ACCESS_CLIENT_SECRET DSH_HUB_ENROLLMENT_CODE
-dsh-hub-node init \
-  --hub https://hub.example.com \
-  --node workstation-1 \
-  --access-client-id replace-with-service-token-client-id \
-  --profile web \
-  --runtime-id default \
-  --profile-directory "${DSH_HOME:-$HOME/.dsh}/profiles/web" \
-  --install-connector "$(pwd)/k1412-dsh-hub-connector-${VERSION}.tgz"
-unset DSH_HUB_ACCESS_CLIENT_SECRET DSH_HUB_ENROLLMENT_CODE
-```
+1. 从不可变的 GitHub Release 下载 Node Agent、Connector 和 `SHA256SUMS`，并在安装前验证两个产物。
+2. 把 Node Agent 安装到 `~/.dsh-hub/runtime/<version>`，不会污染全局 npm 目录，也不会请求 Root 权限。
+3. 通过 `dsh-hub-node init` 获取并固定 Hub 公钥，创建 Ed25519 节点身份、Connector IPC 密钥和仅所有者可读配置。
+4. 把 Connector 作为 DSH Bundle 插件安装进现有 `web` Profile；它只增加一条 Cordis 配置项，不修改 Web 监听器、前端 Bundle 或会话存储。
+5. 在 Linux 上安装 systemd User Service，在 macOS 上安装 LaunchAgent，在 Windows 上安装当前用户登录任务，并立即启动 Node Agent。
 
-`init` 使用 Service Token 获取并固定 Hub 公钥，写入仅所有者可读的 Node Agent 配置，创建持久节点身份和 Connector IPC 密钥，并可选择把 Connector 安装到指定 DSH Profile。Connector Bundle 只贡献一条 Cordis 配置项，使用现有 Host Gateway，不修改 Web 监听器或前端 Bundle。
+安装器会普通提示输入该节点的 Cloudflare Access Client ID，并隐藏输入 Client Secret。长期 Service Token Secret 不会出现在复制命令、进程参数或 Shell 历史中。如果 DSH 使用的 Profile 不是 `web`，可在 Linux／macOS 命令末尾增加 `--profile <name>`；高级或自定义进程管理器安装可使用 `--no-service`，并参照[节点服务指南](node-services.md)。
 
-通过平台 Service Manager 使用与 DSH 相同的操作系统账户运行 Node Agent。使用命令输出的配置路径执行 `dsh-hub-node --config <path>`。配置自动重启和私有主目录，不要提升权限。[节点服务指南](node-services.md)提供 Linux、macOS 和 Windows 示例。
+Connector 已经是客户端安装的 DSH 插件。Node Agent 刻意保留为同账户 Sidecar：它在 DSH Profile 重启或暂时停止时仍持有唯一节点身份、WSS 重连和可靠命令 Journal，也能让同一机器上的多个 Profile 共享一条节点连接。它不启动第二个 DSH Runtime，也不开放入站端口。
 
 ## 6. 重启现有 DSH Profile
 

@@ -55,6 +55,11 @@
 
 @media (max-width: 560px) {
   .trigger {
-    max-width: 46vw;
+    max-width: min(100%, 210px);
+    min-height: 32px;
+  }
+
+  .runtimeSuffix {
+    display: none;
   }
 }

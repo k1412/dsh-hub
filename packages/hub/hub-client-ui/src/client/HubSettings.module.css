@@ -100,8 +100,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .secretPanel strong, .secretPanel p { grid-column: 1 / -1; }
 .secretPanel p { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
 .secretPanel code { min-width: 0; overflow-wrap: anywhere; align-self: center; font-family: var(--ds-font-family-code); font-size: 12px; }
+.platformTabs { grid-column: 1 / -1; display: flex; gap: 8px; }
+.installCommand { grid-column: 1 / -1; overflow: auto; margin: 0; border-radius: 8px; padding: 10px; background: var(--dsw-alias-bg-layer-1); font-family: var(--ds-font-family-code); font-size: 11px; line-height: 17px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rawCode { display: block; margin-top: 8px; border-radius: 6px; padding: 8px; background: var(--dsw-alias-bg-layer-1); }
 .enrollmentHelp { grid-column: 1 / -1; border-top: 1px solid var(--dsw-alias-border-l2); padding-top: 8px; }
 .enrollmentHelp > summary { cursor: pointer; font-size: 12px; font-weight: 600; }
+.enrollmentHelp p { margin: 8px 0 0; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 19px; }
 .enrollmentHelp ol { margin: 10px 0; padding-left: 20px; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 20px; }
 .enrollmentHelp pre { overflow: auto; margin: 0; border-radius: 8px; padding: 10px; background: var(--dsw-alias-bg-layer-1); font-family: var(--ds-font-family-code); font-size: 11px; line-height: 17px; white-space: pre; }
 
@@ -174,14 +178,48 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .fileActions { display: flex; justify-content: flex-end; gap: 8px; }
 
 @media (max-width: 640px) {
+  .section { gap: 12px; }
+  .block,
+  .advanced { border-radius: 10px; }
+  .block { padding: 14px 12px; }
+  .advancedBody { padding: 14px 12px; }
   .formGrid { grid-template-columns: 1fr; }
   .pageHeader { flex-direction: column; }
+  .pageHeader p,
+  .blockHeader p,
+  .cardTop p,
+  .advancedBody p { line-height: 18px; }
+  .primaryButton,
+  .secondaryButton,
+  .activeButton,
+  .dangerButton { min-height: 44px; }
+  .formGrid input,
+  .formGrid select,
+  .runtimePicker select,
+  .inlineForm input,
+  .pathBar input,
+  .terminalInput input { height: 44px; }
+  .card { padding: 12px; }
+  .cardTop,
+  .runtimeList li,
+  .compactList li { align-items: flex-start; }
+  .runtimeList li,
+  .compactList li { flex-direction: column; }
+  .runtimeList li button,
+  .compactList li button { width: 100%; }
+  .meta { flex-wrap: wrap; gap: 8px 18px; }
+  .dangerRow button { width: 100%; }
   .pluginRow { align-items: flex-start; flex-wrap: wrap; padding: 10px 0; }
   .pluginIdentity { flex-basis: calc(100% - 100px); }
   .historyList li { align-items: flex-start; flex-direction: column; }
   .historyList li button { width: 100%; }
   .secretPanel { grid-template-columns: 1fr; }
   .secretPanel button { width: 100%; }
+  .platformTabs { display: grid; grid-template-columns: 1fr 1fr; }
+  .enrollmentHelp pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
   .inlineForm,
   .pathBar,
   .terminalInput { align-items: stretch; flex-direction: column; }
@@ -189,4 +227,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   .pathBar button,
   .terminalInput button { width: 100%; }
   .fileBrowserHeader { align-items: flex-start; flex-direction: column; }
+  .terminalOutput,
+  .fileEditor textarea { min-height: 180px; }
 }

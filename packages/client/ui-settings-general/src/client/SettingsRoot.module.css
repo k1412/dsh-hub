@@ -224,3 +224,55 @@
   clip: rect(0 0 0 0);
   white-space: nowrap;
 }
+
+@media (max-width: 640px) {
+  .overlay {
+    align-items: stretch;
+    justify-content: stretch;
+  }
+
+  .panel {
+    flex-direction: column;
+    width: 100vw;
+    height: 100dvh;
+    max-width: none;
+    border-radius: 0;
+  }
+
+  .nav {
+    width: 100%;
+    gap: 10px;
+    padding: max(16px, env(safe-area-inset-top)) 12px 8px;
+    border-bottom: 1px solid var(--dsw-alias-border-l2);
+  }
+
+  .navTitle {
+    padding: 0 4px;
+  }
+
+  .navList {
+    flex-direction: row;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .navCell {
+    flex: none;
+    height: 36px;
+    padding: 7px 12px;
+  }
+
+  .content {
+    min-height: 0;
+  }
+
+  .header {
+    height: 44px;
+    padding: 8px 10px 6px 12px;
+  }
+
+  .options {
+    padding: 0 12px max(20px, env(safe-area-inset-bottom));
+  }
+}

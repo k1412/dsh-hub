@@ -3,7 +3,7 @@
 /** Build self-contained Hub Node Agent and DSH Connector release tarballs. */
 
 import { spawn } from 'node:child_process'
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import { build } from 'esbuild'
@@ -35,6 +35,13 @@ async function pack(directory) {
     child.once('error', reject)
     child.once('exit', code => code === 0 ? resolvePack() : reject(new Error(`npm pack failed with ${String(code)}`)))
   })
+}
+
+async function installScript(source, destination, version, executable = false) {
+  const template = await readFile(join(repositoryRoot, source), 'utf8')
+  if (!template.includes('@VERSION@')) throw new Error(`${source} is missing its release version marker`)
+  await writeFile(join(output, destination), template.replaceAll('@VERSION@', version))
+  if (executable) await chmod(join(output, destination), 0o755)
 }
 
 try {
@@ -121,6 +128,11 @@ try {
     dependencies: { 'node-pty': '1.1.0' },
   }, null, 2)}\n`)
   await pack(agentRoot)
+
+  await Promise.all([
+    installScript('deploy/node/install-node.sh', 'install-node.sh', agentManifest.version, true),
+    installScript('deploy/node/install-node.ps1', 'install-node.ps1', agentManifest.version),
+  ])
 
   const files = (await import('node:fs/promises')).readdir(output)
   process.stdout.write(`Hub release assets: ${(await files).map(file => basename(file)).join(', ')}\n`)
