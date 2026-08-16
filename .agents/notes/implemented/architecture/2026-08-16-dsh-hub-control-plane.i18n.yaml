@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-16-dsh-hub-control-plane.md
-2026-08-16-dsh-hub-control-plane.md: c15d19127c7039b67a2c116b6dd3cfaf4290b489
-2026-08-16-dsh-hub-control-plane.zh.md: d523fcdd5512f3fcfde413ee5e70ebfafce50ea8
+2026-08-16-dsh-hub-control-plane.md: 109b37c97ccf9179adf5e05b0647950e2d3d5ddf
+2026-08-16-dsh-hub-control-plane.zh.md: 677eefe73bbe6e9d69b9a382ce3c1da080c3ea84

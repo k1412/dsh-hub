@@ -5,7 +5,7 @@ import { hubCapabilityDescriptorSchema, hubEnvelopeBodySchema, type HubCapabilit
 import { z } from 'zod'
 
 /** Maximum decoded local frame size. */
-export const HUB_IPC_MAX_FRAME_BYTES = 4 * 1024 * 1024
+export const HUB_IPC_MAX_FRAME_BYTES = 256 * 1024 * 1024
 
 /** Fresh Agent challenge. */
 export interface HubIpcChallenge {

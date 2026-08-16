@@ -20,14 +20,14 @@ const projects = [
   'packages/hub/hub-node-ipc/tsconfig.json',
   'packages/hub/hub-node-agent/tsconfig.json',
   'packages/hub/hub-connector/tsconfig.json',
+  'packages/hub/hub-client-ui/tsconfig.json',
   'packages/hub/hub-server/tsconfig.json',
   'apps/hub-web/tsconfig.json',
 ]
 
-const packageProjects = projects.filter(project => project.startsWith('packages/'))
-process.stdout.write('hub typecheck: refresh package declarations\n')
+process.stdout.write('hub typecheck: refresh project-reference declarations\n')
 const declarations = spawnSync(pnpmCommand, pnpmArguments(
-  'exec', 'tsc', '-b', ...packageProjects, '--emitDeclarationOnly', '--force', '--pretty', 'false',
+  'exec', 'tsc', '-b', ...projects, '--emitDeclarationOnly', '--force', '--pretty', 'false',
 ), {
   cwd: repositoryRoot,
   stdio: 'inherit',

@@ -5,7 +5,7 @@
  */
 
 import { Context, Service, symbols } from '@deepseek-ai/cordis'
-import type { ConnectionRpcHandler } from '@deepseek-ai/dsh-client-connection'
+import type {} from '@deepseek-ai/dsh-client-connection'
 import {
   remoteMethods,
   TypertLookupFailure,
@@ -17,12 +17,14 @@ import {
 import type {
   InvokeRemoteRequest,
   TypertGateway,
+  TypertGatewayDispatchResult,
   TypertGatewayErrorCode,
 } from './types.ts'
 
 export type {
   InvokeRemoteRequest,
   TypertGateway,
+  TypertGatewayDispatchResult,
   TypertGatewayErrorCode,
 } from './types.ts'
 
@@ -36,8 +38,7 @@ interface ResolvedBinding {
   readonly original: object
 }
 
-type ConnectionRpcResult = Awaited<ReturnType<ConnectionRpcHandler>>
-type ConnectionRpcError = Extract<ConnectionRpcResult, { readonly ok: false }>['error']
+type ConnectionRpcError = Extract<TypertGatewayDispatchResult, { readonly ok: false }>['error']
 const NEVER_ABORTED_SIGNAL = new AbortController().signal
 
 /** Dispatch failure produced outside the invoked business method. */
@@ -105,7 +106,7 @@ export class TypertGatewayService extends Service implements TypertGateway {
       connectionCtx.connection.rpc.intercept(
         '/api',
         endpoint => this.claimsEndpoint(endpoint),
-        (endpoint, payload, signal) => this.dispatchRpc(endpoint, payload, signal),
+        (endpoint, payload, signal) => this.dispatch(endpoint, payload, signal),
         { authority: 'trusted-host' },
       )
     })
@@ -183,15 +184,18 @@ export class TypertGatewayService extends Service implements TypertGateway {
     return decode(descriptor.result, result, 'result-invalid', endpoint, 'result')
   }
 
-  private async dispatchRpc(
+  /**
+   * Dispatch one decoded Connection request through the same normalized result path used by the HTTP adapter.
+   * @param endpoint - canonical `<namespace>/<method>` endpoint.
+   * @param payload - decoded payload containing exactly one plain-object `args` field.
+   * @param signal - carrier cancellation signal.
+   * @returns normalized RPC result.
+   */
+  async dispatch(
     endpoint: string,
     payload: unknown,
     signal: AbortSignal,
-  ): Promise<ConnectionRpcResult> {
-    return this.invokeRpc(endpoint, payload, signal)
-  }
-
-  private async invokeRpc(endpoint: string, payload: unknown, signal: AbortSignal): Promise<ConnectionRpcResult> {
+  ): Promise<TypertGatewayDispatchResult> {
     try {
       const segments = endpoint.split('/')
       if (segments.length !== 2 || segments[0] === '' || segments[1] === '') {
@@ -468,7 +472,7 @@ export class TypertGatewayService extends Service implements TypertGateway {
   }
 }
 
-function rpcFailure(error: unknown): ConnectionRpcResult {
+function rpcFailure(error: unknown): TypertGatewayDispatchResult {
   if (error instanceof RemoteInvocationCancelled) {
     return {
       ok: false,

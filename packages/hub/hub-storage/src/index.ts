@@ -1,35 +1,30 @@
-/** SQLite control-plane and durable-object storage assembly for DSH Hub. */
+/** SQLite-only control-plane storage assembly for DSH Hub. */
 
 import type { DatabaseSync } from 'node:sqlite'
 import { installReliableJournalSchema, SqliteReliableJournal } from '@k1412/dsh-hub-transport'
-import { HubObjectStore } from './objects.ts'
 import { openHubDatabase } from './schema.ts'
 import { HubControlStore } from './store.ts'
 
-export * from './objects.ts'
 export * from './schema.ts'
 export * from './store.ts'
 
-/** One ownership boundary for Hub database and immutable objects. */
+/** One ownership boundary for the Hub control database. */
 export class HubStorage implements Disposable {
   private constructor(
     private readonly database: DatabaseSync,
     public readonly control: HubControlStore,
-    public readonly objects: HubObjectStore,
   ) {}
 
   /**
-   * Open the control database and object directory with owner-only permissions.
+   * Open the control database with owner-only permissions.
    * @param databasePath - SQLite control database path.
-   * @param objectDirectory - content-addressed object-store root.
    * @returns initialized Hub storage boundary.
    */
-  public static async open(databasePath: string, objectDirectory: string): Promise<HubStorage> {
+  public static async open(databasePath: string): Promise<HubStorage> {
     const database = await openHubDatabase(databasePath)
     try {
-      const objects = await HubObjectStore.open(database, objectDirectory)
       installReliableJournalSchema(database)
-      return new HubStorage(database, new HubControlStore(database), objects)
+      return new HubStorage(database, new HubControlStore(database))
     } catch (error) {
       database.close()
       throw error

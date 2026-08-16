@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>初始化 DSH Hub</title>
+  </head>
+  <body>
+    <main class="setup">
+      <header><span>DSH Hub</span><h1>连接第一个节点</h1><p>节点只向 Hub 建立出站连接。节点上线后，这里会自动进入完整的官方 DSH Web UI。</p></header>
+      <section>
+        <form id="enroll-form">
+          <label>显示名称<input id="display-name" required maxlength="128" placeholder="例如：家里 NAS" /></label>
+          <label>节点 ID<input id="node-id" required maxlength="64" pattern="[A-Za-z0-9._-]+" placeholder="例如：nas-home" /></label>
+          <button>生成一次性注册码</button>
+        </form>
+        <div id="grant" hidden></div>
+        <p id="status" role="status">正在检查节点状态…</p>
+        <ul id="nodes"></ul>
+      </section>
+    </main>
+    <script type="module" src="/src/setup.ts"></script>
+  </body>
+</html>

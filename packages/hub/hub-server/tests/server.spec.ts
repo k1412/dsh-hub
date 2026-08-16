@@ -31,7 +31,7 @@ const access: HubAccessVerifier = {
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'dsh-hub-server-'))
   roots.push(root)
-  const storage = await HubStorage.open(join(root, 'hub.db'), join(root, 'objects'))
+  const storage = await HubStorage.open(join(root, 'hub.db'))
   const server = new HubServer({
     storage,
     access,
@@ -80,6 +80,16 @@ describe('Hub HTTP server', () => {
     await expect(me.json()).resolves.toMatchObject({ email: 'operator@example.com' })
   })
 
+  it('routes an empty fleet to the authenticated enrollment gate', async () => {
+    const { base } = await fixture()
+    const response = await fetch(`${base}/`, {
+      headers: requestHeaders('human'),
+      redirect: 'manual',
+    })
+    expect(response.status).toBe(302)
+    expect(response.headers.get('location')).toBe('/setup.html')
+  })
+
   it('requires exact same-origin JSON mutations and returns an enrollment secret only once', async () => {
     const { base, storage } = await fixture()
     const body = JSON.stringify({ nodeId: 'node-a', displayName: 'Node A', expiresInSeconds: 900 })
@@ -100,6 +110,17 @@ describe('Hub HTTP server', () => {
     expect(grant.nodeId).toBe('node-a')
     expect(typeof grant.code).toBe('string')
     expect(storage.control.listNodes()).toEqual([])
+
+    const pending = await fetch(`${base}/hub/v1/enrollments`, { headers: requestHeaders('human') })
+    await expect(pending.json()).resolves.toMatchObject({
+      enrollments: [{ nodeId: 'node-a', displayName: 'Node A' }],
+    })
+
+    const cancelled = await fetch(`${base}/hub/v1/enrollments/node-a/cancel`, {
+      method: 'POST', headers: requestHeaders('human', true), body: '{}',
+    })
+    expect(cancelled.status).toBe(200)
+    expect(storage.control.listPendingEnrollments()).toEqual([])
 
     const nodes = await fetch(`${base}/hub/v1/nodes`, { headers: requestHeaders('human') })
     await expect(nodes.json()).resolves.toEqual({ nodes: [], runtimes: [] })

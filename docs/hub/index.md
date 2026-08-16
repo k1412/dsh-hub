@@ -7,6 +7,7 @@ DSH Hub provides one authenticated browser workspace for multiple DeepSeek Harne
 ## Guides
 
 - [Deployment](deployment.md) installs the Hub with Docker Compose and enrolls a DSH node.
+- [Console guide](console.md) explains node enrollment, plugin state, automatic rollback, explicit snapshots, and advanced diagnostics.
 - [Node services](node-services.md) runs the Node Agent under Linux, macOS, or Windows service management.
 - [Operations](operations.md) covers enrollment, revocation, backup, restore, release upgrades, and recovery.
 

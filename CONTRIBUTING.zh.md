@@ -35,13 +35,11 @@ pnpm run hub:typecheck
 pnpm run hub:lint
 pnpm run hub:test
 pnpm run hub:web:build
+pnpm run test:gui
+DSH_SNAPSHOT=replay pnpm run test:web
 pnpm run hub:release:pack
 pnpm run hub:release:verify
-pnpm run verify-translation-pairing
-pnpm run verify-agent-note-format
-pnpm run verify-md-links
-pnpm run verify-mermaid
-pnpm run docs:check
+pnpm run doc-sync
 ```
 
 协议、认证、存储、插件事务、快照、终端或恢复变更除了成功路径外，还必须测试畸形输入和失败行为。Connector 变更必须包含真实 Cordis Loader Composition 测试，并保留本地 Web 与桌面客户端共存。部署变更必须构建 Linux AMD64 容器并执行 Origin 隔离冒烟测试。
@@ -50,7 +48,7 @@ pnpm run docs:check
 
 按照 Pull Request Template 填写 Issue、用户可见结果、验证证据、安全影响、兼容性影响和文档变更。保持 Diff 易于审查，保留仓库格式和包边界，并通过新 Commit 响应 Review，直到获得批准。
 
-`Hub CI` 的 Linux、macOS、Windows Type-check、文档和 Linux AMD64 容器 Job 必须全部通过。Hub 协议、认证、节点权限、部署和 Release Workflow 路径需要 CODEOWNERS Review。批准后使用 Squash 合并，使 `master` 中每个 Pull Request 对应一项经过审查的变更。
+`Hub CI` 的 Linux、macOS、Windows Type-check、官方 Web 回归、文档和 Linux AMD64 容器 Job 必须全部通过。Hub 协议、认证、节点权限、部署和 Release Workflow 路径需要 CODEOWNERS Review。批准后使用 Squash 合并，使 `master` 中每个 Pull Request 对应一项经过审查的变更。
 
 ## Release
 

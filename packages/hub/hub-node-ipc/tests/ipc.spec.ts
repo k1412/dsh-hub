@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   createHubIpcProof, encodeHubIpcFrame, generateHubIpcSecret, HubIpcFrameDecoder,
-  verifyHubIpcProof,
+  HUB_IPC_MAX_FRAME_BYTES, verifyHubIpcProof,
 } from '../src/index.ts'
 
 describe('Hub node IPC', () => {
@@ -37,7 +37,7 @@ describe('Hub node IPC', () => {
 
   it('rejects oversized declared lengths before buffering a payload', () => {
     const bytes = Buffer.alloc(4)
-    bytes.writeUInt32BE(4 * 1024 * 1024 + 1)
+    bytes.writeUInt32BE(HUB_IPC_MAX_FRAME_BYTES + 1)
     expect(() => new HubIpcFrameDecoder().push(bytes)).toThrow(/maximum/)
   })
 })

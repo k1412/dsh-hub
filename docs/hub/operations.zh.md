@@ -18,7 +18,7 @@
 
 ## 备份 Hub
 
-生产镜像可以在不停止 Hub 的情况下创建在线 SQLite 备份，并复制不可变显式对象。目标必须是挂载备份 Volume 中的新目录。
+生产镜像可以在不停止 Hub 的情况下创建在线 SQLite 备份。目标必须是挂载备份 Volume 中的新目录。
 
 ```sh
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -28,11 +28,11 @@ docker compose run --rm hub node /app/hub-server.mjs verify-backup \
   --source "/backup/${STAMP}"
 ```
 
-将验证通过的目录复制到独立故障域，进行加密，并保留多个世代。有效备份包含 `hub.db`、`objects/` 和 `manifest.json`；验证过程会检查 Manifest 中的每个文件哈希、数据库记录的每个对象以及审计链。在备份旁记录容器镜像 Digest 和 Release 版本。Manifest 是完整性记录，不是外部签名，因此必须与备份一起保护。
+将验证通过的目录复制到独立故障域，进行加密，并保留多个世代。有效备份包含 `hub.db` 和 `manifest.json`；验证过程会检查数据库哈希和审计链。在备份旁记录容器镜像 Digest 和 Release 版本。Manifest 是完整性记录，不是外部签名，因此必须与备份一起保护。插件回退事务与快照在各节点的 Node Agent 状态目录中，需要另行备份。
 
 ## 恢复 Hub
 
-停止 Hub，保留损坏 Volume，创建新状态 Volume，并恢复 `hub.db` 与 `objects/`，将所有权设为 `10001:10001`，且禁止 Group 或 World Access。先使用备份记录的精确镜像 Digest 启动，再考虑应用升级。
+停止 Hub，保留损坏 Volume，创建新状态 Volume，并恢复 `hub.db`，将所有权设为 `10001:10001`，且禁止 Group 或 World Access。先使用备份记录的精确镜像 Digest 启动，再考虑应用升级。
 
 把文件复制到新 Volume 前先运行 `verify-backup`。首次启动应使用隔离的反向代理路由；Hub 会在监听前验证审计链。确认节点记录存在，并确保恢复实例不能与生产 Hub 竞争同一批节点。原 Hub 永久停止后才能提升该路由。
 
@@ -40,7 +40,7 @@ docker compose run --rm hub node /app/hub-server.mjs verify-backup \
 
 创建并导出新备份，阅读 Release Notes，固定新的不可变镜像 Digest，拉取镜像并重新创建容器。验证健康状态、人员登录、节点重连、会话基线加载、一次读取命令、SSE 刷新以及一次终端打开和关闭。
 
-Hub 在启动时只执行已知的单步数据库迁移。Schema v1 到 v2 的迁移会保留所有会话索引行，并增加可空的项目工作目录字段；节点重新发送基线后填入字段。迁移后的数据库不能由只支持 v1 的旧镜像打开。需要回滚镜像时，应停止 Hub，并恢复升级前使用该旧镜像创建和验证过的完整备份；不得让旧镜像直接写入已迁移 Volume。
+Hub 在启动时只执行已知的顺序数据库迁移。Schema v1 到 v2 会保留所有会话索引行并增加可空的项目工作目录字段；v2 到 v3 删除未投入使用的 Hub 对象缓存表，节点文件、插件制品和快照继续留在节点。迁移后的数据库不能由旧镜像打开。需要回滚镜像时，应停止 Hub，并恢复升级前使用该旧镜像创建和验证过的完整备份；不得让旧镜像直接写入已迁移 Volume。
 
 Hub 协议采用精确协商。新的 Hub 不再接受节点的协议或能力版本时，应升级节点。Hub Release 不得静默重新解释旧能力描述符。
 
@@ -52,9 +52,9 @@ Node Agent 离线时，本地客户端仍可继续工作。Connector 重启期�
 
 ## 管理插件
 
-读取插件清单并获取当前锁哈希。批准精确包版本和 SHA-256 Tarball 哈希，然后应用到 Canary 节点。确认清单健康和 DSH Runtime 健康后，再继续其他节点或批次。
+在“设置 → 节点插件”选择 Runtime，即可看到实际插件版本、启用状态和健康状态。点击“检查更新”后选择精确目标版本；更新前 Node Agent 自动保存当前依赖与 Cordis 文件，下载受限于公共 npm Registry 并记录制品 SHA-256。先在 Canary 节点更新，确认插件与 DSH Runtime 健康后，再继续其他节点或批次。
 
-健康检查失败时，回滚到保留的目标锁。回滚会恢复已记录的依赖与 Cordis 文件，并使用冻结锁执行 DSH Profile Package Manager 安装。如果锁不匹配，操作会停止；只有清单证明精确请求制品已经存在时才会继续。
+更新失败时 Node Agent 会自动恢复；更新成功后，“更新与回退历史”会显示一个“回退到更新前”按钮。回退会恢复已记录的依赖与 Cordis 文件，并使用冻结锁执行 DSH Profile Package Manager 安装。如果当前锁已经被后续更新改变，操作会停止，避免覆盖更新状态。
 
 ## 管理快照
 

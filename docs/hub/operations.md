@@ -18,7 +18,7 @@ Revocation does not delete sessions or workspace data from the node. It also doe
 
 ## Back up Hub
 
-The production image creates an online SQLite backup and copies immutable explicit objects without stopping the Hub. The destination must be a new directory on the mounted backup volume.
+The production image creates an online SQLite backup without stopping Hub. The destination must be a new directory on the mounted backup volume.
 
 ```sh
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -28,11 +28,11 @@ docker compose run --rm hub node /app/hub-server.mjs verify-backup \
   --source "/backup/${STAMP}"
 ```
 
-Copy the verified directory to a separate failure domain, encrypt it, and retain multiple generations. A valid backup contains `hub.db`, `objects/`, and `manifest.json`; verification checks every manifest file hash, every database-recorded object, and the audit chain. Record the container image digest and release version beside the backup. The manifest is an integrity record, not an external signature, so protect it with the backup.
+Copy the verified directory to a separate failure domain, encrypt it, and retain multiple generations. A valid backup contains `hub.db` and `manifest.json`; verification checks the database hash and audit chain. Record the container image digest and release version beside the backup. The manifest is an integrity record, not an external signature, so protect it with the backup. Plugin rollback transactions and snapshots live in each node's Node Agent state and require separate backup.
 
 ## Restore Hub
 
-Stop the Hub, preserve the damaged volume, create a fresh state volume, and restore `hub.db` plus `objects/` with ownership `10001:10001` and no group or world access. Start the exact image digest recorded with the backup before considering an application upgrade.
+Stop Hub, preserve the damaged volume, create a fresh state volume, and restore `hub.db` with ownership `10001:10001` and no group or world access. Start the exact image digest recorded with the backup before considering an application upgrade.
 
 Run `verify-backup` before copying the files into the fresh volume. Use an isolated reverse-proxy route for the first start; Hub verifies the audit chain before listening. Verify node records are present and no restored instance can race the production Hub for the same nodes. Promote the route only after the original Hub is permanently stopped.
 
@@ -40,7 +40,7 @@ Run `verify-backup` before copying the files into the fresh volume. Use an isola
 
 Create and export a fresh backup, read the release notes, pin the new immutable image digest, pull it, and recreate the container. Verify health, human login, node reconnection, session baseline loading, a read command, SSE refresh, and one terminal open and close.
 
-Hub performs only known one-step database migrations at startup. The schema-v1-to-v2 migration retains every session-index row and adds a nullable project working-directory field, which nodes populate when they resend their baselines. A migrated database cannot be opened by an older image that understands only v1. To roll back the image, stop Hub and restore the complete pre-upgrade backup created and verified with that older image; never let the old image write the migrated volume directly.
+Hub performs only known sequential database migrations at startup. Schema v1 to v2 preserves every session-index row and adds a nullable project working-directory field. Schema v2 to v3 removes the never-adopted Hub object-cache tables; node files, plugin artifacts, and snapshots remain on nodes. An older image cannot open the migrated database. To roll back an image, stop Hub and restore the complete pre-upgrade backup created and verified with that older image; never allow the old image to write the migrated volume directly.
 
 Hub protocol negotiation is exact. Upgrade nodes when the new Hub no longer accepts their protocol or capability versions. A Hub release must not silently reinterpret an older capability descriptor.
 
@@ -52,9 +52,9 @@ Local clients continue working while the Node Agent is offline. During a Connect
 
 ## Manage plugins
 
-Read inventory and capture the current lock hash. Approve an exact package version and SHA-256 tarball hash, then apply it to a canary node. Confirm inventory health and DSH runtime health before continuing to another node or wave.
+Choose a runtime under **Settings → Node plugins** to see actual plugin versions, enabled state, and health. After **Check for updates**, select an exact target version. Node Agent automatically preserves the current dependency and Cordis files before updating, restricts downloads to the public npm registry, and records the artifact SHA-256. Update a canary node first and confirm plugin and DSH runtime health before continuing to another node or wave.
 
-If health fails, roll back to the retained target lock. Rollback restores the recorded dependency and Cordis files and runs the DSH profile package-manager installation with the frozen lock. A lock mismatch stops the operation unless inventory proves that the exact requested artifact is already present.
+Node Agent restores automatically when an update fails. After a successful update, **Update and rollback history** shows **Roll back to before update**. Rollback restores the recorded dependency and Cordis files and runs the DSH profile package-manager installation with the frozen lock. If a later update has changed the current lock, rollback stops rather than overwrite newer state.
 
 ## Manage snapshots
 

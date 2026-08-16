@@ -24,6 +24,7 @@
     "bundle": { "patch": "./cordis.patch.yml" }
   },
   "dependencies": {
+    "@deepseek-ai/dsh-api-gateway": "workspace:^",
     "@deepseek-ai/dsh-host-apiproxy": "workspace:^",
     "@k1412/dsh-hub-capabilities": "workspace:^",
     "@k1412/dsh-hub-node-ipc": "workspace:^",

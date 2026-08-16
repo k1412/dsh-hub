@@ -15,6 +15,7 @@ permissions:
 
 env:
   NODE_VERSION: '22.22.1'
+  WEB_NODE_VERSION: '24.19.0'
   DSH_TELEMETRY_DISABLED: '1'
 
 jobs:
@@ -46,7 +47,7 @@ jobs:
       - name: Run Hub tests
         run: pnpm run hub:test
       - name: Build Hub Web
-        run: pnpm run hub:web:build
+        run: pnpm run hub:web:build:contracts-ready
       - name: Verify Hub server backup path
         run: pnpm run hub:server:verify
       - name: Build release assets
@@ -79,7 +80,7 @@ jobs:
         run: pnpm run hub:lint
       - name: Build Hub Web
         shell: pwsh
-        run: pnpm run hub:web:build
+        run: pnpm run hub:web:build:contracts-ready
 
   documentation:
     name: Hub / documentation
@@ -97,15 +98,39 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Verify bilingual and Agent Note contracts
-        run: |
-          pnpm run verify-translation-pairing
-          pnpm run verify-agent-note-classification
-          pnpm run verify-agent-note-format
-          pnpm run verify-md-links
-          pnpm run verify-mermaid
-      - name: Build documentation website
-        run: pnpm run docs:check
+      - name: Verify documentation and generated references
+        run: pnpm run doc-sync
+
+  web-regression:
+    name: Hub / official Web regression
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.WEB_NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Install the locked Chromium runtime
+        run: pnpm --filter @deepseek-ai/dsh-web-frontend exec playwright install --with-deps chromium
+      - name: Prepare bubblewrap for DSH subprocess sandboxes
+        run: bash scripts/prepare-ci-bubblewrap.sh
+      - name: Run official GUI unit and component tests
+        run: pnpm run test:gui
+      - name: Run official Web replay tests
+        env:
+          DSH_SNAPSHOT: replay
+          # The fleet-console gate values deterministic compatibility over
+          # throughput. Some upstream replay fixtures register process-wide
+          # loaders and are not safe to overlap on a small hosted runner.
+          DSH_SNAPSHOT_MAX_CONCURRENCY: '1'
+        run: pnpm run test:web
 
   container:
     name: Hub / linux-amd64 container

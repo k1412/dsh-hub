@@ -3027,7 +3027,7 @@ export interface Config {
 
 ## `@k1412/dsh-hub-connector`
 
-需要：`apiProxy`
+需要：`apiProxy` · `typertGateway`
 
 ```ts config-catalog
 /** Connector configuration stored in the DSH profile. */
@@ -3045,7 +3045,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/hub/hub-connector/src/index.ts:26`](../packages/hub/hub-connector/src/index.ts)
+来源：[`packages/hub/hub-connector/src/index.ts:31`](../packages/hub/hub-connector/src/index.ts)
 
 ## 无配置的可加载插件
 
@@ -3116,6 +3116,7 @@ export interface Config {
 - `@deepseek-ai/dsh-tool-subagent-control` — 需要 `tools` · `subagents`（[`packages/subagent/tool-subagent-control/src/index.ts`](../packages/subagent/tool-subagent-control/src/index.ts)）
 - `@deepseek-ai/dsh-user-questions`（[`packages/interaction/user-questions/src/index.ts`](../packages/interaction/user-questions/src/index.ts)）
 - `@deepseek-ai/dsh-workspace` — 需要 `storageDomain` · `sessionPersistence`（[`packages/workspace/workspace/src/index.ts`](../packages/workspace/workspace/src/index.ts)）
+- `@k1412/dsh-hub-client-ui`（[`packages/hub/hub-client-ui/src/index.ts`](../packages/hub/hub-client-ui/src/index.ts)）
 
 ## Seam 包（不可直接加载）
 

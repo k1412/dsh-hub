@@ -1,0 +1,260 @@
+// @vitest-environment jsdom
+
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { FleetSnapshot, HubRuntime } from '../src/client/api.ts'
+
+const api = vi.hoisted(() => ({
+  readFleet: vi.fn(),
+  createEnrollment: vi.fn(),
+  cancelEnrollment: vi.fn(),
+  revokeNode: vi.fn(),
+  switchRuntime: vi.fn(),
+  invoke: vi.fn(),
+}))
+
+vi.mock('../src/client/api.ts', async original => ({
+  ...await original(),
+  ...api,
+}))
+
+import { HubNodesSection } from '../src/client/HubNodesSection.tsx'
+import { HubPluginsSection } from '../src/client/HubPluginsSection.tsx'
+import { terminalSocketUrl } from '../src/client/AdvancedDiagnostics.tsx'
+
+const runtime: HubRuntime = {
+  nodeId: 'nas-home',
+  runtimeId: 'web',
+  dshVersion: '0.1.0-rc.5',
+  connectorVersion: '0.1.0-rc.5',
+  online: true,
+  lastSeenAt: 1_000,
+  capabilities: [
+    { name: 'dsh.plugins', version: '2.0.0', operations: [
+      { name: 'inventory' }, { name: 'check-updates' }, { name: 'history' },
+      { name: 'apply' }, { name: 'rollback' },
+    ] },
+    { name: 'dsh.snapshots', version: '2.0.0', operations: [
+      { name: 'list' }, { name: 'create' }, { name: 'restore' },
+    ] },
+    { name: 'dsh.files', version: '1.0.0', operations: [
+      { name: 'list' }, { name: 'read' }, { name: 'write' }, { name: 'remove' },
+    ] },
+    { name: 'dsh.terminals', version: '1.0.0', operations: [
+      { name: 'open' }, { name: 'write' }, { name: 'resize' }, { name: 'close' },
+    ] },
+  ],
+}
+
+const fleet: FleetSnapshot = {
+  nodes: [{
+    nodeId: 'nas-home', displayName: 'Home NAS', status: 'active', online: true,
+    createdAt: 500, lastSeenAt: 1_000,
+  }],
+  runtimes: [runtime],
+  enrollments: [{ nodeId: 'mac-home', displayName: 'Home Mac', createdAt: 600, expiresAt: 60_000 }],
+}
+
+const unusedHook = (() => { throw new Error('not used by Hub Settings') }) as never
+
+beforeEach(() => {
+  history.replaceState({}, '', '/?nodeId=nas-home&runtimeId=web')
+  api.readFleet.mockResolvedValue(fleet)
+  api.createEnrollment.mockResolvedValue({
+    nodeId: 'work-pc', displayName: 'Work PC', createdAt: 1_000, expiresAt: 60_000, code: 'one-time-code',
+  })
+  api.cancelEnrollment.mockResolvedValue(undefined)
+  api.revokeNode.mockResolvedValue(undefined)
+  api.invoke.mockImplementation(async (_runtime, capability, operation) => {
+    if (capability === 'dsh.files' && operation === 'list') return {
+      entries: [{ path: '/var/log/dsh.log', kind: 'file', size: 8, modifiedAt: 1_000 }],
+    }
+    if (capability === 'dsh.files' && operation === 'read') return {
+      encoding: 'utf8', data: 'old text', eof: true, contentHash: 'b'.repeat(43),
+    }
+    if (capability === 'dsh.files' && operation === 'write') return {
+      contentHash: 'c'.repeat(43), size: 8,
+    }
+    if (operation === 'inventory') return {
+      plugins: [{ packageName: '@deepseek-ai/dsh-tool-web', version: '1.0.0', enabled: true, healthy: true }],
+      lockHash: 'a'.repeat(43), checkedAt: 1_000,
+    }
+    if (operation === 'history') return { changes: [{
+      changeId: 'change-1', packageName: '@deepseek-ai/dsh-tool-web', fromVersion: '0.9.0',
+      toVersion: '1.0.0', createdAt: 900, status: 'applied',
+    }] }
+    if (operation === 'list') return { snapshots: [] }
+    if (operation === 'check-updates') return {
+      plugins: [{
+        packageName: '@deepseek-ai/dsh-tool-web', version: '1.0.0', latestVersion: '1.1.0',
+        updateAvailable: true, enabled: true, healthy: true,
+      }],
+      lockHash: 'a'.repeat(43), checkedAt: 1_100,
+    }
+    if (operation === 'apply') return {}
+    throw new Error(`unexpected operation ${String(operation)}`)
+  })
+})
+
+afterEach(() => {
+  cleanup()
+  vi.clearAllMocks()
+  vi.restoreAllMocks()
+})
+
+describe('Hub management Settings pages', () => {
+  it('shows registration lifecycle, runtime switching, and diagnostic purpose without primary tool navigation', async () => {
+    render(<HubNodesSection
+      close={() => undefined}
+      useSessions={unusedHook}
+      useWorkspaces={unusedHook}
+    />)
+    expect(await screen.findByText('Home NAS')).toBeTruthy()
+    expect(screen.getByText('Home Mac')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '当前' })).toHaveProperty('disabled', true)
+    expect(screen.queryByRole('navigation', { name: /终端|文件/ })).toBeNull()
+
+    fireEvent.click(screen.getByText('高级诊断：终端与文件'))
+    expect(screen.getByText(/仅在节点服务损坏/)).toBeTruthy()
+    expect(screen.getByText(/不是聊天、项目管理或日常文件浏览功能/)).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: 'Work PC' } })
+    expect(screen.getByLabelText('节点 ID')).toHaveProperty('value', 'work-pc')
+    fireEvent.click(screen.getByRole('button', { name: '生成注册码' }))
+    expect(await screen.findByText('one-time-code')).toBeTruthy()
+    fireEvent.click(screen.getByText('接下来如何接入节点'))
+    expect(screen.getByText(/dsh-hub-node init/)).toBeTruthy()
+  })
+
+  it('cancels pending registration, opens another runtime, and revokes an enrolled node only after confirmation', async () => {
+    const secondRuntime: HubRuntime = {
+      ...runtime,
+      runtimeId: 'desktop',
+    }
+    api.readFleet.mockResolvedValue({ ...fleet, runtimes: [runtime, secondRuntime] })
+    vi.spyOn(globalThis, 'confirm').mockReturnValue(true)
+
+    render(<HubNodesSection
+      close={() => undefined}
+      useSessions={unusedHook}
+      useWorkspaces={unusedHook}
+    />)
+
+    expect(await screen.findByText('Home Mac')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '取消注册' }))
+    await waitFor(() => { expect(api.cancelEnrollment).toHaveBeenCalledWith('mac-home') })
+
+    fireEvent.click(screen.getByRole('button', { name: '打开' }))
+    expect(api.switchRuntime).toHaveBeenCalledWith(secondRuntime)
+
+    fireEvent.click(screen.getByRole('button', { name: '撤销节点身份' }))
+    await waitFor(() => { expect(api.revokeNode).toHaveBeenCalledWith('nas-home') })
+    expect(globalThis.confirm).toHaveBeenCalledWith(expect.stringContaining('原身份不能再次使用'))
+  })
+
+  it('keeps file rescue path-explicit and protects edits with the version read from the node', async () => {
+    vi.spyOn(globalThis, 'confirm').mockReturnValue(true)
+    render(<HubNodesSection
+      close={() => undefined}
+      useSessions={unusedHook}
+      useWorkspaces={unusedHook}
+    />)
+    expect(await screen.findByText('Home NAS')).toBeTruthy()
+    fireEvent.click(screen.getByText('高级诊断：终端与文件'))
+    fireEvent.change(screen.getByLabelText('节点绝对路径'), { target: { value: '/var/log' } })
+    fireEvent.click(screen.getByRole('button', { name: '列出目录' }))
+    fireEvent.click(await screen.findByRole('button', { name: /dsh\.log/ }))
+    const editor = await screen.findByLabelText('文件内容')
+    expect((editor as HTMLTextAreaElement).value).toBe('old text')
+    fireEvent.change(editor, { target: { value: 'new text' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存修改' }))
+    await waitFor(() => {
+      expect(api.invoke).toHaveBeenCalledWith(runtime, 'dsh.files', 'write', {
+        path: '/var/log/dsh.log', expectedHash: 'b'.repeat(43), encoding: 'utf8', data: 'new text',
+      })
+    })
+    expect(document.body.textContent).not.toContain('b'.repeat(43))
+  })
+
+  it('builds terminal access on the current authenticated origin', () => {
+    expect(terminalSocketUrl(runtime, '/srv/dsh')).toBe(
+      'ws://localhost:3000/hub/v1/terminal?nodeId=nas-home&runtimeId=web&columns=100&rows=30&cwd=%2Fsrv%2Fdsh',
+    )
+  })
+
+  it('turns plugin state and rollback points into direct actions without exposing hashes', async () => {
+    render(<HubPluginsSection
+      close={() => undefined}
+      useSessions={unusedHook}
+      useWorkspaces={unusedHook}
+    />)
+    expect(await screen.findAllByText('@deepseek-ai/dsh-tool-web')).toHaveLength(2)
+    expect(screen.getByText('运行正常')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '回退到更新前' })).toBeTruthy()
+    expect(document.body.textContent).not.toMatch(/lockHash|artifactHash|快照 ID/)
+
+    fireEvent.click(screen.getByRole('button', { name: '检查更新' }))
+    expect(await screen.findByRole('button', { name: '更新到 1.1.0' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '更新到 1.1.0' }))
+    await waitFor(() => {
+      expect(api.invoke).toHaveBeenCalledWith(runtime, 'dsh.plugins', 'apply', expect.objectContaining({
+        packageName: '@deepseek-ai/dsh-tool-web',
+        version: '1.1.0',
+        expectedLockHash: 'a'.repeat(43),
+      }))
+    })
+    expect(JSON.stringify(api.invoke.mock.calls)).not.toContain('artifactHash')
+  })
+
+  it('rolls a plugin back independently from explicit snapshot create and restore', async () => {
+    api.invoke.mockImplementation(async (_runtime, capability, operation) => {
+      if (operation === 'inventory') return {
+        plugins: [{ packageName: '@deepseek-ai/dsh-tool-web', version: '1.0.0', enabled: true, healthy: true }],
+        lockHash: 'a'.repeat(43), checkedAt: 1_000,
+      }
+      if (operation === 'history') return { changes: [{
+        changeId: 'change-1', packageName: '@deepseek-ai/dsh-tool-web', fromVersion: '0.9.0',
+        toVersion: '1.0.0', createdAt: 900, status: 'applied',
+      }] }
+      if (capability === 'dsh.snapshots' && operation === 'list') return { snapshots: [{
+        snapshotId: 'snapshot-1', type: 'configuration', createdAt: 800,
+        label: '升级前', reason: 'manual',
+      }] }
+      if (operation === 'rollback' || operation === 'create' || operation === 'restore') return {}
+      throw new Error(`unexpected operation ${String(operation)}`)
+    })
+    vi.spyOn(globalThis, 'confirm').mockReturnValue(true)
+
+    render(<HubPluginsSection
+      close={() => undefined}
+      useSessions={unusedHook}
+      useWorkspaces={unusedHook}
+    />)
+
+    fireEvent.click(await screen.findByRole('button', { name: '回退到更新前' }))
+    await waitFor(() => {
+      expect(api.invoke).toHaveBeenCalledWith(runtime, 'dsh.plugins', 'rollback', expect.objectContaining({
+        changeId: 'change-1',
+        expectedLockHash: 'a'.repeat(43),
+      }))
+    })
+
+    fireEvent.click(screen.getByText('整机快照与恢复'))
+    fireEvent.change(screen.getByLabelText('名称'), { target: { value: '手工保护点' } })
+    await waitFor(() => { expect(screen.getByRole('button', { name: '创建快照' })).not.toHaveProperty('disabled', true) })
+    fireEvent.click(screen.getByRole('button', { name: '创建快照' }))
+    await waitFor(() => {
+      expect(api.invoke).toHaveBeenCalledWith(runtime, 'dsh.snapshots', 'create', expect.objectContaining({
+        type: 'configuration', label: '手工保护点', includeSecretValues: false,
+      }))
+    })
+
+    await waitFor(() => { expect(screen.getByRole('button', { name: '恢复' })).not.toHaveProperty('disabled', true) })
+    fireEvent.click(screen.getByRole('button', { name: '恢复' }))
+    await waitFor(() => {
+      expect(api.invoke).toHaveBeenCalledWith(runtime, 'dsh.snapshots', 'restore', expect.objectContaining({
+        snapshotId: 'snapshot-1',
+      }))
+    })
+  })
+})

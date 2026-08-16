@@ -9,6 +9,7 @@ import { HubNodeSupervisor } from '../src/supervisor.ts'
 const roots: string[] = []
 
 afterEach(async () => {
+  vi.unstubAllGlobals()
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
 })
 
@@ -52,7 +53,9 @@ describe('Node Agent management supervisor', () => {
 
     await writeFile(join(profile, 'cordis.yml'), '- name: changed\n')
     await writeFile(join(profile, '.env'), 'TOKEN=changed-but-still-local\n')
-    await supervisor.invoke('dsh.snapshots', 'restore', { snapshotId: created.snapshotId })
+    await supervisor.invoke('dsh.snapshots', 'restore', {
+      clientMutationId: 'snapshot-restore-0001', snapshotId: created.snapshotId,
+    })
     expect(await readFile(join(profile, 'cordis.yml'), 'utf8')).toBe('- name: original\n')
     expect(await readFile(join(profile, '.env'), 'utf8')).toBe('TOKEN=changed-but-still-local\n')
 
@@ -147,9 +150,18 @@ if (args[0] === 'plugin' && args.includes('add')) {
 
     const artifact = Buffer.from('verified plugin tarball')
     const artifactHash = createHash('sha256').update(artifact).digest('base64url')
-    const artifactDirectory = join(state, 'management', 'artifacts')
-    await mkdir(artifactDirectory, { recursive: true })
-    await writeFile(join(artifactDirectory, `${artifactHash}.tgz`), artifact)
+    vi.stubGlobal('fetch', vi.fn(async (input: URL | RequestInfo) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString())
+      if (url.pathname.endsWith('/1.2.3')) {
+        return Response.json({
+          name: '@example/hub-plugin',
+          version: '1.2.3',
+          dist: { tarball: 'https://registry.npmjs.org/example-hub-plugin/-/example-hub-plugin-1.2.3.tgz' },
+        })
+      }
+      if (url.pathname.endsWith('/example-hub-plugin-1.2.3.tgz')) return new Response(artifact)
+      return new Response('not found', { status: 404 })
+    }))
     const supervisor = new HubNodeSupervisor(state, {
       runtimeId: 'web-runtime',
       profileDirectory: profile,
@@ -162,21 +174,28 @@ if (args[0] === 'plugin' && args.includes('add')) {
       lockHash: string
     }
     const applied = await supervisor.invoke('dsh.plugins', 'apply', {
+      clientMutationId: 'plugin-apply-0001',
       packageName: '@example/hub-plugin',
       version: '1.2.3',
-      artifactHash,
       expectedLockHash: before.lockHash,
-    }) as { plugin: { version: string; artifactHash: string; healthy: boolean }; lockHash: string }
+    }) as {
+      plugin: { version: string; artifactHash: string; healthy: boolean }
+      change: { changeId: string; status: string }
+      lockHash: string
+    }
     expect(applied.plugin).toMatchObject({ version: '1.2.3', artifactHash, healthy: true })
+    expect(applied.change).toMatchObject({ status: 'applied' })
     const installedManifest = JSON.parse(await readFile(join(profile, 'package.json'), 'utf8')) as {
       dependencies?: Record<string, unknown>
     }
     expect(installedManifest.dependencies?.['@example/hub-plugin']).toMatch(/^file:/)
 
     const restored = await supervisor.invoke('dsh.plugins', 'rollback', {
-      packageName: '@example/hub-plugin', targetLockHash: before.lockHash,
-    }) as { plugins: unknown[]; lockHash: string }
-    expect(restored).toEqual({ plugins: [], lockHash: before.lockHash })
+      clientMutationId: 'plugin-rollback-0001',
+      changeId: applied.change.changeId,
+      expectedLockHash: applied.lockHash,
+    }) as { plugins: unknown[]; lockHash: string; change: { status: string } }
+    expect(restored).toMatchObject({ plugins: [], lockHash: before.lockHash, change: { status: 'rolled-back' } })
   })
 
   it.skipIf(process.platform === 'win32')('refuses snapshot restore through a symlinked parent', async () => {
@@ -204,7 +223,7 @@ if (args[0] === 'plugin' && args.includes('add')) {
     await rm(nested, { recursive: true })
     await symlink(outside, nested, 'dir')
     await expect(supervisor.invoke('dsh.snapshots', 'restore', {
-      snapshotId: created.snapshotId,
+      clientMutationId: 'snapshot-symlink-restore-0001', snapshotId: created.snapshotId,
     })).rejects.toThrow(/symlinked parent/)
   })
 
@@ -236,7 +255,7 @@ if (args[0] === 'plugin' && args.includes('add')) {
     await symlink(outside, nested, 'dir')
 
     await expect(supervisor.invoke('dsh.snapshots', 'restore', {
-      snapshotId: created.snapshotId,
+      clientMutationId: 'snapshot-preflight-restore-0001', snapshotId: created.snapshotId,
     })).rejects.toThrow(/symlinked parent/)
     expect(await readFile(join(data, 'first.txt'), 'utf8')).toBe('current-first\n')
   })

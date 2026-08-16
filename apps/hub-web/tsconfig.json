@@ -1,12 +1,12 @@
 {
-  "extends": "../../tsconfig.base.json",
+  "extends": "../../tsconfig.base.client.json",
   "compilerOptions": {
-    "composite": false,
-    "declaration": false,
-    "declarationMap": false,
-    "incremental": false,
-    "lib": ["ES2024", "DOM", "DOM.Iterable"],
-    "types": []
+    "rootDir": "src",
+    "outDir": "lib/types"
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src"],
+  "references": [
+    { "path": "../../packages/client/web" },
+    { "path": "../../packages/client/modules" }
+  ]
 }

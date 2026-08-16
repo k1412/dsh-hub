@@ -2,9 +2,9 @@
 
 [English](README.md) | 中文
 
-Hub Connector 是宿主侧 Cordis 命名空间插件，用于把一个现有 DSH Runtime 接入本机 Hub Node Agent。它使用与传输无关的 `ctx.apiProxy` Host Gateway，因此 Hub、本地 Web 与桌面客户端操作相同的会话、事件源、持久化、设置和模型配置。
+Hub Connector 是宿主侧 Cordis 命名空间插件，用于把一个现有 DSH Runtime 接入本机 Hub Node Agent。它使用与传输无关的 `ctx.apiProxy` 与 Typert Gateway，因此 Hub、本地 Web 与桌面客户端操作相同的会话、事件源、持久化、设置和模型配置。
 
-Connector 只建立经过认证的本地 IPC 客户端连接。它没有 HTTP Server、公网监听、浏览器资源、DSH Web 传输依赖，也不拥有另一套 DSH Runtime。移除 Connector 不会改变任何本地 DSH 界面和会话权威状态。
+Connector 只建立经过认证的本地 IPC 客户端连接。它没有 HTTP Server、公网监听、浏览器资源或 DSH Web 插件依赖，也不拥有另一套 DSH Runtime。`dsh.web` 能力把官方 Web 的 HTTP 请求和两条事件通道映射到 Host Service，不代理节点 Web 端口。移除 Connector 不会改变任何本地 DSH 界面和会话权威状态。
 
 发行 Bundle 向现有 Profile 添加一个 Cordis 配置行。它的命名空间导出可以让 `inject`、`Config` 和 `apply` 完整通过真实 Cordis Loader。一个 Connector 实例使用稳定 Runtime ID 标识一个 DSH 进程；同一机器上的多个 Profile 可以使用不同 Runtime ID 共享同一个 Node Agent。
 
@@ -20,5 +20,5 @@ Connector 会从启动 Runtime 的 CLI 软件包中检测 DSH 版本。仅当嵌
 
 ## 已知限制与延期工作
 
-- Connector 必须运行在提供兼容 Host `apiProxy` Service 的 DSH Context 中。标准 Web Profile 会提供该 Service；其他组合必须显式组合该 Host Service 及其前置依赖。Connector 不能附加到不相关的 DSH 进程，也不会推断两个进程共享实时状态。
+- Connector 必须运行在提供兼容 Host `apiProxy` 与 Typert Gateway 的 DSH Context 中。标准 Profile 会提供这些 Service；其他组合必须显式组合它们及其前置依赖。Connector 不能附加到不相关的 DSH 进程，也不会推断两个进程共享实时状态。
 - Node Agent 必须使用能够读取仅所有者可访问 IPC 密钥并连接已配置本地端点的操作系统账户运行。

@@ -7,8 +7,9 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import type { TypertGateway } from '@deepseek-ai/dsh-api-gateway/types'
 import {
-  runtimeCapability, sessionsCapability, settingsCapability,
+  runtimeCapability, sessionsCapability, settingsCapability, webCapability,
   resolveHubOperation,
 } from '@k1412/dsh-hub-capabilities'
 import {
@@ -16,7 +17,11 @@ import {
   type HubIpcFrame,
 } from '@k1412/dsh-hub-node-ipc'
 import { HubMessageId, type HubEnvelopeBody, type HubJson } from '@k1412/dsh-hub-protocol'
-import { RpcId, type ApiProxy, type RpcResponse, type SessionSummary } from '@deepseek-ai/dsh-host-apiproxy'
+import {
+  RpcId, toFetchHandler,
+  type ApiProxy, type RpcResponse, type SessionSummary,
+} from '@deepseek-ai/dsh-host-apiproxy'
+import { clientRequestSchema, serverResponseSchema } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
 
 /** Connector release sent in the authenticated local baseline. */
@@ -91,7 +96,7 @@ export const Config: z<Config> = z.object({
   reconnectMaximumMs: z.number().step(1).min(1_000).max(120_000).default(30_000),
 })
 
-export const inject = ['apiProxy']
+export const inject = ['apiProxy', 'typertGateway']
 
 interface ActiveIpc {
   socket: Socket
@@ -225,9 +230,15 @@ export class HubConnector {
   private active: ActiveIpc | undefined
   private indexRevision = 0
   private eventFrameSequence = 0
+  private webMuxFrameSequence = 0
+  private webHostFrameSequence = 0
   private detectedDshVersion: string | undefined
 
-  public constructor(private readonly api: ApiProxy, private readonly config: ResolvedConfig) {}
+  public constructor(
+    private readonly api: ApiProxy,
+    private readonly gateway: TypertGateway,
+    private readonly config: ResolvedConfig,
+  ) {}
 
   /**
    * Maintain the authenticated local IPC connection until aborted.
@@ -280,7 +291,12 @@ export class HubConnector {
               runtimeBootId: this.runtimeBootId,
               connectorVersion: HUB_CONNECTOR_VERSION,
               dshVersion,
-              capabilities: [sessionsCapability.descriptor, runtimeCapability.descriptor, settingsCapability.descriptor],
+              capabilities: [
+                sessionsCapability.descriptor,
+                runtimeCapability.descriptor,
+                settingsCapability.descriptor,
+                webCapability.descriptor,
+              ],
               proof: createHubIpcProof(
                 secret, frame.challenge, this.config.runtimeId, this.runtimeBootId, HUB_CONNECTOR_VERSION,
               ),
@@ -363,7 +379,58 @@ export class HubConnector {
     if (capability === 'dsh.sessions') return this.invokeSessions(operation, input, commandId)
     if (capability === 'dsh.runtime') return this.invokeRuntime(operation, input, commandId)
     if (capability === 'dsh.settings') return this.invokeSettings(operation, input, commandId)
+    if (capability === 'dsh.web') return this.invokeWeb(operation, input)
     throw new Error('capability is not implemented by the Connector')
+  }
+
+  private async invokeWeb(operation: string, value: unknown): Promise<unknown> {
+    if (operation !== 'fetch') throw new Error(`unsupported Web operation ${operation}`)
+    const input = value as {
+      method: 'GET' | 'HEAD' | 'POST'
+      path: string
+      headers: Array<[string, string]>
+      body?: string
+    }
+    const url = new URL(input.path, 'http://dsh.internal')
+    const request = new Request(url, {
+      method: input.method,
+      headers: input.headers,
+      ...(input.body === undefined || input.method === 'GET' || input.method === 'HEAD'
+        ? {}
+        : { body: input.body }),
+    })
+    let response = await toFetchHandler(this.api).fetch(request)
+    if (response.status === 404 && input.method === 'POST' && url.pathname.startsWith('/api/')) {
+      const endpoint = url.pathname.slice('/api/'.length)
+      let body: unknown
+      try {
+        body = JSON.parse(input.body ?? '') as unknown
+      } catch {
+        return { status: 400, headers: [['content-type', 'text/plain; charset=utf-8']], encoding: 'utf8', body: 'body is not JSON' }
+      }
+      const parsed = clientRequestSchema.safeParse(body)
+      if (parsed.success && parsed.data.method === endpoint) {
+        const result = await this.gateway.dispatch(endpoint, parsed.data.payload, new AbortController().signal)
+        const envelope = serverResponseSchema.parse({
+          type: 'server-response',
+          rpcId: parsed.data.rpcId,
+          result,
+        })
+        response = Response.json(envelope)
+      }
+    }
+    const bytes = Buffer.from(await response.arrayBuffer())
+    const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+    const textual = contentType.startsWith('text/')
+      || contentType.includes('json')
+      || contentType.includes('javascript')
+      || contentType.includes('xml')
+    return {
+      status: response.status,
+      headers: [...response.headers.entries()],
+      encoding: textual ? 'utf8' : 'base64',
+      body: textual ? bytes.toString('utf8') : bytes.toString('base64'),
+    }
   }
 
   private async listSessions(): Promise<SessionView[]> {
@@ -584,6 +651,21 @@ export class HubConnector {
     const host = this.api.events.host({ rpcId: rpcId(), payload: {} }, signal)
     const consumeMux = async () => {
       for await (const frame of mux) {
+        this.webMuxFrameSequence += 1
+        await this.send({ type: 'ipc.hub-body', body: {
+          type: 'stream.frame',
+          runtimeId: this.config.runtimeId,
+          streamId: HubMessageId(jsonHash(`${this.config.runtimeId}:dsh.web:mux`).slice(0, 24)),
+          capability: 'dsh.web',
+          stream: 'mux',
+          frameSequence: this.webMuxFrameSequence,
+          payload: {
+            type: 'server-request',
+            rpcId: frame.rpcId,
+            method: frame.payload.type,
+            payload: frame.payload,
+          } as unknown as HubJson,
+        } })
         if (frame.payload.type !== 'session/event') continue
         const sequence = eventSequence(frame.payload.event)
         this.eventFrameSequence += 1
@@ -602,6 +684,21 @@ export class HubConnector {
     }
     const consumeHost = async () => {
       for await (const frame of host) {
+        this.webHostFrameSequence += 1
+        await this.send({ type: 'ipc.hub-body', body: {
+          type: 'stream.frame',
+          runtimeId: this.config.runtimeId,
+          streamId: HubMessageId(jsonHash(`${this.config.runtimeId}:dsh.web:host`).slice(0, 24)),
+          capability: 'dsh.web',
+          stream: 'host',
+          frameSequence: this.webHostFrameSequence,
+          payload: {
+            type: 'server-request',
+            rpcId: frame.rpcId,
+            method: frame.payload.type,
+            payload: frame.payload,
+          } as unknown as HubJson,
+        } })
         if (frame.payload.type === 'stream/error') continue
         await this.publishIndex()
       }
@@ -613,7 +710,7 @@ export class HubConnector {
 /** Mount one Connector into the same Context as ApiProxy and every local client surface. */
 export function apply(ctx: Context, config: Config): () => Promise<void> {
   const controller = new AbortController()
-  const connector = new HubConnector(ctx.apiProxy, {
+  const connector = new HubConnector(ctx.apiProxy, ctx.typertGateway, {
     ipcEndpoint: config.ipcEndpoint ?? defaultIpcEndpoint,
     secretFile: config.secretFile ?? join(defaultStateDirectory, 'connector.secret'),
     runtimeId: config.runtimeId ?? (process.env.DSH_HUB_RUNTIME_ID?.trim() || 'default'),

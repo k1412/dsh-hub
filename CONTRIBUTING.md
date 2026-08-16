@@ -35,13 +35,11 @@ pnpm run hub:typecheck
 pnpm run hub:lint
 pnpm run hub:test
 pnpm run hub:web:build
+pnpm run test:gui
+DSH_SNAPSHOT=replay pnpm run test:web
 pnpm run hub:release:pack
 pnpm run hub:release:verify
-pnpm run verify-translation-pairing
-pnpm run verify-agent-note-format
-pnpm run verify-md-links
-pnpm run verify-mermaid
-pnpm run docs:check
+pnpm run doc-sync
 ```
 
 Protocol, authentication, storage, plugin transaction, snapshot, terminal, or recovery changes require tests for malformed input and failure behavior in addition to the successful path. Connector changes require a real Cordis Loader composition test and must preserve local Web and desktop coexistence. Deployment changes require a Linux AMD64 container build and an origin-isolation smoke test.
@@ -50,7 +48,7 @@ Protocol, authentication, storage, plugin transaction, snapshot, terminal, or re
 
 Complete the pull request template with the issue, user-visible outcome, validation evidence, security impact, compatibility impact, and documentation changes. Keep the diff reviewable, preserve repository formatting and package boundaries, and respond to review with new commits until approval.
 
-The `Hub CI` checks must pass on Linux and macOS, Windows type-check, documentation, and Linux AMD64 container jobs. CODEOWNERS review is required for Hub protocol, authentication, node authority, deployment, and release workflow paths. Merge by squash after approval so `master` retains one reviewed change per pull request.
+The `Hub CI` checks must pass on Linux and macOS, Windows type-check, official Web regression, documentation, and Linux AMD64 container jobs. CODEOWNERS review is required for Hub protocol, authentication, node authority, deployment, and release workflow paths. Merge by squash after approval so `master` retains one reviewed change per pull request.
 
 ## Releases
 
