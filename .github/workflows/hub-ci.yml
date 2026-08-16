@@ -47,7 +47,7 @@ jobs:
       - name: Run Hub tests
         run: pnpm run hub:test
       - name: Build Hub Web
-        run: pnpm run hub:web:build
+        run: pnpm run hub:web:build:contracts-ready
       - name: Verify Hub server backup path
         run: pnpm run hub:server:verify
       - name: Build release assets
@@ -80,7 +80,7 @@ jobs:
         run: pnpm run hub:lint
       - name: Build Hub Web
         shell: pwsh
-        run: pnpm run hub:web:build
+        run: pnpm run hub:web:build:contracts-ready
 
   documentation:
     name: Hub / documentation
