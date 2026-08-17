@@ -275,7 +275,14 @@ export class HubConnector {
     })
     const streams = new AbortController()
     const heartbeat = setInterval(() => {
-      if (authenticated) void this.send({ type: 'ipc.heartbeat', timestamp: Date.now() })
+      if (authenticated) {
+        // The IPC peer can close between the timer's readiness check and the
+        // queued socket write. Heartbeats are best effort; turn that race into
+        // an ordinary reconnect instead of an unhandled rejection that can
+        // terminate the parent DSH runtime.
+        void this.send({ type: 'ipc.heartbeat', timestamp: Date.now() })
+          .catch(() => { socket.destroy() })
+      }
     }, 30_000)
     heartbeat.unref()
     this.active = { socket, writes: Promise.resolve(), streams, heartbeat, indexTimer: undefined }
@@ -345,6 +352,10 @@ export class HubConnector {
     const active = this.active
     if (active === undefined || active.socket.destroyed) throw new Error('Connector IPC is offline')
     const operation = active.writes.then(() => new Promise<void>((resolve, reject) => {
+      if (this.active !== active || active.socket.destroyed) {
+        reject(new Error('Connector IPC is offline'))
+        return
+      }
       active.socket.write(encodeHubIpcFrame(frame), (error) => {
         if (error == null) resolve()
         else reject(error)

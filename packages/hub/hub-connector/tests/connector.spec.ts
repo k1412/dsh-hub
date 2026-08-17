@@ -8,7 +8,7 @@ import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
 import type { TypertGateway } from '@deepseek-ai/dsh-api-gateway'
-import { generateHubIpcSecret } from '@k1412/dsh-hub-node-ipc'
+import { generateHubIpcSecret, type HubIpcFrame } from '@k1412/dsh-hub-node-ipc'
 import { HubConnectorServer } from '../../hub-node-agent/src/ipc-server.ts'
 import type { HubEnvelopeBody } from '@k1412/dsh-hub-protocol'
 import { detectDshVersion, HubConnector } from '../src/index.ts'
@@ -41,6 +41,34 @@ function testGateway(): TypertGateway {
 }
 
 describe('Hub Connector coexistence', () => {
+  it('rejects a queued write when IPC closes before the write reaches the socket', async () => {
+    const connector = new HubConnector({} as ApiProxy, testGateway(), {
+      ipcEndpoint: '/unused',
+      secretFile: '/unused',
+      runtimeId: 'default',
+      dshVersion: 'test',
+      reconnectMaximumMs: 1_000,
+    })
+    let releaseWrite: (() => void) | undefined
+    const previousWrite = new Promise<void>((resolve) => { releaseWrite = resolve })
+    const write = vi.fn()
+    const socket = { destroyed: false, write }
+    ;(connector as unknown as { active: { socket: typeof socket; writes: Promise<void> } }).active = {
+      socket,
+      writes: previousWrite,
+    }
+    const send = (connector as unknown as {
+      send: (frame: HubIpcFrame) => Promise<void>
+    }).send.bind(connector)
+    const pending = send({ type: 'ipc.heartbeat', timestamp: Date.now() })
+
+    socket.destroyed = true
+    releaseWrite?.()
+
+    await expect(pending).rejects.toThrow('Connector IPC is offline')
+    expect(write).not.toHaveBeenCalled()
+  })
+
   it('detects the DSH package version from the launching CLI entrypoint', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-hub-version-'))
     roots.push(root)
