@@ -39,6 +39,8 @@ export interface HubServerOptions {
   reportError?: (error: unknown) => void
   /** Command wait bound; production keeps 30 seconds, tests may use a shorter deterministic interval. */
   commandTimeoutMs?: number
+  /** Browser WebSocket heartbeat; production keeps 20 seconds, tests may shorten it. */
+  browserWebSocketHeartbeatMs?: number
 }
 
 /** Actual bound address after `listen()`. */
@@ -73,6 +75,7 @@ interface FleetWorkspaceSnapshot {
 
 const FLEET_AGGREGATE_METHODS = new Set(['session.list', 'session.search', 'workspace.list'])
 const INTERACTION_TARGET_LIFETIME_MS = 60 * 60_000
+const BROWSER_WEBSOCKET_HEARTBEAT_MS = 20_000
 
 const enrollmentSchema = z.strictObject({
   nodeId: z.string().min(1).max(64),
@@ -192,11 +195,17 @@ export class HubServer {
   public readonly agents: HubAgentRegistry
   private readonly publicOrigin: string
   private readonly staticDirectory: string | undefined
+  private readonly browserWebSocketHeartbeatMs: number
   private readonly maintenance: NodeJS.Timeout
 
   public constructor(private readonly options: HubServerOptions) {
     this.publicOrigin = normalizePublicOrigin(options.publicOrigin)
     this.staticDirectory = options.staticDirectory === undefined ? undefined : resolve(options.staticDirectory)
+    this.browserWebSocketHeartbeatMs = options.browserWebSocketHeartbeatMs ?? BROWSER_WEBSOCKET_HEARTBEAT_MS
+    if (!Number.isSafeInteger(this.browserWebSocketHeartbeatMs)
+      || this.browserWebSocketHeartbeatMs < 10 || this.browserWebSocketHeartbeatMs > 60_000) {
+      throw new Error('browserWebSocketHeartbeatMs must be an integer from 10 to 60000')
+    }
     this.agents = new HubAgentRegistry(options.storage, this.events, options.hubIdentity)
     this.maintenance = setInterval(() => {
       options.storage.control.redactTerminalCommandContentBefore(Date.now() - 5 * 60_000)
@@ -859,8 +868,10 @@ export class HubServer {
     const expiry = setTimeout(() => { socket.close(4003, 'operator authentication expired') }, Math.min(
       2_147_483_647, Math.max(1_000, human.expiresAt * 1_000 - Date.now()),
     ))
+    const stopHeartbeat = this.startBrowserWebSocketHeartbeat(socket)
     expiry.unref()
     await new Promise<void>(resolveClose => socket.once('close', resolveClose))
+    stopHeartbeat()
     clearTimeout(expiry)
     subscription.unsubscribe()
   }
@@ -874,6 +885,7 @@ export class HubServer {
     columns: number,
     rows: number,
   ): Promise<void> {
+    const stopHeartbeat = this.startBrowserWebSocketHeartbeat(socket)
     if (!this.agents.isOnline(nodeId)) throw new Error('node is offline')
     const openedCommand = await this.agents.invoke(
       nodeId, runtimeId, 'dsh.terminals', '1.0.0', 'open', {
@@ -931,6 +943,7 @@ export class HubServer {
     ))
     expiry.unref()
     await new Promise<void>(resolveClose => socket.once('close', resolveClose))
+    stopHeartbeat()
     clearTimeout(expiry)
     subscription.unsubscribe()
     await chain.catch(() => undefined)
@@ -1000,6 +1013,32 @@ export class HubServer {
         else reject(error)
       })
     })
+  }
+
+  private startBrowserWebSocketHeartbeat(socket: WebSocket): () => void {
+    let awaitingPong = false
+    let stopped = false
+    const onPong = () => { awaitingPong = false }
+    socket.on('pong', onPong)
+    const heartbeat = setInterval(() => {
+      if (socket.readyState !== WebSocket.OPEN) return
+      if (awaitingPong) {
+        socket.terminate()
+        return
+      }
+      awaitingPong = true
+      socket.ping()
+    }, this.browserWebSocketHeartbeatMs)
+    heartbeat.unref()
+    const stop = () => {
+      if (stopped) return
+      stopped = true
+      clearInterval(heartbeat)
+      socket.off('pong', onPong)
+      socket.off('close', stop)
+    }
+    socket.once('close', stop)
+    return stop
   }
 
   private requireSameOrigin(request: IncomingMessage): void {

@@ -1,7 +1,7 @@
 {
   "name": "@k1412/dsh-hub-node-agent",
   "description": "Outbound-only supervised Node Agent for DSH Hub",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",

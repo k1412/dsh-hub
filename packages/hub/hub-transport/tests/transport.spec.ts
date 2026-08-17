@@ -189,6 +189,35 @@ describe('reliable Hub transport', () => {
     }, 5_003)).toThrow(/quota/)
   })
 
+  it('reports one body type without counting large command results as stream backlog', () => {
+    const database = new DatabaseSync(':memory:')
+    databases.push(database)
+    const journal = new SqliteReliableJournal(database, 'hub')
+    journal.enqueue({
+      type: 'capability.result',
+      commandId: 'large-result-command-001',
+      status: 'ok',
+      value: { body: 'x'.repeat(4 * 1024 * 1024) },
+    }, 5_100)
+    journal.enqueue({
+      type: 'stream.frame',
+      runtimeId: 'default-runtime',
+      streamId: 'stream-usage-test-0001',
+      capability: 'dsh.web',
+      stream: 'mux',
+      frameSequence: 1,
+      payload: {},
+    }, 5_101)
+
+    expect(journal.outboundUsage()).toMatchObject({ records: 2 })
+    expect(journal.outboundUsage().bytes).toBeGreaterThan(4 * 1024 * 1024)
+    expect(journal.outboundUsageForBodyType('stream.frame')).toMatchObject({
+      records: 1,
+      oldestCreatedAt: 5_101,
+    })
+    expect(journal.outboundUsageForBodyType('stream.frame').bytes).toBeLessThan(1_024)
+  })
+
   it('does not dispatch a duplicate message id under a different sequence', () => {
     const { hub, nodeId, nodeIdentity } = peerPair()
     const first = signHubEnvelope({

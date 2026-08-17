@@ -14,7 +14,7 @@ import type { HubNodeAgentState } from './state.ts'
 import { HubNodeSupervisor } from './supervisor.ts'
 
 /** Public Node Agent package version sent during enrollment. */
-export const HUB_NODE_AGENT_VERSION = '0.1.0'
+export const HUB_NODE_AGENT_VERSION = '0.1.1'
 
 /** Sanitized lifecycle notice for service logs. */
 export interface HubNodeAgentNotice {
@@ -531,6 +531,11 @@ export class HubNodeAgent {
       this.acceptConnectorBody(body)
     } catch (error) {
       if (error instanceof Error && error.message === 'reliable outbox quota exceeded') {
+        if (body.type === 'stream.frame' && !isControlStream(body)) {
+          this.recordDroppedStream(body)
+          this.enqueueTransportStatus()
+          return
+        }
         if (this.deferredConnectorBodies.length < DEFERRED_CONNECTOR_BODY_LIMIT) {
           this.deferredConnectorBodies.push(body)
         } else {
@@ -604,7 +609,14 @@ export class HubNodeAgent {
     // an authoritative resync reconstructs anything suppressed beyond it.
     const recordThreshold = Math.min(usage.maxRecords, MAX_PENDING_STREAM_RECORDS)
     const byteThreshold = Math.min(usage.maxBytes, MAX_PENDING_STREAM_BYTES)
-    const suppressed = usage.records >= recordThreshold || usage.bytes >= byteThreshold
+    if (usage.records < recordThreshold && usage.bytes < byteThreshold) return false
+    // Total usage is the hard reliable-delivery quota, but only queued stream
+    // frames constitute a reconstructible stream backlog. A single large
+    // session.history result can exceed the live-stream byte threshold; using
+    // that result here would drop fresh events and force the browser to fetch
+    // the same large history again after resynchronization.
+    const streamUsage = this.options.state.journal.outboundUsageForBodyType('stream.frame')
+    const suppressed = streamUsage.records >= recordThreshold || streamUsage.bytes >= byteThreshold
     if (suppressed) this.streamSuppressedUntil = now + STREAM_SUPPRESSION_RECHECK_MS
     return suppressed
   }
@@ -632,7 +644,10 @@ export class HubNodeAgent {
 
   private enqueueTransportStatus(): void {
     const usage = this.options.state.journal.outboundUsage()
-    const pressure = this.transportPressure(usage.records, usage.maxRecords, usage.bytes, usage.maxBytes)
+    const streamUsage = this.options.state.journal.outboundUsageForBodyType('stream.frame')
+    const pressure = this.transportPressure(
+      usage.records, usage.maxRecords, usage.bytes, usage.maxBytes, streamUsage.records, streamUsage.bytes,
+    )
     const droppedStreams = [...this.droppedStreams.values()]
     try {
       this.options.state.journal.enqueue({
@@ -651,32 +666,44 @@ export class HubNodeAgent {
       if (!(error instanceof Error) || error.message !== 'reliable outbox quota exceeded') {
         this.notice('error', error instanceof Error ? error.message : 'Transport status was rejected')
       }
-      this.updatePressureNotice(usage)
+      this.updatePressureNotice(usage, streamUsage)
       return
     }
     this.droppedStreams.clear()
-    this.updatePressureNotice(usage)
+    this.updatePressureNotice(usage, streamUsage)
   }
 
-  private transportPressure(records: number, maxRecords: number, bytes: number, maxBytes: number): HubTransportStatusBody['pressure'] {
+  private transportPressure(
+    records: number,
+    maxRecords: number,
+    bytes: number,
+    maxBytes: number,
+    streamRecords: number,
+    streamBytes: number,
+  ): HubTransportStatusBody['pressure'] {
     const ratio = Math.max(records / maxRecords, bytes / maxBytes)
     if (ratio >= 0.95 || this.deferredConnectorBodies.length > 0) return 'critical'
     if (ratio >= 0.75
-      || records >= Math.min(maxRecords, MAX_PENDING_STREAM_RECORDS)
-      || bytes >= Math.min(maxBytes, MAX_PENDING_STREAM_BYTES)
+      || streamRecords >= Math.min(maxRecords, MAX_PENDING_STREAM_RECORDS)
+      || streamBytes >= Math.min(maxBytes, MAX_PENDING_STREAM_BYTES)
       || this.droppedStreams.size > 0) return 'warning'
     return 'normal'
   }
 
-  private updatePressureNotice(usage: ReliableJournalUsage = this.options.state.journal.outboundUsage()): void {
-    const pressure = this.transportPressure(usage.records, usage.maxRecords, usage.bytes, usage.maxBytes)
+  private updatePressureNotice(
+    usage: ReliableJournalUsage = this.options.state.journal.outboundUsage(),
+    streamUsage: ReliableJournalUsage = this.options.state.journal.outboundUsageForBodyType('stream.frame'),
+  ): void {
+    const pressure = this.transportPressure(
+      usage.records, usage.maxRecords, usage.bytes, usage.maxBytes, streamUsage.records, streamUsage.bytes,
+    )
     if (pressure === this.reportedPressure) return
     this.reportedPressure = pressure
     if (pressure === 'normal') {
       this.notice('connected', 'reliable transport queue pressure recovered')
       this.resyncDroppedStreams()
     } else {
-      this.notice('error', `reliable transport queue pressure is ${pressure} (${String(usage.records)}/${String(usage.maxRecords)} records)`)
+      this.notice('error', `reliable transport queue pressure is ${pressure} (${String(usage.records)}/${String(usage.maxRecords)} records, ${String(usage.bytes)}/${String(usage.maxBytes)} bytes)`)
     }
   }
 

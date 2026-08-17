@@ -224,6 +224,32 @@ export class SqliteReliableJournal {
   }
 
   /**
+   * Return current queue usage for one protocol-body type.
+   *
+   * This narrower query is intentionally separate from the total used for the
+   * hard quota. Producers use it only after a total-queue threshold is crossed,
+   * so a large command result cannot masquerade as a backlog of reconstructible
+   * stream frames.
+   * @param bodyType - exact Hub envelope body discriminator.
+   * @returns matching record, byte, and configured capacity totals.
+   */
+  public outboundUsageForBodyType(bodyType: HubEnvelopeBody['type']): ReliableJournalUsage {
+    const usage = this.database.prepare(`
+      SELECT COUNT(*) AS records, COALESCE(SUM(body_size), 0) AS bytes,
+             COALESCE(MIN(created_at), 0) AS oldest_created_at
+      FROM reliable_outbox
+      WHERE peer_id = ? AND json_extract(body_json, '$.type') = ?
+    `).get(this.peerId, bodyType) as { records: number; bytes: number; oldest_created_at: number }
+    return {
+      records: usage.records,
+      bytes: usage.bytes,
+      oldestCreatedAt: usage.oldest_created_at,
+      maxRecords: this.limits.maxOutboundRecords,
+      maxBytes: this.limits.maxOutboundBytes,
+    }
+  }
+
+  /**
    * Delete the acknowledged prefix after validating it was allocated locally.
    * @param acknowledgement - peer's highest contiguous accepted sequence.
    */

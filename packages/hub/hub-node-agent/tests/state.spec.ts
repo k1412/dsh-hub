@@ -185,7 +185,10 @@ describe('Node Agent private state', () => {
     const state = await HubNodeAgentState.open(configPath)
     for (let index = 1; index <= 500; index += 1) {
       state.journal.enqueue(
-        { type: 'transport.ack' },
+        {
+          type: 'stream.frame', runtimeId: 'default', streamId: 'seeded-stream-0001',
+          capability: 'dsh.sessions', stream: 'events', frameSequence: index, payload: {},
+        },
         2_000 + index,
         HubMessageId(`node-stream-burst-${String(index).padStart(8, '0')}`),
       )
@@ -193,7 +196,10 @@ describe('Node Agent private state', () => {
     const agent = new HubNodeAgent({ state })
     const internal = agent as unknown as {
       connectorBody(body: HubEnvelopeBody): void
-      transportPressure(records: number, maxRecords: number, bytes: number, maxBytes: number): string
+      transportPressure(
+        records: number, maxRecords: number, bytes: number, maxBytes: number,
+        streamRecords: number, streamBytes: number,
+      ): string
     }
     const usage = vi.spyOn(state.journal, 'outboundUsage')
 
@@ -207,7 +213,7 @@ describe('Node Agent private state', () => {
     })
     expect(usage).toHaveBeenCalledTimes(1)
     expect(state.journal.outboundUsage().records).toBe(500)
-    expect(internal.transportPressure(500, 10_000, 1, 64 * 1024 * 1024)).toBe('warning')
+    expect(internal.transportPressure(500, 10_000, 1, 64 * 1024 * 1024, 500, 1)).toBe('warning')
 
     internal.connectorBody({
       type: 'stream.frame', runtimeId: 'default', streamId: 'question-stream-0001',
@@ -238,6 +244,51 @@ describe('Node Agent private state', () => {
       type: 'stream.frame', capability: 'dsh.web', stream: 'mux',
       payload: { method: 'session/projection', payload: { key: 'goal' } },
     })
+    state.close()
+  })
+
+  it('does not treat one large command result as reconstructible stream backlog', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-hub-node-large-result-'))
+    roots.push(root)
+    const configPath = join(root, 'node-agent.json')
+    const stateDirectory = join(root, 'state')
+    await writeFile(configPath, `${JSON.stringify({
+      hubUrl: 'https://hub.example.com',
+      nodeId: 'node-large-result',
+      accessClientId: 'node-token.access',
+      accessClientSecret: 'service-token-secret-with-at-least-32-characters',
+      hubPublicKey: generateHubIdentity().publicKey,
+      stateDirectory,
+      ipcEndpoint: join(stateDirectory, 'connector.sock'),
+    })}\n`, { mode: 0o600 })
+    const state = await HubNodeAgentState.open(configPath)
+    state.journal.enqueue({
+      type: 'capability.result', commandId: 'large-history-command-01', status: 'ok',
+      value: { body: 'x'.repeat(5 * 1024 * 1024) },
+    })
+    const agent = new HubNodeAgent({ state })
+    const internal = agent as unknown as {
+      connectorBody(body: HubEnvelopeBody): void
+      transportPressure(
+        records: number, maxRecords: number, bytes: number, maxBytes: number,
+        streamRecords: number, streamBytes: number,
+      ): string
+    }
+
+    internal.connectorBody({
+      type: 'stream.frame', runtimeId: 'default', streamId: 'ordinary-stream-0002',
+      capability: 'dsh.sessions', stream: 'events', frameSequence: 1, payload: {},
+    })
+
+    const usage = state.journal.outboundUsage()
+    const streamUsage = state.journal.outboundUsageForBodyType('stream.frame')
+    expect(usage.records).toBe(2)
+    expect(usage.bytes).toBeGreaterThan(4 * 1024 * 1024)
+    expect(streamUsage.records).toBe(1)
+    expect(internal.transportPressure(
+      usage.records, usage.maxRecords, usage.bytes, usage.maxBytes,
+      streamUsage.records, streamUsage.bytes,
+    )).toBe('normal')
     state.close()
   })
 
