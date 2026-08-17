@@ -11,6 +11,7 @@ import {
   signHubEnvelope, verifyHubCapability, verifyHubEnvelope,
   type HubCapabilityDescriptor, type HubIdentityKeyPair, type HubJson,
   type HubNodeId as HubNodeIdType, type HubRuntimeId as HubRuntimeIdType,
+  type HubTransportStatusBody,
 } from '@k1412/dsh-hub-protocol'
 import { type HubCommandRecord, type HubStorage } from '@k1412/dsh-hub-storage'
 import { ReliablePeer, type ReliableInboundRecord } from '@k1412/dsh-hub-transport'
@@ -31,12 +32,37 @@ interface ActiveNodeConnection {
   peer: ReliablePeer
   sentSequence: number
   runtimes: Map<string, Map<string, HubCapabilityDescriptor>>
+  recoveryResyncRuntimes: Set<string>
   flushPromise: Promise<void> | undefined
   flushRequested: boolean
   messageChain: Promise<void>
   lastPongAt: number
+  transportStatus?: HubTransportStatusBody
   heartbeat?: NodeJS.Timeout
   authenticationExpiry?: NodeJS.Timeout
+}
+
+/** Operator-visible live transport health derived from both reliable peers. */
+export interface HubNodeTransportHealth {
+  reportedAt?: number
+  lastPongAt?: number
+  pressure: 'normal' | 'warning' | 'critical' | 'unknown'
+  nodeOutbox?: {
+    records: number
+    bytes: number
+    maxRecords: number
+    maxBytes: number
+    oldestPendingAt?: number
+  }
+  hubOutbox: {
+    records: number
+    bytes: number
+    maxRecords: number
+    maxBytes: number
+    oldestPendingAt?: number
+  }
+  droppedStreamFramesTotal: number
+  droppedStreams: HubTransportStatusBody['droppedStreams']
 }
 
 function flushWasRequested(connection: ActiveNodeConnection): boolean {
@@ -226,6 +252,10 @@ export class HubAgentRegistry {
         const descriptors = (runtime.capabilities as unknown[]).map(verifyHubCapability)
         return [runtime.runtimeId, new Map(descriptors.map(descriptor => [descriptor.name, descriptor]))]
       })),
+      recoveryResyncRuntimes: new Set(journal.pendingOutbound(10_000).flatMap(record =>
+        record.body.type === 'runtime.resync-required' && record.body.runtimeId !== undefined
+          ? [record.body.runtimeId]
+          : [])),
       flushPromise: undefined,
       flushRequested: false,
       messageChain: Promise.resolve(),
@@ -260,6 +290,49 @@ export class HubAgentRegistry {
    */
   public isOnline(nodeId: HubNodeIdType): boolean {
     return this.connections.get(nodeId)?.socket.readyState === WebSocket.OPEN
+  }
+
+  /**
+   * Return the latest node report together with Hub-side queue pressure.
+   * @param nodeId - enrolled node identifier.
+   * @returns transport health safe for the authenticated operator API.
+   */
+  public transportHealth(nodeId: HubNodeIdType): HubNodeTransportHealth {
+    const connection = this.connections.get(nodeId)
+    const status = connection?.transportStatus
+    const hub = this.storage.reliableJournal(`node:${nodeId}`).outboundUsage()
+    const hubRatio = Math.max(hub.records / hub.maxRecords, hub.bytes / hub.maxBytes)
+    const hubPressure = hubRatio >= 0.95 ? 'critical' : hubRatio >= 0.75 ? 'warning' : 'normal'
+    const pressure = status === undefined
+      ? connection === undefined ? 'unknown' : hubPressure
+      : status.pressure === 'critical' || hubPressure === 'critical'
+        ? 'critical'
+        : status.pressure === 'warning' || hubPressure === 'warning'
+          ? 'warning'
+          : 'normal'
+    return {
+      ...(status === undefined ? {} : {
+        reportedAt: status.observedAt,
+        nodeOutbox: {
+          records: status.outboxRecords,
+          bytes: status.outboxBytes,
+          maxRecords: status.maxOutboxRecords,
+          maxBytes: status.maxOutboxBytes,
+          ...(status.oldestPendingAt === undefined ? {} : { oldestPendingAt: status.oldestPendingAt }),
+        },
+      }),
+      ...(connection === undefined ? {} : { lastPongAt: connection.lastPongAt }),
+      pressure,
+      hubOutbox: {
+        records: hub.records,
+        bytes: hub.bytes,
+        maxRecords: hub.maxRecords,
+        maxBytes: hub.maxBytes,
+        ...(hub.oldestCreatedAt === 0 ? {} : { oldestPendingAt: hub.oldestCreatedAt }),
+      },
+      droppedStreamFramesTotal: status?.droppedStreamFramesTotal ?? 0,
+      droppedStreams: status?.droppedStreams ?? [],
+    }
   }
 
   /**
@@ -418,6 +491,40 @@ export class HubAgentRegistry {
   private processInbound(connection: ActiveNodeConnection, record: ReliableInboundRecord): void {
     const body = record.body
     if (body.type === 'transport.ack') return
+    if (body.type === 'transport.status') {
+      const priorPressure = connection.transportStatus?.pressure ?? 'normal'
+      if (connection.transportStatus === undefined || body.observedAt >= connection.transportStatus.observedAt) {
+        connection.transportStatus = body
+      }
+      if (priorPressure !== body.pressure) {
+        this.storage.control.appendAudit({
+          occurredAt: Date.now(),
+          actor: `node:${connection.nodeId}`,
+          action: 'transport.pressure',
+          nodeId: connection.nodeId,
+          outcome: body.pressure === 'normal' ? 'ok' : body.pressure,
+          details: {
+            pressure: body.pressure,
+            outboxRecords: body.outboxRecords,
+            outboxBytes: body.outboxBytes,
+          },
+        })
+      }
+      this.events.publish('transport.status', {
+        nodeId: connection.nodeId,
+        ...body,
+      } as unknown as HubJson)
+      for (const dropped of body.droppedStreams) {
+        this.events.publish('stream.interrupted', {
+          nodeId: connection.nodeId,
+          runtimeId: dropped.runtimeId,
+          capability: dropped.capability,
+          stream: dropped.stream,
+          frames: dropped.frames,
+        })
+      }
+      return
+    }
     if (body.type === 'runtime.hello') {
       const descriptors = body.capabilities.map(verifyHubCapability)
       connection.runtimes.set(body.runtimeId, new Map(descriptors.map(descriptor => [descriptor.name, descriptor])))
@@ -489,11 +596,14 @@ export class HubAgentRegistry {
       if (stream === undefined) throw new Error('stream contract is unavailable')
       if (record.recovery) {
         if (stream.reconstructible) {
-          connection.peer.enqueue({
-            type: 'runtime.resync-required',
-            runtimeId: body.runtimeId,
-            reason: 'baseline-changed',
-          })
+          if (!connection.recoveryResyncRuntimes.has(body.runtimeId)) {
+            connection.recoveryResyncRuntimes.add(body.runtimeId)
+            connection.peer.enqueue({
+              type: 'runtime.resync-required',
+              runtimeId: body.runtimeId,
+              reason: 'baseline-changed',
+            })
+          }
         } else {
           this.events.publish('stream.interrupted', {
             nodeId: connection.nodeId,
@@ -552,11 +662,17 @@ export class HubAgentRegistry {
 
   private recoverInbound(connection: ActiveNodeConnection): void {
     const journal = this.storage.reliableJournal(`node:${connection.nodeId}`)
-    for (const pending of journal.recoverableInbound()) {
-      const claimed = journal.claimInbound(pending.sequence)
-      if (claimed === undefined) continue
-      this.processInbound(connection, claimed)
-      journal.completeInbound(claimed.sequence)
+    let cursor = 0
+    for (;;) {
+      const page = journal.recoverableInboundAfter(cursor)
+      if (page.length === 0) break
+      for (const pending of page) {
+        cursor = pending.sequence
+        const claimed = journal.claimInbound(pending.sequence)
+        if (claimed === undefined) continue
+        this.processInbound(connection, claimed)
+        journal.completeInbound(claimed.sequence)
+      }
     }
     journal.pruneProcessed()
   }
@@ -595,11 +711,19 @@ export class HubAgentRegistry {
         connection.flushRequested = false
         let refreshAcknowledgement = true
         for (;;) {
-          const frames = connection.peer.renderPending().filter(frame =>
-            frame.directionSequence > connection.sentSequence
-            || (refreshAcknowledgement && frame.body.type === 'transport.ack'))
+          const frames = connection.peer.renderPendingAfter(connection.sentSequence)
+          if (frames.length === 0) {
+            const acknowledgement = refreshAcknowledgement
+              ? connection.peer.renderPendingAcknowledgement()
+              : undefined
+            refreshAcknowledgement = false
+            if (acknowledgement === undefined || acknowledgement.directionSequence > connection.sentSequence) break
+            if (this.connections.get(connection.nodeId) !== connection
+              || connection.socket.readyState !== WebSocket.OPEN) return
+            await sendSocket(connection.socket, acknowledgement)
+            break
+          }
           refreshAcknowledgement = false
-          if (frames.length === 0) break
           for (const frame of frames) {
             if (this.connections.get(connection.nodeId) !== connection
               || connection.socket.readyState !== WebSocket.OPEN) return

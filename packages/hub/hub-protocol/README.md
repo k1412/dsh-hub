@@ -12,6 +12,8 @@ Every envelope identifies the node boot, connection generation, message, directi
 
 `directionSequence` is monotonic within one authenticated direction and `cumulativeAck` acknowledges the peer's contiguous prefix. Sequence validation and durable replay belong to the transport implementation; this package supplies their wire fields without keeping mutable connection state.
 
+Node Agent uses the `transport.status` control body to report reliable-outbox capacity, current usage, pressure, and suppressed stream classes. This record describes transport health only; it neither advances an acknowledgement nor claims that a suppressed transient frame was delivered.
+
 ## Capability contract
 
 `defineHubCapability()` validates an advertised capability and derives its canonical descriptor hash. Each operation declares one retry posture:

@@ -10,6 +10,10 @@ Node Agent cannot share the Connector plugin lifecycle. A DSH profile restart mu
 
 The service validates the Hub's pinned application key before enrollment and on every handshake. A Cloudflare Service Token supplies the edge machine identity; an Ed25519 challenge proves the enrolled node identity. Reconnect uses exponential full-jitter backoff, a new boot identity, Hub-assigned connection generation fencing, signed sequence replay, cumulative acknowledgements, heartbeat termination, and strict payload bounds.
 
+After reconnecting, Node Agent sends the existing outbox in sequence-number pages before publishing runtime baselines. At the outbox high-water mark it reserves capacity for control records such as command results, runtime lifecycle, acknowledgements, and pending question or approval requests. Reconstructible high-volume stream frames are suppressed, while human-interaction request and resolution frames enter the control reserve or its bounded deferred queue. After pressure recovers, Node Agent requests a new authoritative stream generation from affected runtimes. Connection callbacks and a full queue cause backoff and diagnostics instead of terminating the long-running process.
+
+Every 15 seconds Node Agent reports outbox records, bytes, oldest-record time, capacity, pressure, and cumulative suppressed stream frames to Hub. The report uses the same reliable path. When that path is completely full, Hub still exposes its reverse outbox and connection state, and the node report follows after an acknowledgement releases capacity.
+
 Each DSH runtime connects over an owner-only Unix socket or an HMAC-authenticated Windows named pipe using a 256-bit secret. A runtime publishes its capability baseline and receives only commands addressed to its runtime id. Commands remain `processing` until the Connector returns a result. After a crash, read and idempotent work may resume, reconcile operations inspect authoritative state through their stable command identity, and never-retry work returns `outcome-unknown`.
 
 The configuration, private key, Connector secret, enrollment code, Service Token secret, and SQLite database use owner-only files. The one-time enrollment code is atomically removed after Hub acceptance. The Node Agent runs with the same OS account whose DSH context the Hub is authorized to control; it never silently elevates to host root.
@@ -26,3 +30,4 @@ None; Node Agent records do not enter model requests.
 
 - The process manager supplies restart, log retention, resource limits, and operating-system sandboxing. The package deliberately does not install itself as root.
 - A node identity and its reliable database form one recovery unit. Losing the database while retaining the key requires revocation and re-enrollment instead of guessing sequence state.
+- Suppressed transient stream frames are not presented as reliable replay. Reconstructible state returns from a fresh runtime stream generation, while transient output such as a terminal is explicitly reported as interrupted. Pending question and approval control frames are never intentionally suppressed.

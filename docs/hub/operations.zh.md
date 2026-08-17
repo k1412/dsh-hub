@@ -66,4 +66,10 @@ Node Agent 离线时，本地客户端仍可继续工作。Connector 重启期�
 
 依次检查 Cloudflare Access Policy 和 Service Token 状态、公共 DNS 与 TLS、代理到 Origin 的私有路径、代理 WebSocket 转发、Node Agent 日志和 Hub 审计记录。收集诊断信息时不得打印 Service Token Secret、注册代码、私钥或 Connector Secret。
 
+“设置 → Hub 节点”每 15 秒显示一次双向可靠队列健康度。节点到 Hub 来自 Node Agent 报告；Hub 到节点直接来自 Hub Journal。正常连接中两侧记录数会回落到接近零，最旧记录时间会消失。`warning` 表示使用量达到 75%，`critical` 表示达到 95% 或控制记录已进入内存应急队列。离线节点可能缺少新的节点侧报告，但 Hub 侧队列、最后心跳和已缓存会话索引仍然可见。
+
+Queue 满载时先保持 Node Agent 服务运行并恢复 Hub WSS 路径。Node Agent 会在重连后先分页重放已有 Journal，并为控制记录保留容量；提问和审批请求使用该控制预留空间，不会被主动抑制。不要删除节点数据库、私钥或 Connector Secret，也不要通过重新注册来跳过序列状态。若页面报告 Stream 中断，Connector 会在不重启 DSH 的情况下替换事件订阅；待处理交互会重放到 Composer，终端等瞬时 Stream 则需要重新打开。已索引会话在此期间仍会按工作目录显示为离线。
+
+确认恢复时同时验证四项：Node Agent 进程没有重启循环；双向队列记录数持续下降；Runtime 重新变为在线；本地 Web 或桌面端原有会话与 Hub 中同一会话均可继续。压力等级恢复会写入 `transport.pressure` 审计记录，累计被抑制 Frame 仍保留为诊断计数。
+
 序列缺口会请求 Runtime 重新同步。`outcome-unknown` 命令要求在再次变更前检查节点权威状态。不得只依据 Hub 命令记录把它改为成功或直接重试。

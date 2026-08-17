@@ -55,6 +55,14 @@ const fleet: FleetSnapshot = {
   nodes: [{
     nodeId: 'nas-home', displayName: 'Home NAS', status: 'active', online: true,
     createdAt: 500, lastSeenAt: 1_000,
+    transport: {
+      reportedAt: 1_000,
+      pressure: 'warning',
+      nodeOutbox: { records: 8_100, bytes: 5_000_000, maxRecords: 10_000, maxBytes: 64 * 1024 * 1024 },
+      hubOutbox: { records: 2, bytes: 512, maxRecords: 10_000, maxBytes: 64 * 1024 * 1024 },
+      droppedStreamFramesTotal: 12,
+      droppedStreams: [{ runtimeId: 'web', capability: 'dsh.sessions', stream: 'events', frames: 12 }],
+    },
   }],
   runtimes: [runtime],
   enrollments: [{ nodeId: 'mac-home', displayName: 'Home Mac', createdAt: 600, expiresAt: 60_000 }],
@@ -173,6 +181,9 @@ describe('Hub management Settings pages', () => {
     />)
     expect(await screen.findByText('Home NAS')).toBeTruthy()
     expect(screen.getByText('Home Mac')).toBeTruthy()
+    expect(screen.getByText('队列有压力')).toBeTruthy()
+    expect(screen.getByText(/8100 \/ 10000 条/)).toBeTruthy()
+    expect(screen.getByText('12 帧')).toBeTruthy()
     expect(screen.getByRole('button', { name: '默认' })).toHaveProperty('disabled', true)
     expect(screen.queryByRole('navigation', { name: /终端|文件/ })).toBeNull()
 
@@ -204,8 +215,8 @@ describe('Hub management Settings pages', () => {
 
     expect(unix).toContain("--node 'mac-'\"'\"'neo'")
     expect(windows).toContain("$env:DSH_HUB_NODE_ID='mac-''neo'")
-    expect(unix).toContain('/releases/download/hub-v0.1.0-rc.9/install-node.sh')
-    expect(windows).toContain('/releases/download/hub-v0.1.0-rc.9/install-node.ps1')
+    expect(unix).toContain('/releases/download/hub-v0.1.0-rc.10/install-node.sh')
+    expect(windows).toContain('/releases/download/hub-v0.1.0-rc.10/install-node.ps1')
     expect(unix).not.toContain('DSH_HUB_ACCESS_CLIENT_SECRET')
     expect(windows).not.toContain('DSH_HUB_ACCESS_CLIENT_SECRET')
   })

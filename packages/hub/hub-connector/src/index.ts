@@ -25,7 +25,7 @@ import { clientRequestSchema, serverResponseSchema } from '@deepseek-ai/dsh-host
 import { SessionId } from '@deepseek-ai/dsh-session/types'
 
 /** Connector release sent in the authenticated local baseline. */
-export const HUB_CONNECTOR_VERSION = '0.1.0-rc.9'
+export const HUB_CONNECTOR_VERSION = '0.1.0-rc.10'
 
 /** Connector configuration stored in the DSH profile. */
 export interface Config {
@@ -229,7 +229,6 @@ export class HubConnector {
   private readonly runtimeBootId = HubMessageId(randomBytes(18).toString('base64url'))
   private active: ActiveIpc | undefined
   private indexRevision = 0
-  private eventFrameSequence = 0
   private webMuxFrameSequence = 0
   private webHostFrameSequence = 0
   private detectedDshVersion: string | undefined
@@ -275,7 +274,14 @@ export class HubConnector {
     })
     const streams = new AbortController()
     const heartbeat = setInterval(() => {
-      if (authenticated) void this.send({ type: 'ipc.heartbeat', timestamp: Date.now() })
+      if (authenticated) {
+        // The IPC peer can close between the timer's readiness check and the
+        // queued socket write. Heartbeats are best effort; turn that race into
+        // an ordinary reconnect instead of an unhandled rejection that can
+        // terminate the parent DSH runtime.
+        void this.send({ type: 'ipc.heartbeat', timestamp: Date.now() })
+          .catch(() => { socket.destroy() })
+      }
     }, 30_000)
     heartbeat.unref()
     this.active = { socket, writes: Promise.resolve(), streams, heartbeat, indexTimer: undefined }
@@ -345,6 +351,10 @@ export class HubConnector {
     const active = this.active
     if (active === undefined || active.socket.destroyed) throw new Error('Connector IPC is offline')
     const operation = active.writes.then(() => new Promise<void>((resolve, reject) => {
+      if (this.active !== active || active.socket.destroyed) {
+        reject(new Error('Connector IPC is offline'))
+        return
+      }
       active.socket.write(encodeHubIpcFrame(frame), (error) => {
         if (error == null) resolve()
         else reject(error)
@@ -356,7 +366,15 @@ export class HubConnector {
 
   private async handleBody(body: HubEnvelopeBody): Promise<void> {
     if (body.type === 'runtime.resync-required') {
-      await this.publishIndex()
+      if (body.runtimeId !== undefined && body.runtimeId !== this.config.runtimeId) {
+        throw new Error('Connector received resynchronization for another runtime')
+      }
+      // All ApiProxy streams are reconstructible, but their pending question
+      // and approval baselines are emitted only when a fresh iterator opens.
+      // Reconnect the local carrier so connectOnce cancels both old iterators
+      // and pumpStreams opens a new generation. This does not restart DSH or
+      // its live Agents; it only re-establishes the owner-only Connector IPC.
+      this.active?.socket.destroy()
       return
     }
     if (body.type !== 'capability.invoke' || body.runtimeId !== this.config.runtimeId) {
@@ -697,18 +715,10 @@ export class HubConnector {
           } as unknown as HubJson,
         } })
         if (frame.payload.type !== 'session/event') continue
-        const sequence = eventSequence(frame.payload.event)
-        this.eventFrameSequence += 1
-        await this.send({ type: 'ipc.hub-body', body: {
-          type: 'stream.frame', runtimeId: this.config.runtimeId, capability: 'dsh.sessions',
-          streamId: HubMessageId(jsonHash(`${this.config.runtimeId}:dsh.sessions:events`).slice(0, 24)),
-          stream: 'events', frameSequence: this.eventFrameSequence,
-          payload: {
-            sessionId: frame.payload.sessionId,
-            fromSequence: sequence,
-            events: [frame.payload.event],
-          } as unknown as HubJson,
-        } })
+        // dsh.web:mux is the official UI's canonical live event lane. Sending
+        // the same session event again through dsh.sessions:events doubles the
+        // reliable queue and its SQLite/ack work without serving a consumer.
+        // Session history remains authoritative through the unary capability.
         this.scheduleIndexRefresh()
       }
     }

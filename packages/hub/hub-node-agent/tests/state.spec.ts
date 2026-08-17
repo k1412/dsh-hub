@@ -1,8 +1,9 @@
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { generateHubIdentity } from '@k1412/dsh-hub-protocol'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { generateHubIdentity, HubMessageId, type HubEnvelopeBody } from '@k1412/dsh-hub-protocol'
+import { HubNodeAgent } from '../src/agent.ts'
 import { HubNodeAgentState, loadHubNodeAgentConfig } from '../src/state.ts'
 
 const roots: string[] = []
@@ -88,5 +89,184 @@ describe('Node Agent private state', () => {
       management: { profiles: [profiles[0], { ...profiles[1], profileDirectory: profiles[0]?.profileDirectory }] },
     })}\n`, { mode: 0o600 })
     await expect(loadHubNodeAgentConfig(configPath)).rejects.toThrow(/profile directories must be unique/)
+  })
+
+  it('contains Connector callbacks at an exactly full durable outbox and retries runtime state after acknowledgement', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-hub-node-pressure-'))
+    roots.push(root)
+    const configPath = join(root, 'node-agent.json')
+    const stateDirectory = join(root, 'state')
+    await writeFile(configPath, `${JSON.stringify({
+      hubUrl: 'https://hub.example.com',
+      nodeId: 'node-pressure',
+      accessClientId: 'node-token.access',
+      accessClientSecret: 'service-token-secret-with-at-least-32-characters',
+      hubPublicKey: generateHubIdentity().publicKey,
+      stateDirectory,
+      ipcEndpoint: join(stateDirectory, 'connector.sock'),
+    })}\n`, { mode: 0o600 })
+    const state = await HubNodeAgentState.open(configPath)
+    for (let index = 1; index <= 10_000; index += 1) {
+      state.journal.enqueue(
+        { type: 'transport.ack' },
+        1_000 + index,
+        HubMessageId(`node-pressure-${String(index).padStart(8, '0')}`),
+      )
+    }
+    const agent = new HubNodeAgent({ state })
+    const internal = agent as unknown as {
+      connectorBody(body: HubEnvelopeBody): void
+      connectorDisconnected(runtimeId: string): void
+      drainDeferredConnectorBodies(): void
+      drainPendingRuntimeStates(): void
+    }
+    expect(() => {
+      internal.connectorBody({
+        type: 'stream.frame',
+        runtimeId: 'default',
+        streamId: 'pressure-stream-0001',
+        capability: 'dsh.sessions',
+        stream: 'events',
+        frameSequence: 1,
+        payload: {},
+      })
+    }).not.toThrow()
+    expect(() => {
+      internal.connectorBody({
+        type: 'stream.frame',
+        runtimeId: 'default',
+        streamId: 'interaction-stream-0001',
+        capability: 'dsh.web',
+        stream: 'mux',
+        frameSequence: 2,
+        payload: {
+          type: 'server-request',
+          rpcId: 'question-rpc-0001',
+          method: 'question/requested',
+          payload: {
+            type: 'question/requested', sessionId: 'session-one',
+            questions: [{ id: 'choice', question: 'Continue?' }],
+          },
+        },
+      })
+    }).not.toThrow()
+    expect(() => { internal.connectorDisconnected('default') }).not.toThrow()
+    expect(state.journal.outboundUsage().records).toBe(10_000)
+
+    state.journal.acknowledgeOutbound(1)
+    internal.drainDeferredConnectorBodies()
+    expect(state.journal.pendingOutbound(10_000).at(-1)?.body).toMatchObject({
+      type: 'stream.frame', capability: 'dsh.web', stream: 'mux',
+      payload: { method: 'question/requested' },
+    })
+
+    state.journal.acknowledgeOutbound(2)
+    internal.drainPendingRuntimeStates()
+    expect(state.journal.pendingOutbound(10_000).at(-1)?.body).toEqual({
+      type: 'runtime.goodbye', runtimeId: 'default', reason: 'connector-stopped',
+    })
+    state.close()
+  }, 30_000)
+
+  it('bounds reconstructible stream backlog while admitting a human interaction frame', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-hub-node-stream-burst-'))
+    roots.push(root)
+    const configPath = join(root, 'node-agent.json')
+    const stateDirectory = join(root, 'state')
+    await writeFile(configPath, `${JSON.stringify({
+      hubUrl: 'https://hub.example.com',
+      nodeId: 'node-stream-burst',
+      accessClientId: 'node-token.access',
+      accessClientSecret: 'service-token-secret-with-at-least-32-characters',
+      hubPublicKey: generateHubIdentity().publicKey,
+      stateDirectory,
+      ipcEndpoint: join(stateDirectory, 'connector.sock'),
+    })}\n`, { mode: 0o600 })
+    const state = await HubNodeAgentState.open(configPath)
+    for (let index = 1; index <= 500; index += 1) {
+      state.journal.enqueue(
+        { type: 'transport.ack' },
+        2_000 + index,
+        HubMessageId(`node-stream-burst-${String(index).padStart(8, '0')}`),
+      )
+    }
+    const agent = new HubNodeAgent({ state })
+    const internal = agent as unknown as {
+      connectorBody(body: HubEnvelopeBody): void
+      transportPressure(records: number, maxRecords: number, bytes: number, maxBytes: number): string
+    }
+    const usage = vi.spyOn(state.journal, 'outboundUsage')
+
+    internal.connectorBody({
+      type: 'stream.frame', runtimeId: 'default', streamId: 'ordinary-stream-0001',
+      capability: 'dsh.sessions', stream: 'events', frameSequence: 1, payload: {},
+    })
+    internal.connectorBody({
+      type: 'stream.frame', runtimeId: 'default', streamId: 'ordinary-stream-0001',
+      capability: 'dsh.sessions', stream: 'events', frameSequence: 2, payload: {},
+    })
+    expect(usage).toHaveBeenCalledTimes(1)
+    expect(state.journal.outboundUsage().records).toBe(500)
+    expect(internal.transportPressure(500, 10_000, 1, 64 * 1024 * 1024)).toBe('warning')
+
+    internal.connectorBody({
+      type: 'stream.frame', runtimeId: 'default', streamId: 'question-stream-0001',
+      capability: 'dsh.web', stream: 'mux', frameSequence: 3,
+      payload: {
+        type: 'server-request', rpcId: 'question-rpc-burst-0001', method: 'question/requested',
+        payload: { type: 'question/requested', sessionId: 'session-one', questions: [] },
+      },
+    })
+    expect(state.journal.outboundUsage().records).toBe(501)
+    expect(state.journal.pendingOutbound(501).at(-1)?.body).toMatchObject({
+      type: 'stream.frame', capability: 'dsh.web', stream: 'mux',
+      payload: { method: 'question/requested' },
+    })
+    state.close()
+  })
+
+  it('coalesces repeated Hub resynchronization requests for one runtime', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-hub-node-resync-burst-'))
+    roots.push(root)
+    const configPath = join(root, 'node-agent.json')
+    const stateDirectory = join(root, 'state')
+    await writeFile(configPath, `${JSON.stringify({
+      hubUrl: 'https://hub.example.com',
+      nodeId: 'node-resync-burst',
+      accessClientId: 'node-token.access',
+      accessClientSecret: 'service-token-secret-with-at-least-32-characters',
+      hubPublicKey: generateHubIdentity().publicKey,
+      stateDirectory,
+      ipcEndpoint: join(stateDirectory, 'connector.sock'),
+    })}\n`, { mode: 0o600 })
+    const state = await HubNodeAgentState.open(configPath)
+    const agent = new HubNodeAgent({ state })
+    const internal = agent as unknown as {
+      connector: { send(runtimeId: string, body: HubEnvelopeBody): Promise<boolean> }
+      processHubInbound(record: {
+        sequence: number
+        messageId: ReturnType<typeof HubMessageId>
+        body: HubEnvelopeBody
+        bodyHash: string
+        bodySize: number
+        createdAt: number
+        recovery: boolean
+      }): Promise<boolean>
+    }
+    const sent = vi.spyOn(internal.connector, 'send').mockResolvedValue(true)
+    const record = (sequence: number) => ({
+      sequence,
+      messageId: HubMessageId(`resync-message-${String(sequence).padStart(8, '0')}`),
+      body: {
+        type: 'runtime.resync-required' as const,
+        runtimeId: 'default',
+        reason: 'baseline-changed' as const,
+      },
+      bodyHash: 'hash', bodySize: 1, createdAt: 1, recovery: false,
+    })
+    await expect(internal.processHubInbound(record(1))).resolves.toBe(true)
+    await expect(internal.processHubInbound(record(2))).resolves.toBe(true)
+    expect(sent).toHaveBeenCalledTimes(1)
+    state.close()
   })
 })

@@ -11,6 +11,32 @@ export interface HubNode {
   lastSeenAt?: number
   createdAt: number
   revokedAt?: number
+  transport?: HubTransportHealth
+}
+
+/** Latest reliable-queue health from both sides of one node connection. */
+export interface HubTransportHealth {
+  reportedAt?: number
+  lastPongAt?: number
+  pressure: 'normal' | 'warning' | 'critical' | 'unknown'
+  nodeOutbox?: HubOutboxHealth
+  hubOutbox: HubOutboxHealth
+  droppedStreamFramesTotal: number
+  droppedStreams: Array<{
+    runtimeId: string
+    capability: string
+    stream: string
+    frames: number
+  }>
+}
+
+/** One peer's pending reliable queue. */
+export interface HubOutboxHealth {
+  records: number
+  bytes: number
+  maxRecords: number
+  maxBytes: number
+  oldestPendingAt?: number
 }
 
 /** Version and operations advertised by one node Runtime capability. */

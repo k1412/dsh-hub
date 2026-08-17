@@ -8,7 +8,7 @@ import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
 import type { TypertGateway } from '@deepseek-ai/dsh-api-gateway'
-import { generateHubIpcSecret } from '@k1412/dsh-hub-node-ipc'
+import { generateHubIpcSecret, type HubIpcFrame } from '@k1412/dsh-hub-node-ipc'
 import { HubConnectorServer } from '../../hub-node-agent/src/ipc-server.ts'
 import type { HubEnvelopeBody } from '@k1412/dsh-hub-protocol'
 import { detectDshVersion, HubConnector } from '../src/index.ts'
@@ -41,6 +41,34 @@ function testGateway(): TypertGateway {
 }
 
 describe('Hub Connector coexistence', () => {
+  it('rejects a queued write when IPC closes before the write reaches the socket', async () => {
+    const connector = new HubConnector({} as ApiProxy, testGateway(), {
+      ipcEndpoint: '/unused',
+      secretFile: '/unused',
+      runtimeId: 'default',
+      dshVersion: 'test',
+      reconnectMaximumMs: 1_000,
+    })
+    let releaseWrite: (() => void) | undefined
+    const previousWrite = new Promise<void>((resolve) => { releaseWrite = resolve })
+    const write = vi.fn()
+    const socket = { destroyed: false, write }
+    ;(connector as unknown as { active: { socket: typeof socket; writes: Promise<void> } }).active = {
+      socket,
+      writes: previousWrite,
+    }
+    const send = (connector as unknown as {
+      send: (frame: HubIpcFrame) => Promise<void>
+    }).send.bind(connector)
+    const pending = send({ type: 'ipc.heartbeat', timestamp: Date.now() })
+
+    socket.destroyed = true
+    releaseWrite?.()
+
+    await expect(pending).rejects.toThrow('Connector IPC is offline')
+    expect(write).not.toHaveBeenCalled()
+  })
+
   it('detects the DSH package version from the launching CLI entrypoint', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-hub-version-'))
     roots.push(root)
@@ -67,6 +95,19 @@ describe('Hub Connector coexistence', () => {
 
     const calls: string[] = []
     const success = <T>(rpcId: string, value: T) => ({ rpcId, result: { ok: true as const, value } })
+    const sessionEvents = async function* (signal: AbortSignal) {
+      yield {
+        rpcId: 'loader-session-event-0001',
+        payload: {
+          type: 'session/event', sessionId: 'loader-shared-session',
+          event: { type: 'step/start', seq: 1, time: 1, data: {} },
+        },
+      }
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) resolve()
+        else signal.addEventListener('abort', () => { resolve() }, { once: true })
+      })
+    }
     const api = {
       sessions: {
         list: async (request: { rpcId: string }) => success(request.rpcId, { items: [{
@@ -85,7 +126,7 @@ describe('Hub Connector coexistence', () => {
         writable: true, hasDocument: true, namespaces: [],
       }) },
       events: {
-        mux: (_request: unknown, signal: AbortSignal) => idle(signal),
+        mux: (_request: unknown, signal: AbortSignal) => sessionEvents(signal),
         host: (_request: unknown, signal: AbortSignal) => idle(signal),
       },
       respond: async () => ({ accepted: true as const }),
@@ -167,6 +208,10 @@ describe('Hub Connector coexistence', () => {
     expect(index.payload).toMatchObject({
       sessions: [{ sessionId: 'loader-shared-session', workspacePath: root }],
     })
+    await vi.waitFor(() => { expect(bodies.some(body => body.type === 'stream.frame'
+      && body.capability === 'dsh.web' && body.stream === 'mux')).toBe(true) })
+    expect(bodies.some(body => body.type === 'stream.frame'
+      && body.capability === 'dsh.sessions' && body.stream === 'events')).toBe(false)
 
     await server.send('loader-runtime', {
       type: 'capability.invoke',
@@ -447,6 +492,95 @@ describe('Hub Connector coexistence', () => {
       })
     }
     expect(createCalls).toBe(1)
+
+    controller.abort(new Error('test complete'))
+    await running
+  })
+
+  it('reopens ApiProxy streams on resync so a pending question is replayed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-hub-connector-resync-'))
+    roots.push(root)
+    const endpoint = join(root, 'agent.sock')
+    const secretFile = join(root, 'connector.secret')
+    const secret = generateHubIpcSecret()
+    await writeFile(secretFile, `${secret}\n`, { mode: 0o600 })
+    await chmod(secretFile, 0o600)
+
+    const success = <T>(rpcId: string, value: T) => ({ rpcId, result: { ok: true as const, value } })
+    let muxSubscriptions = 0
+    const pendingQuestion = async function* (signal: AbortSignal) {
+      muxSubscriptions += 1
+      yield {
+        rpcId: 'question-rpc-resync-0001',
+        payload: {
+          type: 'question/requested',
+          sessionId: 'session-resync',
+          questions: [{ id: 'continue', question: 'Continue?' }],
+        },
+      }
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) resolve()
+        else signal.addEventListener('abort', () => { resolve() }, { once: true })
+      })
+    }
+    const api = {
+      sessions: {
+        list: async (request: { rpcId: string }) => success(request.rpcId, { items: [{
+          sessionId: 'session-resync', updatedAt: Date.now(), running: true, blank: false, cwd: root,
+        }] }),
+        history: async (request: { rpcId: string }) => success(request.rpcId, { events: [], hasMore: false }),
+      },
+      host: { describe: async (request: { rpcId: string }) => success(request.rpcId, {
+        version: '0.1.0-rc.5', cwd: root, attachedSessions: 1, canOpenPath: true,
+      }) },
+      settings: { describe: async (request: { rpcId: string }) => success(request.rpcId, {
+        writable: true, hasDocument: true, namespaces: [],
+      }) },
+      events: {
+        mux: (_request: unknown, signal: AbortSignal) => pendingQuestion(signal),
+        host: (_request: unknown, signal: AbortSignal) => idle(signal),
+      },
+      respond: async () => ({ accepted: true as const }),
+    } as unknown as ApiProxy
+
+    let connections = 0
+    const bodies: HubEnvelopeBody[] = []
+    const server = new HubConnectorServer(endpoint, secret, 'agent-boot-id-resync', {
+      connected: () => { connections += 1 },
+      body: (_runtimeId, body) => { bodies.push(body) },
+      disconnected: () => undefined,
+    })
+    servers.push(server)
+    await server.listen()
+    const connector = new HubConnector(api, testGateway(), {
+      ipcEndpoint: endpoint,
+      secretFile,
+      runtimeId: 'default',
+      dshVersion: '0.1.0-rc.5',
+      reconnectMaximumMs: 1_000,
+    })
+    const controller = new AbortController()
+    const running = connector.run(controller.signal)
+
+    const questionFrames = () => bodies.filter(body => body.type === 'stream.frame'
+      && body.capability === 'dsh.web'
+      && body.stream === 'mux'
+      && typeof body.payload === 'object'
+      && body.payload !== null
+      && !Array.isArray(body.payload)
+      && body.payload.method === 'question/requested')
+    await vi.waitFor(() => { expect(questionFrames()).toHaveLength(1) })
+    expect(await server.send('default', {
+      type: 'runtime.resync-required', runtimeId: 'default', reason: 'retention-exceeded',
+    })).toBe(true)
+    await vi.waitFor(() => {
+      expect(connections).toBeGreaterThanOrEqual(2)
+      expect(muxSubscriptions).toBeGreaterThanOrEqual(2)
+      expect(questionFrames().length).toBeGreaterThanOrEqual(2)
+    })
+    expect(questionFrames()[1]).toMatchObject({
+      payload: { rpcId: 'question-rpc-resync-0001', method: 'question/requested' },
+    })
 
     controller.abort(new Error('test complete'))
     await running

@@ -167,6 +167,33 @@ describe('Hub Agent WebSocket integration', () => {
     await Promise.all(peer.renderPending().map(frame => send(socket, frame)))
 
     peer.enqueue({
+      type: 'transport.status',
+      observedAt: 2_500,
+      pressure: 'warning',
+      outboxRecords: 8_100,
+      outboxBytes: 5_000_000,
+      maxOutboxRecords: 10_000,
+      maxOutboxBytes: 64 * 1024 * 1024,
+      oldestPendingAt: 2_000,
+      droppedStreamFramesTotal: 12,
+      droppedStreams: [{
+        runtimeId, capability: 'dsh.sessions', stream: 'events', frames: 12,
+      }],
+    })
+    await Promise.all(peer.renderPending().map(frame => send(socket, frame)))
+    await vi.waitFor(() => {
+      expect(server.agents.transportHealth(nodeId)).toMatchObject({
+        reportedAt: 2_500,
+        pressure: 'warning',
+        nodeOutbox: { records: 8_100, maxRecords: 10_000 },
+        droppedStreamFramesTotal: 12,
+      })
+    })
+    expect(storage.control.listAudit(100, nodeId)).toContainEqual(expect.objectContaining({
+      action: 'transport.pressure', outcome: 'warning',
+    }))
+
+    peer.enqueue({
       type: 'stream.frame',
       runtimeId,
       capability: 'dsh.sessions',
@@ -325,6 +352,80 @@ describe('Hub Agent WebSocket integration', () => {
       runtimeId: 'default-runtime',
       sourceId: 'session-project-one',
     })
+
+    peer.enqueue({
+      type: 'stream.frame',
+      runtimeId,
+      capability: 'dsh.web',
+      streamId: HubMessageId('official-mux-stream-01'),
+      stream: 'mux',
+      frameSequence: 2,
+      payload: {
+        type: 'server-request',
+        rpcId: 'question-rpc-1',
+        method: 'question/requested',
+        payload: {
+          type: 'question/requested',
+          sessionId: 'session-project-one',
+          questions: [{ id: 'continue', question: 'Continue?' }],
+        },
+      },
+    })
+    await flushNode()
+    const browserQuestion = await nextOfficial() as {
+      rpcId: string
+      method: string
+      payload: { sessionId: string }
+    }
+    expect(browserQuestion).toMatchObject({
+      rpcId: 'question-rpc-1',
+      method: 'question/requested',
+    })
+    expect(decodeFleetId(browserQuestion.payload.sessionId)).toMatchObject({
+      kind: 'session', nodeId: 'node-a', runtimeId: 'default-runtime', sourceId: 'session-project-one',
+    })
+
+    const answerRequest = fetch(`http://127.0.0.1:${String(address.port)}/api/respond`, {
+      method: 'POST',
+      headers: { origin: 'https://hub.example.com', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'client-response',
+        rpcId: browserQuestion.rpcId,
+        result: {
+          ok: true,
+          value: {
+            sessionId: browserQuestion.payload.sessionId,
+            answer: { answers: [{ id: 'continue', selected: ['Yes'] }] },
+          },
+        },
+      }),
+    })
+    const answerFetch = await nextAgentCommand('fetch', 'dsh.web')
+    const answerBody = (answerFetch.payload as { body?: unknown }).body
+    if (typeof answerBody !== 'string') throw new Error('forwarded question answer body missing')
+    const forwardedAnswer = JSON.parse(answerBody) as {
+      rpcId?: string
+      result?: { value?: { sessionId?: string } }
+    }
+    expect(forwardedAnswer).toMatchObject({
+      rpcId: 'question-rpc-1',
+      result: { value: { sessionId: 'session-project-one' } },
+    })
+    peer.enqueue({
+      type: 'capability.result',
+      commandId: answerFetch.commandId,
+      status: 'ok',
+      value: {
+        status: 200,
+        headers: [['content-type', 'application/json; charset=utf-8']],
+        encoding: 'utf8',
+        body: JSON.stringify({ accepted: true }),
+      },
+    })
+    await flushNode()
+    const answerResponse = await answerRequest
+    expect(answerResponse.status).toBe(200)
+    expect(await answerResponse.json() as unknown).toEqual({ accepted: true })
     officialSocket.close()
 
     // A command can be enqueued while an earlier socket send is still in

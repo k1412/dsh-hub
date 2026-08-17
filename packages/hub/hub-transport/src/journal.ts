@@ -13,6 +13,15 @@ export interface ReliableJournalLimits {
   maxOutboundBytes: number
 }
 
+/** Current reliable-outbox pressure and configured capacity. */
+export interface ReliableJournalUsage {
+  records: number
+  bytes: number
+  oldestCreatedAt: number
+  maxRecords: number
+  maxBytes: number
+}
+
 /** Durable outbound body awaiting a peer acknowledgement. */
 export interface ReliableOutboundRecord {
   sequence: number
@@ -180,6 +189,41 @@ export class SqliteReliableJournal {
   }
 
   /**
+   * Return unacknowledged bodies after a connection-local send cursor.
+   * @param sequence - exclusive lower directional-sequence bound.
+   * @param limit - maximum record count.
+   * @returns pending outbound records after the supplied sequence.
+   */
+  public pendingOutboundAfter(sequence: number, limit = 1_000): ReliableOutboundRecord[] {
+    if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error('outbound cursor must be a non-negative integer')
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('pending limit must be a positive integer')
+    return this.database.prepare(`
+      SELECT * FROM reliable_outbox
+      WHERE peer_id = ? AND sequence > ?
+      ORDER BY sequence LIMIT ?
+    `).all(this.peerId, sequence, limit).map(outboundFromRow)
+  }
+
+  /**
+   * Return current queue usage for health reporting and producer backpressure.
+   * @returns record, byte, and configured capacity totals.
+   */
+  public outboundUsage(): ReliableJournalUsage {
+    const usage = this.database.prepare(`
+      SELECT COUNT(*) AS records, COALESCE(SUM(body_size), 0) AS bytes,
+             COALESCE(MIN(created_at), 0) AS oldest_created_at
+      FROM reliable_outbox WHERE peer_id = ?
+    `).get(this.peerId) as { records: number; bytes: number; oldest_created_at: number }
+    return {
+      records: usage.records,
+      bytes: usage.bytes,
+      oldestCreatedAt: usage.oldest_created_at,
+      maxRecords: this.limits.maxOutboundRecords,
+      maxBytes: this.limits.maxOutboundBytes,
+    }
+  }
+
+  /**
    * Delete the acknowledged prefix after validating it was allocated locally.
    * @param acknowledgement - peer's highest contiguous accepted sequence.
    */
@@ -290,6 +334,25 @@ export class SqliteReliableJournal {
       WHERE peer_id = ? AND state IN ('pending', 'processing')
       ORDER BY sequence LIMIT ?
     `).all(this.peerId, limit).map(row => ({
+      ...outboundFromRow(row),
+      recovery: row.state === 'processing',
+    }))
+  }
+
+  /**
+   * List recoverable bodies after a recovery-pass cursor.
+   * @param sequence - exclusive lower directional-sequence bound.
+   * @param limit - maximum record count.
+   * @returns recoverable inbound records after the supplied sequence.
+   */
+  public recoverableInboundAfter(sequence: number, limit = 1_000): ReliableInboundRecord[] {
+    if (!Number.isSafeInteger(sequence) || sequence < 0) throw new Error('inbound cursor must be a non-negative integer')
+    if (!Number.isSafeInteger(limit) || limit < 1) throw new Error('recovery limit must be a positive integer')
+    return this.database.prepare(`
+      SELECT * FROM reliable_inbox
+      WHERE peer_id = ? AND sequence > ? AND state IN ('pending', 'processing')
+      ORDER BY sequence LIMIT ?
+    `).all(this.peerId, sequence, limit).map(row => ({
       ...outboundFromRow(row),
       recovery: row.state === 'processing',
     }))
