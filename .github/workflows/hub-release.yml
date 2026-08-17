@@ -30,7 +30,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
           ref: ${{ inputs.release_tag || github.ref }}
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 11.7.0
       - uses: actions/setup-node@v6
