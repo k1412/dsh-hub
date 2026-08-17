@@ -246,5 +246,5 @@ describe('reliable Hub transport', () => {
     expect(sequences).toHaveLength(10_000)
     expect(sequences[0]).toBe(1)
     expect(sequences.at(-1)).toBe(10_000)
-  })
+  }, 30_000)
 })

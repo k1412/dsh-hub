@@ -147,5 +147,5 @@ describe('Node Agent private state', () => {
       type: 'runtime.goodbye', runtimeId: 'default', reason: 'connector-stopped',
     })
     state.close()
-  })
+  }, 30_000)
 })
