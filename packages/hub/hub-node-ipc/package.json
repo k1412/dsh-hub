@@ -1,7 +1,7 @@
 {
   "name": "@k1412/dsh-hub-node-ipc",
   "description": "Authenticated local IPC framing between the DSH Hub Connector and Node Agent",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",

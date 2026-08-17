@@ -32,7 +32,7 @@ declare module '@deepseek-ai/dsh-api-gateway/types' {
 }
 
 /** Connector release sent in the authenticated local baseline. */
-export const HUB_CONNECTOR_VERSION = '1.0.0'
+export const HUB_CONNECTOR_VERSION = '1.0.1'
 
 /** Connector configuration stored in the DSH profile. */
 export interface Config {

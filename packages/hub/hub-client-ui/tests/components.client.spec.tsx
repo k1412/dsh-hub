@@ -275,8 +275,8 @@ describe('Hub management Settings pages', () => {
 
     expect(unix).toContain("--node 'mac-'\"'\"'neo'")
     expect(windows).toContain("$env:DSH_HUB_NODE_ID='mac-''neo'")
-    expect(unix).toContain('/releases/download/hub-v1.0.0/install-node.sh')
-    expect(windows).toContain('/releases/download/hub-v1.0.0/install-node.ps1')
+    expect(unix).toContain('/releases/download/hub-v1.0.1/install-node.sh')
+    expect(windows).toContain('/releases/download/hub-v1.0.1/install-node.ps1')
     expect(unix).not.toContain('DSH_HUB_ACCESS_CLIENT_SECRET')
     expect(windows).not.toContain('DSH_HUB_ACCESS_CLIENT_SECRET')
   })

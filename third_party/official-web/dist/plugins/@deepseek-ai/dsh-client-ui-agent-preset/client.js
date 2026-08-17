@@ -158,8 +158,8 @@ window.__ModuleLoader__.load({
 			};
 		}
 		//#endregion
-		//#region \0dsh-css:/home/wuyang/Code/deepcode/dsh-hub/packages/client/ui-agent-preset/src/client/AgentPresetLabel.module.css.mjs
-		const css$3 = ".Q2QTzG_label{background:var(--dsw-alias-fill-tsp-secondary);max-width:180px;height:22px;color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;border-radius:6px;align-items:center;gap:4px;padding:0 2px 0 0;font-size:12px;line-height:22px;display:inline-flex;overflow:hidden}.Q2QTzG_icon{opacity:.7;flex:none}";
+		//#region \0dsh-css:/tmp/dsh-hub-settings-audit.Z1vMR7/packages/client/ui-agent-preset/src/client/AgentPresetLabel.module.css.mjs
+		const css$3 = ".O2oD2G_label{background:var(--dsw-alias-fill-tsp-secondary);max-width:180px;height:22px;color:var(--dsw-alias-label-secondary);white-space:nowrap;text-overflow:ellipsis;border-radius:6px;align-items:center;gap:4px;padding:0 2px 0 0;font-size:12px;line-height:22px;display:inline-flex;overflow:hidden}.O2oD2G_icon{opacity:.7;flex:none}";
 		const tagId$3 = "@deepseek-ai/dsh-client-ui-agent-preset/AgentPresetLabel.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$3) + "]") === null) {
 			const tag = document.createElement("style");
@@ -169,8 +169,8 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var AgentPresetLabel_module_css_default = {
-			"icon": "Q2QTzG_icon",
-			"label": "Q2QTzG_label"
+			"icon": "O2oD2G_icon",
+			"label": "O2oD2G_label"
 		};
 		//#endregion
 		//#region lib/types/client/AgentPresetLabel.js
@@ -257,8 +257,8 @@ window.__ModuleLoader__.load({
 			});
 		}
 		//#endregion
-		//#region \0dsh-css:/home/wuyang/Code/deepcode/dsh-hub/packages/client/ui-agent-preset/src/client/AgentPresetRow.module.css.mjs
-		const css$2 = ".DJigBa_row{border-bottom:1px solid var(--dsw-alias-border-l2);align-items:center;gap:8px;padding:16px 0;display:flex}.DJigBa_rowText{flex-direction:column;flex:1;gap:4px;min-width:0;padding-right:48px;display:flex}.DJigBa_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}.DJigBa_desc{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:400;line-height:18px}.DJigBa_selector{background:var(--dsw-alias-bg-module-platform);height:36px;font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;border-radius:18px;align-items:center;gap:12px;padding:0 14px;font-size:14px;line-height:22px;display:inline-flex}.DJigBa_selector:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.DJigBa_selector:disabled{cursor:default}.DJigBa_chevron{flex:none}";
+		//#region \0dsh-css:/tmp/dsh-hub-settings-audit.Z1vMR7/packages/client/ui-agent-preset/src/client/AgentPresetRow.module.css.mjs
+		const css$2 = ".akFWsG_row{border-bottom:1px solid var(--dsw-alias-border-l2);align-items:center;gap:8px;padding:16px 0;display:flex}.akFWsG_rowText{flex-direction:column;flex:1;gap:4px;min-width:0;padding-right:48px;display:flex}.akFWsG_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}.akFWsG_desc{color:var(--dsw-alias-label-tertiary);font-size:12px;font-weight:400;line-height:18px}.akFWsG_selector{background:var(--dsw-alias-bg-module-platform);height:36px;font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;border-radius:18px;align-items:center;gap:12px;padding:0 14px;font-size:14px;line-height:22px;display:inline-flex}.akFWsG_selector:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.akFWsG_selector:disabled{cursor:default}.akFWsG_chevron{flex:none}";
 		const tagId$2 = "@deepseek-ai/dsh-client-ui-agent-preset/AgentPresetRow.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$2) + "]") === null) {
 			const tag = document.createElement("style");
@@ -268,12 +268,12 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var AgentPresetRow_module_css_default = {
-			"chevron": "DJigBa_chevron",
-			"title": "DJigBa_title",
-			"rowText": "DJigBa_rowText",
-			"row": "DJigBa_row",
-			"selector": "DJigBa_selector",
-			"desc": "DJigBa_desc"
+			"title": "akFWsG_title",
+			"row": "akFWsG_row",
+			"desc": "akFWsG_desc",
+			"selector": "akFWsG_selector",
+			"chevron": "akFWsG_chevron",
+			"rowText": "akFWsG_rowText"
 		};
 		//#endregion
 		//#region lib/types/client/AgentPresetRow.js
@@ -332,8 +332,8 @@ window.__ModuleLoader__.load({
 			});
 		}
 		//#endregion
-		//#region \0dsh-css:/home/wuyang/Code/deepcode/dsh-hub/packages/client/ui-agent-preset/src/client/AgentPresetSeat.module.css.mjs
-		const css$1 = ".nYJVya_seat{max-width:min(100%,240px);min-height:28px;color:var(--dsw-alias-label-primary);white-space:nowrap;text-overflow:ellipsis;cursor:pointer;background:0 0;border:none;border-radius:16px;align-items:center;gap:4px;padding:0 8px;font-size:13px;font-weight:500;line-height:20px;display:inline-flex;overflow:hidden}.nYJVya_seat:not(:disabled):hover,.nYJVya_seat[aria-expanded=true]{background:var(--dsw-alias-interactive-bg-hover)}.nYJVya_seat:disabled{cursor:default;color:var(--dsw-alias-label-quaternary)}.nYJVya_seatIcon{color:var(--dsw-alias-label-primary);flex:none}.nYJVya_introIcon{animation:.15s cubic-bezier(.16,1,.3,1) both nYJVya_seat-icon-in}@keyframes nYJVya_seat-icon-in{0%{opacity:0;transform:scale(.5)}to{opacity:1;transform:scale(1)}}.nYJVya_introText{white-space:pre;display:inline-block}.nYJVya_introChar{white-space:pre;opacity:0;animation:.4s ease-out forwards nYJVya_seat-char-in;display:inline-block}@keyframes nYJVya_seat-char-in{0%{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}@media (prefers-reduced-motion:reduce){.nYJVya_introIcon,.nYJVya_introChar{opacity:1;animation:none}}.nYJVya_chevron{color:var(--dsw-alias-label-caption);flex:none}.nYJVya_item{flex-direction:column;gap:2px;max-width:280px;display:flex}.nYJVya_itemName{color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}.nYJVya_itemDesc{color:var(--dsw-alias-label-caption);white-space:normal;font-size:12px;line-height:16px}";
+		//#region \0dsh-css:/tmp/dsh-hub-settings-audit.Z1vMR7/packages/client/ui-agent-preset/src/client/AgentPresetSeat.module.css.mjs
+		const css$1 = ".LvPqzW_seat{max-width:min(100%,240px);min-height:28px;color:var(--dsw-alias-label-primary);white-space:nowrap;text-overflow:ellipsis;cursor:pointer;background:0 0;border:none;border-radius:16px;align-items:center;gap:4px;padding:0 8px;font-size:13px;font-weight:500;line-height:20px;display:inline-flex;overflow:hidden}.LvPqzW_seat:not(:disabled):hover,.LvPqzW_seat[aria-expanded=true]{background:var(--dsw-alias-interactive-bg-hover)}.LvPqzW_seat:disabled{cursor:default;color:var(--dsw-alias-label-quaternary)}.LvPqzW_seatIcon{color:var(--dsw-alias-label-primary);flex:none}.LvPqzW_introIcon{animation:.15s cubic-bezier(.16,1,.3,1) both LvPqzW_seat-icon-in}@keyframes LvPqzW_seat-icon-in{0%{opacity:0;transform:scale(.5)}to{opacity:1;transform:scale(1)}}.LvPqzW_introText{white-space:pre;display:inline-block}.LvPqzW_introChar{white-space:pre;opacity:0;animation:.4s ease-out forwards LvPqzW_seat-char-in;display:inline-block}@keyframes LvPqzW_seat-char-in{0%{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}@media (prefers-reduced-motion:reduce){.LvPqzW_introIcon,.LvPqzW_introChar{opacity:1;animation:none}}.LvPqzW_chevron{color:var(--dsw-alias-label-caption);flex:none}.LvPqzW_item{flex-direction:column;gap:2px;max-width:280px;display:flex}.LvPqzW_itemName{color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px}.LvPqzW_itemDesc{color:var(--dsw-alias-label-caption);white-space:normal;font-size:12px;line-height:16px}";
 		const tagId$1 = "@deepseek-ai/dsh-client-ui-agent-preset/AgentPresetSeat.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId$1) + "]") === null) {
 			const tag = document.createElement("style");
@@ -343,17 +343,17 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var AgentPresetSeat_module_css_default = {
-			"seatIcon": "nYJVya_seatIcon",
-			"seat-icon-in": "nYJVya_seat-icon-in",
-			"seat": "nYJVya_seat",
-			"introChar": "nYJVya_introChar",
-			"seat-char-in": "nYJVya_seat-char-in",
-			"introText": "nYJVya_introText",
-			"introIcon": "nYJVya_introIcon",
-			"item": "nYJVya_item",
-			"itemName": "nYJVya_itemName",
-			"chevron": "nYJVya_chevron",
-			"itemDesc": "nYJVya_itemDesc"
+			"seat-char-in": "LvPqzW_seat-char-in",
+			"item": "LvPqzW_item",
+			"seatIcon": "LvPqzW_seatIcon",
+			"chevron": "LvPqzW_chevron",
+			"itemDesc": "LvPqzW_itemDesc",
+			"introIcon": "LvPqzW_introIcon",
+			"itemName": "LvPqzW_itemName",
+			"introChar": "LvPqzW_introChar",
+			"seat-icon-in": "LvPqzW_seat-icon-in",
+			"seat": "LvPqzW_seat",
+			"introText": "LvPqzW_introText"
 		};
 		//#endregion
 		//#region lib/types/client/AgentPresetSeat.js
@@ -548,33 +548,6 @@ window.__ModuleLoader__.load({
 			}
 		}
 		/**
-		* The opening move every roster-backed surface makes: refuse a read that is
-		* already in flight, mark the store loading, then read.
-		*
-		* A surface that gets `undefined` returns without touching its snapshot
-		* further — either another read owns it, or this one already wrote the
-		* failure. What differs between surfaces starts after this.
-		* @param api - the agent-preset wire face.
-		* @param store - the surface's own snapshot store.
-		* @returns the roster, or undefined when the caller should return.
-		*/
-		async function beginRosterRead(api, store) {
-			const before = store.getSnapshot();
-			if (before.status === "loading") return void 0;
-			store.set({
-				...before,
-				status: "loading",
-				error: null
-			});
-			const roster = await readRoster(api);
-			if (roster.ok) return roster.value;
-			store.set({
-				...store.getSnapshot(),
-				status: "error",
-				error: roster.error
-			});
-		}
-		/**
 		* The roster entries as the pickers render them: healthy presets only.
 		*
 		* The chip and the row exist to choose the NEXT session's composition, and a
@@ -609,6 +582,7 @@ window.__ModuleLoader__.load({
 			api;
 			/** Row snapshot the renderer subscribes to. */
 			store = (0, _deepseek_ai_dsh_client_runtime_client.createSnapshotStore)(INITIAL$2);
+			generation = 0;
 			constructor(api) {
 				this.api = api;
 			}
@@ -625,9 +599,21 @@ window.__ModuleLoader__.load({
 			* @returns once the snapshot reflects the host.
 			*/
 			async load() {
-				const roster = await beginRosterRead(this.api, this.store);
-				if (roster === void 0) return;
-				const { presets } = roster;
+				const generation = ++this.generation;
+				this.set({
+					status: "loading",
+					error: null
+				});
+				const result = await readRoster(this.api);
+				if (generation !== this.generation) return;
+				if (!result.ok) {
+					this.set({
+						status: "error",
+						error: result.error
+					});
+					return;
+				}
+				const { presets } = result.value;
 				const [first] = presets;
 				if (first === void 0) {
 					this.set({
@@ -639,6 +625,7 @@ window.__ModuleLoader__.load({
 				}
 				try {
 					const described = await this.api.settings.describe({});
+					if (generation !== this.generation) return;
 					this.set({
 						status: "ready",
 						error: null,
@@ -647,6 +634,7 @@ window.__ModuleLoader__.load({
 						currentValue: presets.find((preset) => preset.isDefault)?.id ?? first.id
 					});
 				} catch (error) {
+					if (generation !== this.generation) return;
 					this.set({
 						status: "error",
 						error: messageOf(error)
@@ -663,12 +651,14 @@ window.__ModuleLoader__.load({
 			async select(id) {
 				const before = this.store.getSnapshot();
 				if (before.status === "saving" || id === before.currentValue) return;
+				const generation = ++this.generation;
 				this.set({
 					status: "saving",
 					error: null,
 					currentValue: id
 				});
 				const failure = await writeDefaultPreset(this.api, id);
+				if (generation !== this.generation) return;
 				if (failure !== void 0) {
 					this.set({
 						status: "ready",
@@ -730,6 +720,7 @@ window.__ModuleLoader__.load({
 			rosterChanged;
 			/** Page snapshot the renderer subscribes to. */
 			store = (0, _deepseek_ai_dsh_client_runtime_client.createSnapshotStore)(INITIAL$1);
+			generation = 0;
 			constructor(api, rosterChanged = () => {}) {
 				this.api = api;
 				this.rosterChanged = rosterChanged;
@@ -755,9 +746,21 @@ window.__ModuleLoader__.load({
 			* @returns once the snapshot reflects the host.
 			*/
 			async load() {
-				const roster = await beginRosterRead(this.api, this.store);
-				if (roster === void 0) return;
-				const { presets, authorable, hasDocument } = roster;
+				const generation = ++this.generation;
+				this.set({
+					status: "loading",
+					error: null
+				});
+				const result = await readRoster(this.api);
+				if (generation !== this.generation) return;
+				if (!result.ok) {
+					this.set({
+						status: "error",
+						error: result.error
+					});
+					return;
+				}
+				const { presets, authorable, hasDocument } = result.value;
 				if (presets.length === 0) {
 					this.set({
 						status: "unavailable",
@@ -786,9 +789,11 @@ window.__ModuleLoader__.load({
 			* @returns once the composition loaded or the failure is on the page.
 			*/
 			async view(id) {
+				const generation = this.generation;
 				this.set({ error: null });
 				try {
 					const response = await this.api.agentPresets.read({ agentPreset: id });
+					if (generation !== this.generation) return;
 					if (!response.result.ok) {
 						this.set({ error: response.result.error.message });
 						return;
@@ -800,6 +805,7 @@ window.__ModuleLoader__.load({
 						content
 					} });
 				} catch (error) {
+					if (generation !== this.generation) return;
 					this.set({ error: messageOf(error) });
 				}
 			}
@@ -859,6 +865,7 @@ window.__ModuleLoader__.load({
 				const draft = this.store.getSnapshot().copy;
 				if (draft === null || draft.saving) return;
 				if (draftBlocker(draft, this.store.getSnapshot().rows) !== void 0) return;
+				const generation = this.generation;
 				this.patchCopy({
 					saving: true,
 					error: null
@@ -870,6 +877,7 @@ window.__ModuleLoader__.load({
 						agentPreset: draft.id,
 						...name === "" ? {} : { name }
 					});
+					if (generation !== this.generation) return;
 					if (!response.result.ok) {
 						this.patchCopy({
 							saving: false,
@@ -882,6 +890,7 @@ window.__ModuleLoader__.load({
 					this.rosterChanged();
 					await this.openLocation(draft.id);
 				} catch (error) {
+					if (generation !== this.generation) return;
 					this.patchCopy({
 						saving: false,
 						error: messageOf(error)
@@ -895,8 +904,10 @@ window.__ModuleLoader__.load({
 			* @returns once the host answered and the page reflects it.
 			*/
 			async openLocation(id) {
+				const generation = this.generation;
 				try {
 					const response = await this.api.agentPresets.openDocument({ agentPreset: id });
+					if (generation !== this.generation) return;
 					if (!response.result.ok) {
 						this.set({ error: response.result.error.message });
 						return;
@@ -908,6 +919,7 @@ window.__ModuleLoader__.load({
 						[id]: path
 					} });
 				} catch (error) {
+					if (generation !== this.generation) return;
 					this.set({ error: messageOf(error) });
 				}
 			}
@@ -929,12 +941,14 @@ window.__ModuleLoader__.load({
 			async remove() {
 				const { pendingDelete, deleting } = this.store.getSnapshot();
 				if (pendingDelete === null || deleting) return;
+				const generation = this.generation;
 				this.set({
 					deleting: true,
 					error: null
 				});
 				try {
 					const response = await this.api.agentPresets.remove({ agentPreset: pendingDelete });
+					if (generation !== this.generation) return;
 					if (!response.result.ok) {
 						this.set({
 							deleting: false,
@@ -950,6 +964,7 @@ window.__ModuleLoader__.load({
 					await this.load();
 					this.rosterChanged();
 				} catch (error) {
+					if (generation !== this.generation) return;
 					this.set({
 						deleting: false,
 						pendingDelete: null,
@@ -964,7 +979,9 @@ window.__ModuleLoader__.load({
 			* @returns once the write settled and the roster was re-read.
 			*/
 			async makeDefault(id) {
+				const generation = this.generation;
 				const failure = await writeDefaultPreset(this.api, id);
+				if (generation !== this.generation) return;
 				if (failure !== void 0) {
 					this.set({ error: failure });
 					return;
@@ -973,8 +990,8 @@ window.__ModuleLoader__.load({
 			}
 		};
 		//#endregion
-		//#region \0dsh-css:/home/wuyang/Code/deepcode/dsh-hub/packages/client/ui-agent-preset/src/client/AgentPresetSection.module.css.mjs
-		const css = ".x8BDQW_section{max-width:720px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:12px;display:flex}.x8BDQW_title{margin:0;font-size:18px;font-weight:600}.x8BDQW_intro{color:var(--dsw-alias-label-tertiary);margin:0;font-size:13px}.x8BDQW_group{flex-direction:column;gap:10px;display:flex}.x8BDQW_group+.x8BDQW_group{margin-top:20px}.x8BDQW_groupHead{letter-spacing:.06em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;font-weight:600}.x8BDQW_cards{grid-template-columns:repeat(auto-fill,minmax(268px,1fr));grid-auto-rows:1fr;gap:12px;margin:0;padding:0;list-style:none;display:grid}.x8BDQW_card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;flex-direction:column;transition:border-color .16s,background .16s;display:flex}.x8BDQW_card:hover:not(.x8BDQW_cardActive){border-color:var(--dsw-alias-label-dimmed)}.x8BDQW_cardActive{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-primary)}.x8BDQW_cardBroken,.x8BDQW_cardBroken:hover{border-color:var(--dsw-alias-state-error-primary)}.x8BDQW_brokenBadge{white-space:nowrap;background:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-bg-layer-3);border-radius:999px;padding:1px 8px;font-size:11px;font-weight:500;line-height:17px}.x8BDQW_cardBrokenReason{color:var(--dsw-alias-state-error-primary);overflow-wrap:anywhere;font-size:12px;line-height:1.5}.x8BDQW_cardMain{appearance:none;font:inherit;color:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px 12px 0 0;flex-direction:column;flex:1;gap:8px;padding:14px 16px 12px;display:flex}.x8BDQW_cardMain:disabled{cursor:default}.x8BDQW_cardMain:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}.x8BDQW_cardHead{align-items:center;gap:8px;display:flex}.x8BDQW_cardName{font-size:15px;font-weight:600;line-height:1.4}.x8BDQW_badge,.x8BDQW_inUse{white-space:nowrap;border-radius:999px;padding:1px 8px;font-size:11px;font-weight:500;line-height:17px}.x8BDQW_badge{border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-tertiary)}.x8BDQW_inUse{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3);margin-left:auto}.x8BDQW_cardDesc{color:var(--dsw-alias-label-secondary);-webkit-line-clamp:4;overflow-wrap:anywhere;-webkit-box-orient:vertical;min-height:42px;font-size:13px;line-height:1.55;display:-webkit-box;overflow:hidden}.x8BDQW_cardId{font-family:var(--dsw-font-mono,ui-monospace, SFMono-Regular, Menlo, monospace);color:var(--dsw-alias-label-dimmed);margin-top:auto;font-size:11px}.x8BDQW_cardFoot{border-top:1px solid var(--dsw-alias-border-l2);justify-content:flex-end;gap:2px;padding:6px 10px;display:flex}.x8BDQW_iconButton{appearance:none;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;border-radius:7px;align-items:center;padding:6px;display:inline-flex;position:relative}.x8BDQW_iconButton:disabled{opacity:.4;cursor:default}.x8BDQW_iconButton:hover:not(:disabled){background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}.x8BDQW_iconButton:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-1px}.x8BDQW_iconButton:after{content:attr(data-tip);background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3);white-space:nowrap;opacity:0;pointer-events:none;border-radius:6px;padding:3px 8px;font-size:11px;line-height:17px;transition:opacity .12s;position:absolute;bottom:calc(100% + 6px);left:50%;transform:translate(-50%)}.x8BDQW_iconButton:hover:after,.x8BDQW_iconButton:focus-visible:after{opacity:1}.x8BDQW_iconDanger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}.x8BDQW_revealedPath{color:var(--dsw-alias-label-tertiary);align-items:baseline;gap:6px;margin:0;padding:6px 16px 10px;font-size:11px;display:flex}.x8BDQW_revealedPath code{font-family:var(--dsw-font-mono,ui-monospace, SFMono-Regular, Menlo, monospace);color:var(--dsw-alias-label-secondary);user-select:all;overflow-wrap:anywhere}.x8BDQW_revealedPathLabel{white-space:nowrap}.x8BDQW_secondaryButton{color:var(--dsw-alias-label-secondary);font:inherit;cursor:pointer;background:0 0;border:none;border-radius:7px;padding:5px 8px;font-size:12.5px}.x8BDQW_secondaryButton:hover:not(:disabled){background:var(--dsw-alias-bg-layer-1)}.x8BDQW_secondaryButton:disabled{opacity:.5;cursor:default}.x8BDQW_field{flex-direction:column;gap:6px;display:flex}.x8BDQW_fieldLabel{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:500}.x8BDQW_input{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);font:inherit;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:10px;padding:9px 12px;font-size:13px}.x8BDQW_input:focus{border-color:var(--dsw-alias-brand-primary);outline:none}.x8BDQW_input::placeholder{color:var(--dsw-alias-label-dimmed)}.x8BDQW_dialog{width:min(560px,100%)}.x8BDQW_dialogFields{flex-direction:column;gap:12px;display:flex}.x8BDQW_viewerCode{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);max-height:min(52vh,480px);color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-mono,ui-monospace, SFMono-Regular, Menlo, monospace);white-space:pre;tab-size:2;--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:10px;margin:0;padding:12px;font-size:12.5px;line-height:1.5;overflow:auto}.x8BDQW_error{color:var(--dsw-alias-state-error-primary);margin:0;font-size:12px}.x8BDQW_deleteDialog{width:min(480px,100%)}.x8BDQW_deleteConfirm:not(:disabled){border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}.x8BDQW_deleteConfirm:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger)}.x8BDQW_creatorButton{box-sizing:border-box;border:1px dashed var(--dsw-alias-border-l3);height:44px;font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;background:0 0;border-radius:12px;justify-content:center;align-self:stretch;align-items:center;gap:6px;font-size:14px;line-height:22px;display:flex}.x8BDQW_creatorButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.x8BDQW_creatorButton:disabled{opacity:.4;cursor:default}";
+		//#region \0dsh-css:/tmp/dsh-hub-settings-audit.Z1vMR7/packages/client/ui-agent-preset/src/client/AgentPresetSection.module.css.mjs
+		const css = ".EtR-Ia_section{max-width:720px;color:var(--dsw-alias-label-primary);flex-direction:column;gap:12px;display:flex}.EtR-Ia_title{margin:0;font-size:18px;font-weight:600}.EtR-Ia_intro{color:var(--dsw-alias-label-tertiary);margin:0;font-size:13px}.EtR-Ia_group{flex-direction:column;gap:10px;display:flex}.EtR-Ia_group+.EtR-Ia_group{margin-top:20px}.EtR-Ia_groupHead{letter-spacing:.06em;text-transform:uppercase;color:var(--dsw-alias-label-tertiary);margin:0;font-size:12px;font-weight:600}.EtR-Ia_cards{grid-template-columns:repeat(auto-fill,minmax(268px,1fr));grid-auto-rows:1fr;gap:12px;margin:0;padding:0;list-style:none;display:grid}.EtR-Ia_card{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;flex-direction:column;transition:border-color .16s,background .16s;display:flex}.EtR-Ia_card:hover:not(.EtR-Ia_cardActive){border-color:var(--dsw-alias-label-dimmed)}.EtR-Ia_cardActive{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-label-primary)}.EtR-Ia_cardBroken,.EtR-Ia_cardBroken:hover{border-color:var(--dsw-alias-state-error-primary)}.EtR-Ia_brokenBadge{white-space:nowrap;background:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-bg-layer-3);border-radius:999px;padding:1px 8px;font-size:11px;font-weight:500;line-height:17px}.EtR-Ia_cardBrokenReason{color:var(--dsw-alias-state-error-primary);overflow-wrap:anywhere;font-size:12px;line-height:1.5}.EtR-Ia_cardMain{appearance:none;font:inherit;color:inherit;text-align:left;cursor:pointer;background:0 0;border:0;border-radius:12px 12px 0 0;flex-direction:column;flex:1;gap:8px;padding:14px 16px 12px;display:flex}.EtR-Ia_cardMain:disabled{cursor:default}.EtR-Ia_cardMain:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-2px}.EtR-Ia_cardHead{align-items:center;gap:8px;display:flex}.EtR-Ia_cardName{font-size:15px;font-weight:600;line-height:1.4}.EtR-Ia_badge,.EtR-Ia_inUse{white-space:nowrap;border-radius:999px;padding:1px 8px;font-size:11px;font-weight:500;line-height:17px}.EtR-Ia_badge{border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-tertiary)}.EtR-Ia_inUse{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3);margin-left:auto}.EtR-Ia_cardDesc{color:var(--dsw-alias-label-secondary);-webkit-line-clamp:4;overflow-wrap:anywhere;-webkit-box-orient:vertical;min-height:42px;font-size:13px;line-height:1.55;display:-webkit-box;overflow:hidden}.EtR-Ia_cardId{font-family:var(--dsw-font-mono,ui-monospace, SFMono-Regular, Menlo, monospace);color:var(--dsw-alias-label-dimmed);margin-top:auto;font-size:11px}.EtR-Ia_cardFoot{border-top:1px solid var(--dsw-alias-border-l2);justify-content:flex-end;gap:2px;padding:6px 10px;display:flex}.EtR-Ia_iconButton{appearance:none;color:var(--dsw-alias-label-tertiary);cursor:pointer;background:0 0;border:0;border-radius:7px;align-items:center;padding:6px;display:inline-flex;position:relative}.EtR-Ia_iconButton:disabled{opacity:.4;cursor:default}.EtR-Ia_iconButton:hover:not(:disabled){background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary)}.EtR-Ia_iconButton:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:-1px}.EtR-Ia_iconButton:after{content:attr(data-tip);background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3);white-space:nowrap;opacity:0;pointer-events:none;border-radius:6px;padding:3px 8px;font-size:11px;line-height:17px;transition:opacity .12s;position:absolute;bottom:calc(100% + 6px);left:50%;transform:translate(-50%)}.EtR-Ia_iconButton:hover:after,.EtR-Ia_iconButton:focus-visible:after{opacity:1}.EtR-Ia_iconDanger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}.EtR-Ia_revealedPath{color:var(--dsw-alias-label-tertiary);align-items:baseline;gap:6px;margin:0;padding:6px 16px 10px;font-size:11px;display:flex}.EtR-Ia_revealedPath code{font-family:var(--dsw-font-mono,ui-monospace, SFMono-Regular, Menlo, monospace);color:var(--dsw-alias-label-secondary);user-select:all;overflow-wrap:anywhere}.EtR-Ia_revealedPathLabel{white-space:nowrap}.EtR-Ia_secondaryButton{color:var(--dsw-alias-label-secondary);font:inherit;cursor:pointer;background:0 0;border:none;border-radius:7px;padding:5px 8px;font-size:12.5px}.EtR-Ia_secondaryButton:hover:not(:disabled){background:var(--dsw-alias-bg-layer-1)}.EtR-Ia_secondaryButton:disabled{opacity:.5;cursor:default}.EtR-Ia_field{flex-direction:column;gap:6px;display:flex}.EtR-Ia_fieldLabel{color:var(--dsw-alias-label-secondary);font-size:12px;font-weight:500}.EtR-Ia_input{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);font:inherit;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:10px;padding:9px 12px;font-size:13px}.EtR-Ia_input:focus{border-color:var(--dsw-alias-brand-primary);outline:none}.EtR-Ia_input::placeholder{color:var(--dsw-alias-label-dimmed)}.EtR-Ia_dialog{width:min(560px,100%)}.EtR-Ia_dialogFields{flex-direction:column;gap:12px;display:flex}.EtR-Ia_viewerCode{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);max-height:min(52vh,480px);color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-mono,ui-monospace, SFMono-Regular, Menlo, monospace);white-space:pre;tab-size:2;--dsh-scrollbar-thumb:var(--dsw-alias-scrollbar-bg-l2);--dsh-scrollbar-thumb-hover:var(--dsw-alias-scrollbar-hover-l2);border-radius:10px;margin:0;padding:12px;font-size:12.5px;line-height:1.5;overflow:auto}.EtR-Ia_error{color:var(--dsw-alias-state-error-primary);margin:0;font-size:12px}.EtR-Ia_deleteDialog{width:min(480px,100%)}.EtR-Ia_deleteConfirm:not(:disabled){border-color:var(--dsw-alias-state-error-primary);color:var(--dsw-alias-state-error-primary)}.EtR-Ia_deleteConfirm:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger)}.EtR-Ia_creatorButton{box-sizing:border-box;border:1px dashed var(--dsw-alias-border-l3);height:44px;font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;background:0 0;border-radius:12px;justify-content:center;align-self:stretch;align-items:center;gap:6px;font-size:14px;line-height:22px;display:flex}.EtR-Ia_creatorButton:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}.EtR-Ia_creatorButton:disabled{opacity:.4;cursor:default}";
 		const tagId = "@deepseek-ai/dsh-client-ui-agent-preset/AgentPresetSection.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -984,40 +1001,40 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var AgentPresetSection_module_css_default = {
-			"cardId": "x8BDQW_cardId",
-			"creatorButton": "x8BDQW_creatorButton",
-			"dialog": "x8BDQW_dialog",
-			"inUse": "x8BDQW_inUse",
-			"section": "x8BDQW_section",
-			"card": "x8BDQW_card",
-			"revealedPathLabel": "x8BDQW_revealedPathLabel",
-			"viewerCode": "x8BDQW_viewerCode",
-			"cardHead": "x8BDQW_cardHead",
-			"cardMain": "x8BDQW_cardMain",
-			"brokenBadge": "x8BDQW_brokenBadge",
-			"cardDesc": "x8BDQW_cardDesc",
-			"intro": "x8BDQW_intro",
-			"cardName": "x8BDQW_cardName",
-			"badge": "x8BDQW_badge",
-			"cards": "x8BDQW_cards",
-			"cardFoot": "x8BDQW_cardFoot",
-			"iconDanger": "x8BDQW_iconDanger",
-			"cardBroken": "x8BDQW_cardBroken",
-			"iconButton": "x8BDQW_iconButton",
-			"dialogFields": "x8BDQW_dialogFields",
-			"deleteDialog": "x8BDQW_deleteDialog",
-			"group": "x8BDQW_group",
-			"groupHead": "x8BDQW_groupHead",
-			"cardActive": "x8BDQW_cardActive",
-			"error": "x8BDQW_error",
-			"input": "x8BDQW_input",
-			"cardBrokenReason": "x8BDQW_cardBrokenReason",
-			"secondaryButton": "x8BDQW_secondaryButton",
-			"field": "x8BDQW_field",
-			"title": "x8BDQW_title",
-			"fieldLabel": "x8BDQW_fieldLabel",
-			"deleteConfirm": "x8BDQW_deleteConfirm",
-			"revealedPath": "x8BDQW_revealedPath"
+			"dialogFields": "EtR-Ia_dialogFields",
+			"inUse": "EtR-Ia_inUse",
+			"cardMain": "EtR-Ia_cardMain",
+			"cardActive": "EtR-Ia_cardActive",
+			"cardFoot": "EtR-Ia_cardFoot",
+			"cardBroken": "EtR-Ia_cardBroken",
+			"intro": "EtR-Ia_intro",
+			"title": "EtR-Ia_title",
+			"cardDesc": "EtR-Ia_cardDesc",
+			"group": "EtR-Ia_group",
+			"section": "EtR-Ia_section",
+			"groupHead": "EtR-Ia_groupHead",
+			"deleteDialog": "EtR-Ia_deleteDialog",
+			"field": "EtR-Ia_field",
+			"deleteConfirm": "EtR-Ia_deleteConfirm",
+			"input": "EtR-Ia_input",
+			"dialog": "EtR-Ia_dialog",
+			"creatorButton": "EtR-Ia_creatorButton",
+			"secondaryButton": "EtR-Ia_secondaryButton",
+			"revealedPath": "EtR-Ia_revealedPath",
+			"iconDanger": "EtR-Ia_iconDanger",
+			"cardId": "EtR-Ia_cardId",
+			"viewerCode": "EtR-Ia_viewerCode",
+			"cards": "EtR-Ia_cards",
+			"card": "EtR-Ia_card",
+			"badge": "EtR-Ia_badge",
+			"cardName": "EtR-Ia_cardName",
+			"brokenBadge": "EtR-Ia_brokenBadge",
+			"revealedPathLabel": "EtR-Ia_revealedPathLabel",
+			"cardBrokenReason": "EtR-Ia_cardBrokenReason",
+			"error": "EtR-Ia_error",
+			"fieldLabel": "EtR-Ia_fieldLabel",
+			"iconButton": "EtR-Ia_iconButton",
+			"cardHead": "EtR-Ia_cardHead"
 		};
 		//#endregion
 		//#region lib/types/client/AgentPresetSection.js
