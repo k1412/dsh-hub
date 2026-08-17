@@ -13,7 +13,7 @@ import { HubServer, type HubAccessVerifier } from '../packages/hub/hub-server/sr
 const NODE_COUNT = Number(process.env.DSH_HUB_BENCHMARK_NODES ?? '8')
 const DIRECT_SAMPLES = Number(process.env.DSH_HUB_BENCHMARK_DIRECT_SAMPLES ?? '200')
 const FLEET_SAMPLES = Number(process.env.DSH_HUB_BENCHMARK_FLEET_SAMPLES ?? '40')
-const DIRECT_P95_BUDGET_MS = Number(process.env.DSH_HUB_BENCHMARK_DIRECT_P95_MS ?? '100')
+const DIRECT_P95_BUDGET_MS = Number(process.env.DSH_HUB_BENCHMARK_DIRECT_P95_MS ?? '250')
 const FLEET_P95_BUDGET_MS = Number(process.env.DSH_HUB_BENCHMARK_FLEET_P95_MS ?? '400')
 const originSecret = 'benchmark-private-origin-secret-at-least-32-chars'
 

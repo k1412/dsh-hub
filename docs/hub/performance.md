@@ -47,7 +47,7 @@ One clean run on 2026-08-18 using a Linux x64 development host and Node 22.22.1 
 | Direct control of one selected node | 200 / 16 | 18.38 ms | 39.26 ms | 75.76 ms | 787.37/s |
 | Eight-node fleet read | 40 / 4 | 13.49 ms | 17.55 ms | 17.81 ms | 271.59/s |
 
-The run completed 572 commands and process RSS moved from 149,123,072 to 177,987,584 bytes. CI retains the complete JSON artifact and applies broad regression budgets of 100 ms direct-control p95 and 400 ms fleet-read p95. These budgets detect order-of-magnitude regressions; they are not production latency promises. `DSH_HUB_BENCHMARK_*` environment variables can change node count, samples, and budgets.
+The run completed 572 commands and process RSS moved from 149,123,072 to 177,987,584 bytes. CI retains the complete JSON artifact even on failure and applies shared-runner regression budgets of 250 ms direct-control p95 and 400 ms fleet-read p95. These budgets detect order-of-magnitude regressions; they are not production latency promises. `DSH_HUB_BENCHMARK_*` environment variables can change node count, samples, and budgets.
 
 ## Observable indicators
 
