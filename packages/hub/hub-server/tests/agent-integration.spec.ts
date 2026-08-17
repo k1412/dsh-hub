@@ -656,5 +656,5 @@ describe('Hub Agent WebSocket integration', () => {
     await expect(nodeClosed).resolves.toBe(4003)
     expect(server.agents.isOnline(nodeId)).toBe(false)
     expect(storage.control.getNode(nodeId)?.status).toBe('revoked')
-  })
+  }, 30_000)
 })

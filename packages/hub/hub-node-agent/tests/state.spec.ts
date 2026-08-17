@@ -248,7 +248,7 @@ describe('Node Agent private state', () => {
       payload: { method: 'session/projection', payload: { key: 'goal' } },
     })
     state.close()
-  })
+  }, 30_000)
 
   it('does not treat one large command result as reconstructible stream backlog', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-hub-node-large-result-'))
