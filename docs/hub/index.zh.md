@@ -14,6 +14,7 @@ DSH Hub 为多个 DeepSeek Harness 节点提供一个经过认证的浏览器工
 ## 参考
 
 - [架构](architecture.md)定义组件所有权、传输方式、持久化、命令交付和本地客户端共存机制。
+- [性能与并发](performance.md)定义多节点发布门禁、可观测指标、部署 SLO 和真实环境验收。
 - [安全](security.md)定义信任边界、Cloudflare Access 要求、节点权限、机密处理和部署加固。
 
 ## 支持的拓扑

@@ -73,6 +73,13 @@ export interface ISession {
    */
   loadOlder(): Promise<void>
   /**
+   * Rebuild this opened session from authoritative Host history.
+   * Feature plugins use this after an ambiguous carrier failure or a rejected
+   * compare-and-swap mutation so stale projected controls are not offered
+   * again. Cold sessions remain cold.
+   */
+  refresh(): Promise<void>
+  /**
    * Execute one slash-command line against this session's agent — pure
    * admission semantics (the host executor durably logs the lifecycle).
    * @param line - the full command line, leading slash included.

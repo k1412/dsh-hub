@@ -82,6 +82,116 @@ describe('Hub Connector coexistence', () => {
     await expect(detectDshVersion(entrypoint)).resolves.toBe('0.1.0-rc.6')
   })
 
+  it('reserves interactive capacity after all four bulk Web slots are stalled', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-hub-priority-'))
+    roots.push(root)
+    const endpoint = join(root, 'agent.sock')
+    const secretFile = join(root, 'connector.secret')
+    const secret = generateHubIpcSecret()
+    await writeFile(secretFile, `${secret}\n`, { mode: 0o600 })
+    await chmod(secretFile, 0o600)
+
+    const success = <T>(rpcId: string, value: T) => ({ rpcId, result: { ok: true as const, value } })
+    const api = {
+      sessions: { list: async (request: { rpcId: string }) => success(request.rpcId, { items: [] }) },
+      events: {
+        mux: (_request: unknown, signal: AbortSignal) => idle(signal),
+        host: (_request: unknown, signal: AbortSignal) => idle(signal),
+      },
+    } as unknown as ApiProxy
+
+    let slowStartedResolve: (() => void) | undefined
+    const slowStarted = new Promise<void>((resolve) => { slowStartedResolve = resolve })
+    let slowStartedCount = 0
+    let releaseSlow: (() => void) | undefined
+    const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve })
+    const gateway = testGateway()
+    vi.spyOn(gateway, 'dispatch').mockImplementation(async (method) => {
+      if (method.startsWith('probe/slow-')) {
+        slowStartedCount += 1
+        if (slowStartedCount === 4) slowStartedResolve?.()
+        await slowGate
+        return { ok: true, value: { completed: 'slow' } } as never
+      }
+      if (method === 'goals/pause') return { ok: true, value: { completed: 'goal' } } as never
+      if (method === 'settings/update') return { ok: true, value: { completed: 'settings' } } as never
+      if (method === 'respond') return { ok: true, value: { completed: 'answer' } } as never
+      throw new Error(`unexpected Gateway method ${method}`)
+    })
+
+    let baselineResolve: (() => void) | undefined
+    const baseline = new Promise<void>((resolve) => { baselineResolve = resolve })
+    const bodies: HubEnvelopeBody[] = []
+    const server = new HubConnectorServer(endpoint, secret, 'agent-boot-id-priority', {
+      connected: () => baselineResolve?.(),
+      body: (_runtimeId, body) => { bodies.push(body) },
+      disconnected: () => undefined,
+    })
+    servers.push(server)
+    await server.listen()
+    const connector = new HubConnector(api, gateway, {
+      ipcEndpoint: endpoint,
+      secretFile,
+      runtimeId: 'default',
+      dshVersion: 'test',
+      reconnectMaximumMs: 1_000,
+    })
+    const controller = new AbortController()
+    const running = connector.run(controller.signal)
+    await baseline
+
+    const webCommand = (commandId: string, method: string): HubEnvelopeBody => ({
+      type: 'capability.invoke',
+      commandId,
+      runtimeId: 'default',
+      capability: 'dsh.web',
+      capabilityVersion: '1.0.0',
+      operation: 'fetch',
+      idempotencyKey: `${commandId}-mutation`,
+      payload: {
+        clientMutationId: `${commandId}-request`,
+        method: 'POST',
+        path: `/api/${method}`,
+        headers: [['content-type', 'application/json']],
+        body: JSON.stringify({
+          type: 'client-request', rpcId: `${commandId}-rpc`, method, payload: {},
+        }),
+      },
+    })
+
+    try {
+      await Promise.all(Array.from({ length: 4 }, async (_, index) => {
+        const suffix = String(index + 1).padStart(4, '0')
+        await server.send('default', webCommand(`command-priority-slow-${suffix}`, `probe/slow-${suffix}`))
+      }))
+      await slowStarted
+      await Promise.all([
+        server.send('default', webCommand('command-priority-goal-0001', 'goals/pause')),
+        server.send('default', webCommand('command-priority-settings-0001', 'settings/update')),
+        server.send('default', webCommand('command-priority-answer-0001', 'respond')),
+      ])
+      await vi.waitFor(() => { expect(bodies).toContainEqual(expect.objectContaining({
+        type: 'capability.result', commandId: 'command-priority-goal-0001', status: 'ok',
+      })) })
+      await vi.waitFor(() => { expect(bodies).toContainEqual(expect.objectContaining({
+        type: 'capability.result', commandId: 'command-priority-settings-0001', status: 'ok',
+      })) })
+      await vi.waitFor(() => { expect(bodies).toContainEqual(expect.objectContaining({
+        type: 'capability.result', commandId: 'command-priority-answer-0001', status: 'ok',
+      })) })
+      expect(bodies.some(body => body.type === 'capability.result'
+        && body.commandId.startsWith('command-priority-slow-'))).toBe(false)
+      releaseSlow?.()
+      await vi.waitFor(() => { expect(bodies).toContainEqual(expect.objectContaining({
+        type: 'capability.result', commandId: 'command-priority-slow-0001', status: 'ok',
+      })) })
+    } finally {
+      releaseSlow?.()
+      controller.abort(new Error('test complete'))
+      await running
+    }
+  })
+
   it('loads beside local Web and desktop consumers through the real Cordis Loader', async () => {
     expect('default' in HubConnectorPlugin).toBe(false)
     const root = await mkdtemp(join(tmpdir(), 'dsh-hub-loader-'))

@@ -131,6 +131,14 @@ export class FixtureSession implements SessionFace {
   }
 
   /**
+   * Fail-loud stub; supply `refresh` on the fixture's session face to exercise it.
+   * @returns never — always throws.
+   */
+  refresh(): never {
+    throw new Error(`test session "${this.sessionId}": refresh is not stubbed — supply it on the fixture's session face`)
+  }
+
+  /**
    * Fail-loud stub; supply `rename` on the fixture's session face to exercise it.
    * @returns never — always throws.
    */

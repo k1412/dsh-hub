@@ -20,11 +20,13 @@
 1. 输入便于识别的显示名称；节点 ID 会自动生成，也可在提交前修改。
 2. 点击“生成注册码”。代码只显示一次并在 15 分钟后过期。
 3. 为该节点创建独立的 Cloudflare Access Service Token。
-4. 按页面展开的“接下来如何接入节点”在目标机器安装并初始化 Node Agent，再注册为系统服务。
+4. 复制页面显示的一键安装命令并在目标机器运行。Client ID 只粘贴值本身，不要带 `CF-Access-Client-Id:` Header 名称；Client Secret 通过隐藏输入读取，不进入 Shell History。
 5. “等待接入”显示尚未绑定的注册；可在过期前取消。“已登记节点”显示在线、离线、已吊销状态和每个 DSH Runtime。
 6. “设为默认”只作为其他无所有者 Host 操作的兜底目标；新会话可直接在主页面选择节点。节点身份吊销会立即断开连接，但不会删除节点上的会话和文件。
 
 一台物理机器只需一个 Node Agent，但可以接入多个拥有不同 Runtime ID 的 DSH Profile。每个节点必须使用不同的 Service Token。
+
+如果注册报错称请求在抵达 Hub 前返回了非 JSON 页面，通常是 Cloudflare Access 或其他边缘层拦截了请求。请检查 Client ID 与 Secret 值、Access Application 是否具有接受该 Token 的 Service Auth Policy，以及该 Token 能否访问 `/hub/v1/bootstrap`；这些检查通过前不要反复更换注册码重试。
 
 ## 插件状态、更新与回退
 

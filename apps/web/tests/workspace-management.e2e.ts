@@ -107,9 +107,17 @@ describe('web e2e: workspace management (create / rename / flat view / hover aff
     const button = row.getByRole('button', { name })
     await expect.poll(async () => {
       await row.hover()
-      return await button.isVisible()
+      if (!await button.isVisible()) return false
+      try {
+        // Hover projection updates can replace the row between a visibility
+        // probe and Playwright's stability wait. Keep both operations in the
+        // retry loop and bypass only the animation stability check.
+        await button.click({ force: true, timeout: 1_000 })
+        return true
+      } catch {
+        return false
+      }
     }, { timeout: 10_000 }).toBe(true)
-    await button.click()
   }
 
   beforeAll(async () => {

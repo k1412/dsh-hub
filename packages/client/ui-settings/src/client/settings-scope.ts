@@ -225,6 +225,8 @@ declare module '@deepseek-ai/cordis' {
  * (`packages/client/tsdown.client.ts`).
  */
 export class SettingsScopeBinder extends Service {
+  private readonly controllers = new Set<SettingsScopeController<unknown>>()
+
   /**
    * @param ctx - the providing plugin's context.
    */
@@ -248,8 +250,9 @@ export class SettingsScopeBinder extends Service {
     const controller = new SettingsScopeController<T>(
       connection.api,
       spec,
-      connection.isLoopback ? 'host' : 'memory',
+      connection.settingsAccess ?? (connection.isLoopback ? 'host' : 'memory'),
     )
+    this.controllers.add(controller as SettingsScopeController<unknown>)
     ctx.effect(() => {
       const refresh = (namespace?: string): void => {
         if (namespace !== undefined && namespace !== spec.namespace) return
@@ -262,9 +265,20 @@ export class SettingsScopeBinder extends Service {
       void controller.load()
       return async () => {
         for (const dispose of disposers) dispose()
+        this.controllers.delete(controller as SettingsScopeController<unknown>)
         await controller.dispose()
       }
     }, `ui-settings: ${spec.namespace} settings scope`)
     return controller
+  }
+
+  /**
+   * Invalidate every Host-backed namespace after an embedding changes the
+   * Runtime that owns otherwise ownerless settings requests. Each controller
+   * increments its generation immediately, so an older target's in-flight
+   * response cannot publish after this call.
+   */
+  refreshAll(): void {
+    for (const controller of this.controllers) void controller.load()
   }
 }

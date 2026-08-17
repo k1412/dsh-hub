@@ -168,7 +168,7 @@ describe('Node Agent private state', () => {
     state.close()
   }, 30_000)
 
-  it('bounds reconstructible stream backlog while admitting a human interaction frame', async () => {
+  it('bounds reconstructible stream backlog while admitting human interaction and Goal control frames', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-hub-node-stream-burst-'))
     roots.push(root)
     const configPath = join(root, 'node-agent.json')
@@ -221,6 +221,22 @@ describe('Node Agent private state', () => {
     expect(state.journal.pendingOutbound(501).at(-1)?.body).toMatchObject({
       type: 'stream.frame', capability: 'dsh.web', stream: 'mux',
       payload: { method: 'question/requested' },
+    })
+    internal.connectorBody({
+      type: 'stream.frame', runtimeId: 'default', streamId: 'goal-stream-0001',
+      capability: 'dsh.web', stream: 'mux', frameSequence: 4,
+      payload: {
+        type: 'server-request', rpcId: 'goal-projection-burst-0001', method: 'session/projection',
+        payload: {
+          type: 'session/projection', sessionId: 'session-one', key: 'goal', seq: 9,
+          value: { goal: { id: 'goal-one', revision: 3, phase: 'blocked' } },
+        },
+      },
+    })
+    expect(state.journal.outboundUsage().records).toBe(502)
+    expect(state.journal.pendingOutbound(502).at(-1)?.body).toMatchObject({
+      type: 'stream.frame', capability: 'dsh.web', stream: 'mux',
+      payload: { method: 'session/projection', payload: { key: 'goal' } },
     })
     state.close()
   })

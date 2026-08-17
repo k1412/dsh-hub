@@ -2,7 +2,7 @@
 
 import type { EnrollmentGrant } from './api.ts'
 
-const releaseVersion = '0.1.0-rc.10'
+const releaseVersion = '0.1.0'
 const releaseAssetRoot = `https://github.com/k1412/dsh-hub/releases/download/hub-v${releaseVersion}`
 
 /** Installer command family exposed by the enrollment panel. */

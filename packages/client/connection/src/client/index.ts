@@ -62,6 +62,13 @@ export interface ConnectionHandle {
   readonly api: IApiClient
   /** Whether the current page authority is loopback; non-browser contexts default to true. */
   readonly isLoopback: boolean
+  /**
+   * Whether Host-backed Settings may cross this browser transport. An
+   * authenticated control-plane shell can opt in without impersonating
+   * loopback; native path opening and other local-only affordances continue
+   * to use `isLoopback`.
+   */
+  readonly settingsAccess?: 'host' | 'memory'
   /** Generation-scoped Host facts, including native path-open capability. */
   readonly hostDescription: HostDescriptionSource
   /** Generic logical RPC channels over the same Connection transport. */
@@ -83,6 +90,9 @@ export interface ConnectionHandle {
  */
 export function apply(ctx: Context): void {
   const pageLocation = typeof location === 'undefined' ? undefined : location
+  const loopback = pageLocation === undefined || isLoopbackHostname(pageLocation.hostname)
+  const authenticatedSettings = typeof document !== 'undefined'
+    && document.querySelector('meta[name="dsh-settings-access"][content="authenticated-control-plane"]') !== null
   const fixture = pageLocation !== undefined && new URLSearchParams(pageLocation.search).has('fixture')
   const fixtureClient = fixture ? new FixtureApiClient() : undefined
   const api: IApiClient = fixtureClient ?? new WebApiClient()
@@ -103,7 +113,8 @@ export function apply(ctx: Context): void {
   }
   const handle: ConnectionHandle = {
     api,
-    isLoopback: pageLocation === undefined || isLoopbackHostname(pageLocation.hostname),
+    isLoopback: loopback,
+    settingsAccess: loopback || authenticatedSettings ? 'host' : 'memory',
     hostDescription: {
       getSnapshot: () => description,
       subscribe: (listener) => {

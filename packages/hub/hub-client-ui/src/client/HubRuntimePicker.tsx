@@ -17,6 +17,7 @@ import css from './HubRuntimePicker.module.css'
 /** Full props composed by the Hub Runtime slot registration. */
 export type HubRuntimePickerProps = PropsRuntime<'conversation.hero.runtime'>
   & PropsLocale<'hub.settings'>
+  & { refreshNodeSettings: () => void }
 
 function sameTarget(left: HubRuntimeTarget | undefined, right: HubRuntimeTarget | undefined): boolean {
   return left !== undefined && right !== undefined && runtimeKey(left) === runtimeKey(right)
@@ -27,7 +28,9 @@ function sameTarget(left: HubRuntimeTarget | undefined, right: HubRuntimeTarget 
  * @param props - hero owner state and Hub locale helpers.
  * @returns the selector, including explicit loading and unavailable states.
  */
-export function HubRuntimePicker({ selectedWorkspaceId, onTargetChange, t }: HubRuntimePickerProps): ReactNode {
+export function HubRuntimePicker({
+  selectedWorkspaceId, onTargetChange, refreshNodeSettings, t,
+}: HubRuntimePickerProps): ReactNode {
   const [fleet, setFleet] = useState<FleetSnapshot>()
   const [selected, setSelected] = useState<HubRuntimeTarget | undefined>(() => readRuntimeTarget())
   const [failed, setFailed] = useState(false)
@@ -63,9 +66,11 @@ export function HubRuntimePicker({ selectedWorkspaceId, onTargetChange, t }: Hub
     const candidate = workspaceTarget ?? selected ?? readRuntimeTarget()
     const fallback = runtimes[0] as HubRuntime
     const next = candidate === undefined ? fallback : runtimesByKey.get(runtimeKey(candidate)) ?? fallback
-    if (!sameTarget(selected, next)) setSelected(next)
+    const changed = !sameTarget(selected, next)
+    if (changed) setSelected(next)
     replaceRuntimeTarget(next)
-  }, [runtimes, runtimesByKey, selected, selectedWorkspaceId])
+    if (changed) refreshNodeSettings()
+  }, [refreshNodeSettings, runtimes, runtimesByKey, selected, selectedWorkspaceId])
 
   const names = useMemo(() => new Map(
     (fleet?.nodes ?? []).map(node => [node.nodeId, node.displayName]),
@@ -77,6 +82,7 @@ export function HubRuntimePicker({ selectedWorkspaceId, onTargetChange, t }: Hub
     if (next === undefined || sameTarget(selected, next)) return
     setSelected(next)
     replaceRuntimeTarget(next)
+    refreshNodeSettings()
     onTargetChange()
   }
 

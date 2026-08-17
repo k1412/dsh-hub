@@ -69,6 +69,35 @@ export function apply(ctx: ClientContext): void {
     error: { code: 'no-current-goal', message: 'no current goal to mutate', details: {} },
   }
 
+  /**
+   * Re-read the authoritative history after a rejected mutation. A carrier
+   * failure may race a mutation that the Host already committed, while a CAS
+   * rejection proves this browser projected an obsolete revision. Either way,
+   * keeping that projection would offer the same invalid action again.
+   */
+  const reconcile = (sessionId: SessionId): void => {
+    const session = sessions.binding(sessionId)?.session
+    if (session === undefined) return
+    void session.refresh().catch((error: unknown) => {
+      console.error('[ui-goal] authoritative Goal refresh failed:', error)
+    })
+  }
+
+  /** Preserve the Remote result while scheduling convergence for every failed carrier or business outcome. */
+  const mutate = async (
+    sessionId: SessionId,
+    action: () => Promise<GoalActionResult>,
+  ): Promise<GoalActionResult> => {
+    try {
+      const result = await action()
+      if (!result.ok) reconcile(sessionId)
+      return result
+    } catch (error) {
+      reconcile(sessionId)
+      throw error
+    }
+  }
+
   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
     name: 'conversation.input.dock',
     id: 'goal',
@@ -77,23 +106,35 @@ export function apply(ctx: ClientContext): void {
     inject: (sessionId): GoalBarActions => ({
       onEdit: async (objective) => {
         const ref = refOf(sessionId)
-        if (ref === undefined) return noCurrentGoal
-        return await ctx.remote.goals.edit(sessionId, ref, { objective })
+        if (ref === undefined) {
+          reconcile(sessionId)
+          return noCurrentGoal
+        }
+        return await mutate(sessionId, () => ctx.remote.goals.edit(sessionId, ref, { objective }))
       },
       onPause: async () => {
         const ref = refOf(sessionId)
-        if (ref === undefined) return noCurrentGoal
-        return await ctx.remote.goals.pause(sessionId, ref)
+        if (ref === undefined) {
+          reconcile(sessionId)
+          return noCurrentGoal
+        }
+        return await mutate(sessionId, () => ctx.remote.goals.pause(sessionId, ref))
       },
       onResume: async () => {
         const ref = refOf(sessionId)
-        if (ref === undefined) return noCurrentGoal
-        return await ctx.remote.goals.resume(sessionId, ref)
+        if (ref === undefined) {
+          reconcile(sessionId)
+          return noCurrentGoal
+        }
+        return await mutate(sessionId, () => ctx.remote.goals.resume(sessionId, ref))
       },
       onClear: async () => {
         const ref = refOf(sessionId)
-        if (ref === undefined) return noCurrentGoal
-        return await ctx.remote.goals.clear(sessionId, ref)
+        if (ref === undefined) {
+          reconcile(sessionId)
+          return noCurrentGoal
+        }
+        return await mutate(sessionId, () => ctx.remote.goals.clear(sessionId, ref))
       },
     }),
   }, GoalDock))

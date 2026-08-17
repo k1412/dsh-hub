@@ -22,6 +22,7 @@ vi.mock('../src/client/api.ts', async original => ({
 import { HubNodesSection } from '../src/client/HubNodesSection.tsx'
 import { HubPluginsSection } from '../src/client/HubPluginsSection.tsx'
 import { HubRuntimePicker } from '../src/client/HubRuntimePicker.tsx'
+import { HubSettingsTarget } from '../src/client/HubSettingsTarget.tsx'
 import { nodeInstallCommand } from '../src/client/install-command.ts'
 import { terminalSocketUrl } from '../src/client/AdvancedDiagnostics.tsx'
 import { zh } from '../src/client/locales.ts'
@@ -62,6 +63,13 @@ const fleet: FleetSnapshot = {
       hubOutbox: { records: 2, bytes: 512, maxRecords: 10_000, maxBytes: 64 * 1024 * 1024 },
       droppedStreamFramesTotal: 12,
       droppedStreams: [{ runtimeId: 'web', capability: 'dsh.sessions', stream: 'events', frames: 12 }],
+      controlRequests: {
+        pending: 2,
+        oldestPendingAt: 900,
+        timeoutsLast24Hours: 1,
+        lastTimeoutAt: 950,
+        lastTimeoutOperation: 'goals/pause',
+      },
     },
   }],
   runtimes: [runtime],
@@ -134,9 +142,11 @@ describe('Hub management Settings pages', () => {
       runtimes: [runtime, secondRuntime],
     })
     const onTargetChange = vi.fn()
+    const refreshNodeSettings = vi.fn()
     render(<HubRuntimePicker
       selectedWorkspaceId={undefined}
       onTargetChange={onTargetChange}
+      refreshNodeSettings={refreshNodeSettings}
       t={hubT}
       useSessions={unusedHook}
       useWorkspaces={unusedHook}
@@ -148,9 +158,36 @@ describe('Hub management Settings pages', () => {
     expect(picker.getAttribute('aria-expanded')).toBe('true')
     fireEvent.click(screen.getByRole('menuitem', { name: 'Mac Neo · desktop' }))
     expect(onTargetChange).toHaveBeenCalledOnce()
+    expect(refreshNodeSettings).toHaveBeenCalledOnce()
     expect(new URL(location.href).searchParams.get('nodeId')).toBe('mac-neo')
     expect(new URL(location.href).searchParams.get('runtimeId')).toBe('desktop')
     expect(localStorage.getItem('dsh.hub.runtime-target')).toContain('mac-neo')
+  })
+
+  it('keeps the node binding visible in Settings chrome and reloads when it changes', async () => {
+    const secondRuntime: HubRuntime = { ...runtime, nodeId: 'mac-neo', runtimeId: 'desktop' }
+    api.readFleet.mockResolvedValue({
+      ...fleet,
+      nodes: [...fleet.nodes, {
+        nodeId: 'mac-neo', displayName: 'Mac Neo', status: 'active', online: true,
+        createdAt: 600, lastSeenAt: 1_100,
+      }],
+      runtimes: [runtime, secondRuntime],
+    })
+    render(<HubSettingsTarget t={hubT} useSessions={unusedHook} useWorkspaces={unusedHook} />)
+    const target = await screen.findByRole('button', { name: '设置目标' })
+    expect(target.textContent).toContain('Home NAS · web')
+    fireEvent.click(target)
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Mac Neo · desktop' }))
+    expect(api.switchRuntime).toHaveBeenCalledWith(secondRuntime)
+  })
+
+  it('pins the first online Runtime when Settings opens without a saved target', async () => {
+    history.replaceState({}, '', '/')
+    render(<HubSettingsTarget t={hubT} useSessions={unusedHook} useWorkspaces={unusedHook} />)
+    const target = await screen.findByRole('button', { name: '设置目标' })
+    expect(target.textContent).toContain('Home NAS · web')
+    await waitFor(() => { expect(api.switchRuntime).toHaveBeenCalledWith(runtime) })
   })
 
   it('synchronizes the node selector to the owner of an aggregated Workspace', async () => {
@@ -159,9 +196,11 @@ describe('Hub management Settings pages', () => {
     const encoded = btoa(JSON.stringify(['mac-neo', 'desktop', 'workspace-local']))
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/u, '')
     const onTargetChange = vi.fn()
+    const refreshNodeSettings = vi.fn()
     render(<HubRuntimePicker
       selectedWorkspaceId={`hub-workspace-${encoded}` as never}
       onTargetChange={onTargetChange}
+      refreshNodeSettings={refreshNodeSettings}
       t={hubT}
       useSessions={unusedHook}
       useWorkspaces={unusedHook}
@@ -170,6 +209,7 @@ describe('Hub management Settings pages', () => {
     const picker = await screen.findByRole('button', { name: '节点与 Runtime' })
     await waitFor(() => { expect(picker.textContent).toContain('mac-neo · desktop') })
     expect(onTargetChange).not.toHaveBeenCalled()
+    expect(refreshNodeSettings).toHaveBeenCalledOnce()
     expect(new URL(location.href).searchParams.get('nodeId')).toBe('mac-neo')
   })
 
@@ -184,6 +224,9 @@ describe('Hub management Settings pages', () => {
     expect(screen.getByText('队列有压力')).toBeTruthy()
     expect(screen.getByText(/8100 \/ 10000 条/)).toBeTruthy()
     expect(screen.getByText('12 帧')).toBeTruthy()
+    expect(screen.getByText(/2 个排队/)).toBeTruthy()
+    expect(screen.getByText('1 次')).toBeTruthy()
+    expect(screen.getByText(/goals\/pause/)).toBeTruthy()
     expect(screen.getByRole('button', { name: '默认' })).toHaveProperty('disabled', true)
     expect(screen.queryByRole('navigation', { name: /终端|文件/ })).toBeNull()
 
@@ -215,8 +258,8 @@ describe('Hub management Settings pages', () => {
 
     expect(unix).toContain("--node 'mac-'\"'\"'neo'")
     expect(windows).toContain("$env:DSH_HUB_NODE_ID='mac-''neo'")
-    expect(unix).toContain('/releases/download/hub-v0.1.0-rc.10/install-node.sh')
-    expect(windows).toContain('/releases/download/hub-v0.1.0-rc.10/install-node.ps1')
+    expect(unix).toContain('/releases/download/hub-v0.1.0/install-node.sh')
+    expect(windows).toContain('/releases/download/hub-v0.1.0/install-node.ps1')
     expect(unix).not.toContain('DSH_HUB_ACCESS_CLIENT_SECRET')
     expect(windows).not.toContain('DSH_HUB_ACCESS_CLIENT_SECRET')
   })

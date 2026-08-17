@@ -40,9 +40,9 @@ Connector 通过 DSH Host Gateway 实现会话、设置和 Runtime 健康状态�
 
 Hub Web 应用直接构建官方 DSH Web 前端，并只增加固定编译进制品且经过审查的 Hub 客户端插件。日常项目与会话页面是 Fleet 视图：Hub 会向每个在线且声明 `dsh.web` 的 Runtime 请求 `session.list`、`session.search` 与 `workspace.list`，然后合并结果。浏览器看到的会话和 Workspace ID 内含不透明的节点／Runtime 地址；后续历史、消息、重命名、归档或 Workspace 操作会自动回到所有者，无需手工切换节点。Host 与 Session WebSocket 同时复用全部在线 Runtime；对于官方协议中的 Workspace 顺序和已归档会话完整快照，Hub 会先合并再推送，避免一个节点覆盖整个 Fleet 状态。
 
-Hub 客户端会占用 Workspace picker 前面的可选官方 `conversation.hero.runtime` seat。它只列出在线且声明 `dsh.web.fetch` 的 Runtime，恢复上次仍可用的选择，并在不重新挂载 Web 的情况下更新后续无所有者目录与 Workspace 操作使用的目标。切换 Runtime 会先清除当前空白会话选择，再选择另一个文件夹；选择已有 Fleet Workspace 时则会同步到其编码的所有者。设置页中的选择只保留为其他无所有者 Host 操作的兜底。两处选择都不会过滤 Fleet 项目／会话页面。Hub 将官方 HTTP 与事件流量转换为 `dsh.web` 能力，Connector 调用同一 Runtime 的 Host API，而不是代理节点上的 Web Server。
+Hub 客户端会占用 Workspace picker 前面的可选官方 `conversation.hero.runtime` seat。它只列出在线且声明 `dsh.web.fetch` 的 Runtime，恢复上次仍可用的选择，并在不重新挂载 Web 的情况下更新后续无所有者目录与 Workspace 操作使用的目标。切换 Runtime 会先清除当前空白会话选择，再选择另一个文件夹；选择已有 Fleet Workspace 时则会同步到其编码的所有者。官方设置标题栏始终显示其所属节点与 Runtime；切换所有者时会重新挂载或失效全部 Host 持久设置 Scope，并通过代次隔离阻止旧节点的延迟读取发布。两处选择都不会过滤 Fleet 项目／会话页面。Hub 将官方 HTTP 与事件流量转换为 `dsh.web` 能力，Connector 调用同一 Runtime 的 Host API，而不是代理节点上的 Web Server。
 
-Hub 设置使用同源 REST，控制面事件接口可用 SSE；官方可重建事件通道和 Host 通道使用同源 WebSocket。浏览器重连后会重新加载节点权威基线。专用同源 WebSocket 承载交互式应急终端输入和输出。
+Hub 设置使用同源 REST，控制面事件接口可用 SSE；官方可重建事件通道和 Host 通道使用同源 WebSocket。经过认证的 Hub 文档会显式允许远程使用 Host 持久设置，但不会把公网 Origin 判定为 Loopback，桌面原生动作仍只限回环。浏览器重连后会重新加载节点权威基线。专用同源 WebSocket 承载交互式应急终端输入和输出。
 
 ## 节点传输
 
@@ -51,6 +51,8 @@ Hub 设置使用同源 REST，控制面事件接口可用 SSE；官方可重建�
 每个已认证信封包含协议版本、节点 ID、Boot ID、代际、消息 ID、方向序列号、累计确认、过期时间、正文和签名。发送方在交付前持久化正文，只在收到确认后删除；接收方在分派前持久化，拒绝序列缺口，对消息 ID 去重，并根据操作的幂等类别恢复崩溃中断的工作。
 
 读取操作可以重放。幂等变更携带稳定的 Mutation ID。对账操作在重复前检查权威状态。禁止重试的操作在分派中断后产生 `outcome-unknown` 结果。只有目标 Runtime 曾声明完全匹配的合约时，Hub 才能为离线但仍处于活动状态的节点排队命令；持久 Journal 会在节点重连后发送命令。
+
+Node Agent 会先为命令结果、生命周期变化、待处理提问与审批，以及 CAS 变更依赖的 Goal 投影保留 Journal 容量，之后才会抑制可重建的高流量 Stream Frame。Connector 随后通过两个有界通道调度本地工作：两个交互槽用于回答、Goal、会话变更和设置，四个批量槽用于历史、索引和其他大体积读取。结果会绑定到接收它的本地 IPC 代次，因此旧 Connector 连接不能把结果写进替代连接。
 
 ## 存储
 
@@ -67,3 +69,11 @@ Hub 没有节点文件缓存或对象目录。Node Agent 将下载的插件制�
 ## 故障行为
 
 Hub 重启会保留节点身份、代际、命令、审计记录、会话索引和交付日志。Node Agent 重启会保留其身份与日志，使用新的 Boot ID 重连，对账未完成工作，并要求 Runtime 提供可重建基线。Connector 丢失只会将对应 Runtime 标记为离线；本地 DSH 客户端仍可继续工作。
+
+浏览器等待超过 30 秒会收到 HTTP 504。Hub 会写入不含 Payload 的超时审计，并在节点健康状态中显示 Pending 数量、最旧 Pending 时长、24 小时超时数和最近超时操作；持久命令不会被错误终止，仍可在稍后完成并参与对账。Goal 变更失败时，浏览器会解除 Pending UI 并执行一次权威会话刷新，避免“命令实际已提交但结果迟到”或过期 CAS 投影让界面长期错误。事件 Mux 重连后会用稳定 Request ID 重放仍待处理的提问与审批。
+
+## 验证与性能
+
+发布门禁会让两个具有独立签名身份和 Journal 的节点同时连接。测试会并发路由聊天与官方 Web 控制，让一个节点停滞而另一个完成，断开一个节点且不影响另一个，拒绝跨节点发件箱投递，并要求重连只恢复断线节点自身的积压。Connector 测试会占满全部四个批量槽，并要求 Goal 与设置结果在释放任何批量槽前完成。生产 CSP 浏览器测试会在桌面尺寸验证官方外壳与目录流程，并在 390 × 844 下验证覆盖式侧栏、有界 Runtime 选择器、全屏设置页和零横向溢出。
+
+这些确定性门禁证明隔离与交互顺序，不会把操作者的 Internet 或模型延迟伪装成产品测量值。运行目标、运维指标、瓶颈与真实双节点验收步骤见[性能与并发](performance.md)。

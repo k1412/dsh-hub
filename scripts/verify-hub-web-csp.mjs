@@ -21,6 +21,11 @@ const mediaTypes = {
   '.webmanifest': 'application/manifest+json',
 }
 
+const hubDocument = await readFile(resolve(staticRoot, 'index.html'), 'utf8')
+if (!hubDocument.includes('<meta name="dsh-settings-access" content="authenticated-control-plane" />')) {
+  throw new Error('Hub Web is missing its authenticated Host-backed Settings marker')
+}
+
 function headers(response) {
   response.setHeader('Cache-Control', 'no-store')
   response.setHeader('Content-Security-Policy', HUB_CONTENT_SECURITY_POLICY)

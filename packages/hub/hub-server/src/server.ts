@@ -37,6 +37,8 @@ export interface HubServerOptions {
   staticDirectory?: string
   /** Receives internal diagnostics; implementations must keep secrets out of their sink. */
   reportError?: (error: unknown) => void
+  /** Command wait bound; production keeps 30 seconds, tests may use a shorter deterministic interval. */
+  commandTimeoutMs?: number
 }
 
 /** Actual bound address after `listen()`. */
@@ -616,7 +618,11 @@ export class HubServer {
       },
       `human:${human.email}`,
     )
-    const completed = await this.waitCommand(command.commandId)
+    const rpcMethod = typeof body === 'object' && body !== null && 'method' in body
+      && typeof (body as { method?: unknown }).method === 'string'
+      ? (body as { method: string }).method.slice(0, 128)
+      : undefined
+    const completed = await this.waitCommand(command.commandId, rpcMethod)
     this.redactCommand(completed)
     if (completed.status !== 'ok' || typeof completed.result !== 'object' || completed.result === null) {
       throw new HttpProblem(502, 'node Web request failed')
@@ -939,14 +945,46 @@ export class HubServer {
     }
   }
 
-  private async waitCommand(commandId: string): Promise<NonNullable<ReturnType<HubStorage['control']['getCommand']>>> {
-    const deadline = Date.now() + 30_000
+  private async waitCommand(
+    commandId: string,
+    rpcMethod?: string,
+  ): Promise<NonNullable<ReturnType<HubStorage['control']['getCommand']>>> {
+    const startedAt = Date.now()
+    const timeoutMs = this.options.commandTimeoutMs ?? 30_000
+    const deadline = startedAt + timeoutMs
     while (Date.now() < deadline) {
       const command = this.options.storage.control.getCommand(commandId)
       if (command !== undefined && ['ok', 'error', 'outcome-unknown'].includes(command.status)) return command
       await new Promise(resolveWait => setTimeout(resolveWait, 25))
     }
-    throw new Error('node command timed out')
+    const command = this.options.storage.control.getCommand(commandId)
+    const elapsedMs = Date.now() - startedAt
+    if (command !== undefined) {
+      this.options.storage.control.appendAudit({
+        occurredAt: Date.now(),
+        actor: 'hub:timeout-monitor',
+        action: 'command.wait-timeout',
+        nodeId: command.nodeId,
+        ...(command.runtimeId === undefined ? {} : { runtimeId: command.runtimeId }),
+        resourceId: command.commandId,
+        outcome: 'timeout',
+        details: {
+          capability: command.capability,
+          operation: command.operation,
+          commandStatus: command.status,
+          elapsedMs,
+          ...(rpcMethod === undefined ? {} : { rpcMethod }),
+        },
+      })
+      this.options.reportError?.(new Error(
+        `node command timed out: ${command.nodeId}/${command.runtimeId ?? '-'} ${rpcMethod ?? `${command.capability}.${command.operation}`} after ${String(elapsedMs)} ms`,
+      ))
+      throw new HttpProblem(
+        504,
+        `node request timed out after ${String(elapsedMs)} ms (${command.nodeId}/${command.runtimeId ?? '-'} ${rpcMethod ?? `${command.capability}.${command.operation}`})`,
+      )
+    }
+    throw new HttpProblem(504, `node request timed out after ${String(elapsedMs)} ms`)
   }
 
   private redactCommand(command: NonNullable<ReturnType<HubStorage['control']['getCommand']>>): void {

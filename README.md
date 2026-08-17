@@ -15,7 +15,7 @@ DSH Hub is a self-hosted control plane for operating multiple [DeepSeek Harness]
 
 ## Architecture
 
-Hub is a control plane, not a DSH runtime. It never runs agents or node plugins and has no local execution mode. Nodes remain authoritative for live sessions, workspaces, managed plugin artifacts, and snapshots; Hub persists control state, minimal session discovery, commands, audit records, and only objects explicitly imported into its content-addressed storage API.
+Hub is a control plane, not a DSH runtime. It never runs agents or node plugins and has no local execution mode. Nodes remain authoritative for live sessions, workspaces, managed plugin artifacts, and snapshots; Hub persists only control state, minimal session discovery, command delivery state, and audit records. It has no transparent node-content or object cache.
 
 Browser requests use REST for commands, SSE for live state, and a dedicated WebSocket for PTY traffic. Node Agents use outbound-only WSS and authenticate with a Cloudflare Access service token plus a pinned Ed25519 node identity. Human access uses Cloudflare Access and a Hub-side email allowlist.
 

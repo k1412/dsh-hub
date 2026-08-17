@@ -74,6 +74,10 @@
 }
 .runtimePicker { max-width: 420px; }
 
+.settingsTarget { display: flex; min-width: 0; align-items: center; gap: 7px; color: var(--dsw-alias-label-tertiary); font-size: 11px; }
+.settingsTargetButton { display: flex; min-width: 0; max-width: 300px; height: 32px; align-items: center; gap: 6px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; padding: 0 9px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); cursor: pointer; }
+.settingsTargetButton strong { overflow: hidden; font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+
 .primaryButton,
 .secondaryButton,
 .activeButton,
@@ -189,6 +193,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .fileActions { display: flex; justify-content: flex-end; gap: 8px; }
 
 @media (max-width: 640px) {
+  .settingsTarget > span { display: none; }
+  .settingsTargetButton { max-width: min(60vw, 260px); height: 36px; }
   .section { gap: 12px; }
   .block,
   .advanced { border-radius: 10px; }

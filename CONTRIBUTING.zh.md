@@ -44,11 +44,15 @@ pnpm run doc-sync
 
 协议、认证、存储、插件事务、快照、终端或恢复变更除了成功路径外，还必须测试畸形输入和失败行为。Connector 变更必须包含真实 Cordis Loader Composition 测试，并保留本地 Web 与桌面客户端共存。部署变更必须构建 Linux AMD64 容器并执行 Origin 隔离冒烟测试。
 
+节点集合路由或传输调度变更还必须包含多节点同时运行的集成测试。测试应使用彼此独立的签名节点身份与 Journal，并发执行按所有者路由的 Web 和控制请求，证明一个停滞或断线节点不能阻塞另一个节点或收到其结果，并验证重连只恢复所属节点自身的积压。
+
 ## Pull Request 与 Review
 
 按照 Pull Request Template 填写 Issue、用户可见结果、验证证据、安全影响、兼容性影响和文档变更。保持 Diff 易于审查，保留仓库格式和包边界，并通过新 Commit 响应 Review，直到获得批准。
 
 `Hub CI` 的 Linux、macOS、Windows Type-check、官方 Web 回归、文档和 Linux AMD64 容器 Job 必须全部通过。Hub 协议、认证、节点权限、部署和 Release Workflow 路径需要 CODEOWNERS Review。批准后使用 Squash 合并，使 `master` 中每个 Pull Request 对应一项经过审查的变更。
+
+本 Fork 将继承的上游 Harness CI、DSH／Vendor 发布、真实 API E2E、文档部署、Sandbox 与 Landlock Workflow 保持为仅手工触发。不得仅为增加检查就恢复其 PR、Push 或 Schedule 触发；应在 `hub-ci.yml` 中加入有明确边界的 Hub 自有门禁，或记录本 Fork 为何有意接管某个上游发布系列。
 
 ## Release
 

@@ -10,21 +10,24 @@ import { apply, inject } from '../src/client/index.ts'
 import { HubNodesSection } from '../src/client/HubNodesSection.tsx'
 import { HubPluginsSection } from '../src/client/HubPluginsSection.tsx'
 import { HubRuntimePicker } from '../src/client/HubRuntimePicker.tsx'
+import { HubSettingsTarget } from '../src/client/HubSettingsTarget.tsx'
 
 usePinnedBrowserLanguages('zh-CN')
 
 describe('Hub official Settings registration', () => {
   it('registers node and plugin management as ordinary localized sections', async () => {
-    expect(inject).toEqual(['slots', 'locale'])
+    expect(inject).toEqual(['slots', 'locale', 'settingsScope'])
     const ctx = new Context()
     await ctx.plugin(SlotRegistry).await()
     const locale = new LocaleRuntime(ctx)
     ctx.provide('locale', locale)
+    ctx.provide('settingsScope', { refreshAll: vi.fn() } as never)
     const slots = ctx.get('slots') as SlotRegistry
     slots.register({
       name: 'root',
       children: {
         'settings.section': { kind: 'list', scope: 'root' },
+        'settings.action': { kind: 'list', scope: 'root' },
         'conversation.hero.runtime': { kind: 'single', scope: 'root' },
       },
     } as never, () => null)
@@ -41,6 +44,9 @@ describe('Hub official Settings registration', () => {
       { id: 'hub-plugins', label: '节点插件', component: HubPluginsSection },
     ])
     expect(slots.entries('conversation.hero.runtime').map(entry => entry.component)).toEqual([HubRuntimePicker])
+    expect(slots.entries('settings.action').map(entry => ({
+      id: entry.options.id, component: entry.component,
+    }))).toEqual([{ id: 'hub-runtime-target', component: HubSettingsTarget }])
 
     locale.setLocale('en')
     expect(entries.map(entry => resolveSlotLabel(entry.options.label))).toEqual(['Hub nodes', 'Node plugins'])
@@ -54,6 +60,7 @@ describe('Hub official Settings registration', () => {
     await ctx.plugin(SlotRegistry).await()
     const locale = new LocaleRuntime(ctx)
     ctx.provide('locale', locale)
+    ctx.provide('settingsScope', { refreshAll: vi.fn() } as never)
     const slots = ctx.get('slots') as SlotRegistry
     const fiber = ctx.plugin({ inject: [...inject], apply })
     await fiber.await()

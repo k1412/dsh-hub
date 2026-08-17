@@ -28,6 +28,13 @@ export interface HubTransportHealth {
     stream: string
     frames: number
   }>
+  controlRequests: {
+    pending: number
+    oldestPendingAt?: number
+    timeoutsLast24Hours: number
+    lastTimeoutAt?: number
+    lastTimeoutOperation?: string
+  }
 }
 
 /** One peer's pending reliable queue. */

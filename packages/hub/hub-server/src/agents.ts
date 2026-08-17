@@ -63,6 +63,13 @@ export interface HubNodeTransportHealth {
   }
   droppedStreamFramesTotal: number
   droppedStreams: HubTransportStatusBody['droppedStreams']
+  controlRequests: {
+    pending: number
+    oldestPendingAt?: number
+    timeoutsLast24Hours: number
+    lastTimeoutAt?: number
+    lastTimeoutOperation?: string
+  }
 }
 
 function flushWasRequested(connection: ActiveNodeConnection): boolean {
@@ -303,6 +310,15 @@ export class HubAgentRegistry {
     const hub = this.storage.reliableJournal(`node:${nodeId}`).outboundUsage()
     const hubRatio = Math.max(hub.records / hub.maxRecords, hub.bytes / hub.maxBytes)
     const hubPressure = hubRatio >= 0.95 ? 'critical' : hubRatio >= 0.75 ? 'warning' : 'normal'
+    const pending = this.storage.control.listRecoverableCommands(nodeId)
+    const since = Date.now() - 24 * 60 * 60_000
+    const timeouts = this.storage.control.listAudit(1_000, nodeId)
+      .filter(record => record.action === 'command.wait-timeout' && record.occurredAt >= since)
+    const lastTimeout = timeouts[0]
+    const lastTimeoutDetails = lastTimeout?.details !== null && typeof lastTimeout?.details === 'object'
+      && !Array.isArray(lastTimeout.details)
+      ? lastTimeout.details as Record<string, unknown>
+      : undefined
     const pressure = status === undefined
       ? connection === undefined ? 'unknown' : hubPressure
       : status.pressure === 'critical' || hubPressure === 'critical'
@@ -332,6 +348,22 @@ export class HubAgentRegistry {
       },
       droppedStreamFramesTotal: status?.droppedStreamFramesTotal ?? 0,
       droppedStreams: status?.droppedStreams ?? [],
+      controlRequests: {
+        pending: pending.length,
+        ...(pending[0] === undefined
+          ? {}
+          : { oldestPendingAt: pending.reduce(
+            (oldest, command) => Math.min(oldest, command.createdAt),
+            pending[0].createdAt,
+          ) }),
+        timeoutsLast24Hours: timeouts.length,
+        ...(lastTimeout === undefined ? {} : { lastTimeoutAt: lastTimeout.occurredAt }),
+        ...(typeof lastTimeoutDetails?.rpcMethod === 'string'
+          ? { lastTimeoutOperation: lastTimeoutDetails.rpcMethod }
+          : typeof lastTimeoutDetails?.operation === 'string'
+            ? { lastTimeoutOperation: lastTimeoutDetails.operation }
+            : {}),
+      },
     }
   }
 

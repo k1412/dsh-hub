@@ -12,9 +12,12 @@ import { WebApiClient } from '../src/client/web-api-client.ts'
 
 type Win = { location?: { hostname: string; search: string; origin?: string } }
 type WebSocketGlobal = { WebSocket?: typeof WebSocket }
+type DocumentGlobal = { document?: { querySelector(selector: string): unknown } }
 
 const originalWebSocket = globalThis.WebSocket
+const originalDocument = (globalThis as DocumentGlobal).document
 const sockets: FakeWebSocket[] = []
+let authenticatedSettingsMarker = false
 
 class FakeWebSocket extends EventTarget {
   static readonly CONNECTING = 0
@@ -48,6 +51,9 @@ class FakeWebSocket extends EventTarget {
 }
 
 afterEach(() => {
+  authenticatedSettingsMarker = false
+  if (originalDocument === undefined) delete (globalThis as DocumentGlobal).document
+  else (globalThis as DocumentGlobal).document = originalDocument
   delete (globalThis as Win).location
   sockets.length = 0
   if (originalWebSocket === undefined) delete (globalThis as WebSocketGlobal).WebSocket
@@ -68,6 +74,7 @@ describe('connection client apply', () => {
     const handle = await mount()
     expect(handle.api).toBeInstanceOf(WebApiClient)
     expect(handle.isLoopback).toBe(true)
+    expect(handle.settingsAccess).toBe('host')
   })
 
   it('selects the fixture client under ?fixture (and with no location at all stays real)', async () => {
@@ -77,11 +84,25 @@ describe('connection client apply', () => {
     const handle = await mount()
     expect(handle.api).toBeInstanceOf(WebApiClient)
     expect(handle.isLoopback).toBe(true)
+    expect(handle.settingsAccess).toBe('host')
   })
 
   it('reports non-loopback page authority through the connection handle', async () => {
     ;(globalThis as Win).location = { hostname: '192.0.2.20', search: '' }
-    expect((await mount()).isLoopback).toBe(false)
+    const handle = await mount()
+    expect(handle.isLoopback).toBe(false)
+    expect(handle.settingsAccess).toBe('memory')
+  })
+
+  it('allows an authenticated control-plane shell to expose Settings without claiming loopback', async () => {
+    ;(globalThis as Win).location = { hostname: 'agent.example.com', search: '' }
+    authenticatedSettingsMarker = true
+    ;(globalThis as DocumentGlobal).document = {
+      querySelector: () => authenticatedSettingsMarker ? {} : null,
+    }
+    const handle = await mount()
+    expect(handle.isLoopback).toBe(false)
+    expect(handle.settingsAccess).toBe('host')
   })
 
   it('start() hands out one loop, rejects a second consumer, and stop() aborts the streams', async () => {

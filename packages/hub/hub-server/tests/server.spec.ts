@@ -30,7 +30,7 @@ const access: HubAccessVerifier = {
   },
 }
 
-async function fixture() {
+async function fixture(options: { commandTimeoutMs?: number; reportError?: (error: unknown) => void } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-hub-server-'))
   roots.push(root)
   const storage = await HubStorage.open(join(root, 'hub.db'))
@@ -40,10 +40,11 @@ async function fixture() {
     originGuard: new HubOriginGuard(originSecret),
     hubIdentity: generateHubIdentity(),
     publicOrigin: 'https://hub.example.com',
+    ...options,
   })
   servers.push(server)
   const address = await server.listen('127.0.0.1', 0)
-  return { storage, base: `http://127.0.0.1:${String(address.port)}` }
+  return { storage, server, base: `http://127.0.0.1:${String(address.port)}` }
 }
 
 function requestHeaders(kind: 'human' | 'service', mutation = false): Record<string, string> {
@@ -55,6 +56,51 @@ function requestHeaders(kind: 'human' | 'service', mutation = false): Record<str
 }
 
 describe('Hub HTTP server', () => {
+  it('records sanitized command timeout telemetry without terminating the pending command', async () => {
+    const reported: unknown[] = []
+    const { storage, server } = await fixture({
+      commandTimeoutMs: 30,
+      reportError: error => reported.push(error),
+    })
+    const grant = storage.control.createEnrollment(HubNodeId('slow-node'), 'Slow Node', Date.now() + 60_000)
+    const node = storage.control.consumeEnrollment(grant.code, 'slow-public-key', 'slow-service')
+    storage.control.createCommand({
+      commandId: HubCommandId('command-timeout-monitor-0001'),
+      nodeId: node.nodeId,
+      runtimeId: HubRuntimeId('default'),
+      capability: 'dsh.web',
+      capabilityVersion: '1.0.0',
+      operation: 'fetch',
+      idempotency: 'reconcile',
+      payload: { clientMutationId: 'redacted-from-audit' },
+      createdAt: Date.now(),
+    })
+    const waitCommand = (server as unknown as {
+      waitCommand(commandId: string, rpcMethod?: string): Promise<unknown>
+    }).waitCommand.bind(server)
+
+    await expect(waitCommand('command-timeout-monitor-0001', 'goals/pause'))
+      .rejects.toMatchObject({ status: 504 })
+    expect(storage.control.getCommand('command-timeout-monitor-0001')?.status).toBe('pending')
+    const timeoutAudit = storage.control.listAudit(10, node.nodeId).find(record =>
+      record.action === 'command.wait-timeout')
+    expect(timeoutAudit).toMatchObject({
+      actor: 'hub:timeout-monitor',
+      action: 'command.wait-timeout',
+      outcome: 'timeout',
+    })
+    expect(timeoutAudit?.details).toMatchObject({
+      capability: 'dsh.web', operation: 'fetch', rpcMethod: 'goals/pause', commandStatus: 'pending',
+    })
+    expect(JSON.stringify(storage.control.listAudit(10, node.nodeId))).not.toContain('redacted-from-audit')
+    expect(reported).toHaveLength(1)
+    expect(server.agents.transportHealth(node.nodeId).controlRequests).toMatchObject({
+      pending: 1,
+      timeoutsLast24Hours: 1,
+      lastTimeoutOperation: 'goals/pause',
+    })
+  })
+
   it('hides the origin without its proxy-held secret and serves an internal health check with it', async () => {
     const { base } = await fixture()
     expect((await fetch(`${base}/healthz`)).status).toBe(404)
