@@ -356,7 +356,15 @@ export class HubConnector {
 
   private async handleBody(body: HubEnvelopeBody): Promise<void> {
     if (body.type === 'runtime.resync-required') {
-      await this.publishIndex()
+      if (body.runtimeId !== undefined && body.runtimeId !== this.config.runtimeId) {
+        throw new Error('Connector received resynchronization for another runtime')
+      }
+      // All ApiProxy streams are reconstructible, but their pending question
+      // and approval baselines are emitted only when a fresh iterator opens.
+      // Reconnect the local carrier so connectOnce cancels both old iterators
+      // and pumpStreams opens a new generation. This does not restart DSH or
+      // its live Agents; it only re-establishes the owner-only Connector IPC.
+      this.active?.socket.destroy()
       return
     }
     if (body.type !== 'capability.invoke' || body.runtimeId !== this.config.runtimeId) {

@@ -44,6 +44,22 @@ const STREAM_RECORD_RESERVE = 2_000
 const STREAM_BYTE_RESERVE = 16 * 1024 * 1024
 const TRANSPORT_STATUS_INTERVAL_MS = 15_000
 const DEFERRED_CONNECTOR_BODY_LIMIT = 2_048
+const INTERACTION_STREAM_METHODS = new Set([
+  'approval/requested',
+  'approval/resolved',
+  'question/requested',
+  'question/resolved',
+])
+
+/** Human interaction frames are control messages: dropping one can strand or hide a live wait. */
+function isInteractionStream(body: Extract<HubEnvelopeBody, { type: 'stream.frame' }>): boolean {
+  if (body.capability !== 'dsh.web' || body.stream !== 'mux'
+    || typeof body.payload !== 'object' || body.payload === null || Array.isArray(body.payload)) return false
+  const envelope = body.payload as Record<string, unknown>
+  return envelope.type === 'server-request'
+    && typeof envelope.method === 'string'
+    && INTERACTION_STREAM_METHODS.has(envelope.method)
+}
 
 function flushWasRequested(connection: ActiveHubConnection): boolean {
   return connection.flushRequested
@@ -483,7 +499,7 @@ export class HubNodeAgent {
   }
 
   private connectorBody(body: HubEnvelopeBody): void {
-    if (body.type === 'stream.frame' && this.shouldSuppressStream()) {
+    if (body.type === 'stream.frame' && !isInteractionStream(body) && this.shouldSuppressStream()) {
       this.recordDroppedStream(body)
       return
     }

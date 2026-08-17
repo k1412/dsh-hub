@@ -385,6 +385,25 @@ describe('Hub HTTP server', () => {
       payload: { sessionId: 'nas-session' },
     }])
 
+    invocations.length = 0
+    const pauseGoalResponse = await fetch(`${base}/api/goals/pause`, {
+      method: 'POST',
+      headers: requestHeaders('human', true),
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: 'fleet-goal-pause',
+        method: 'goals/pause',
+        payload: { sessionId: nasSessionId },
+      }),
+    })
+    expect(pauseGoalResponse.status).toBe(200)
+    expect(invocations).toEqual([{
+      nodeId: 'nas-node',
+      runtimeId: 'web',
+      rpcMethod: 'goals/pause',
+      payload: { sessionId: 'nas-session' },
+    }])
+
     const workspaceResponse = await fetch(`${base}/api/workspace.list`, {
       method: 'POST',
       headers: requestHeaders('human', true),

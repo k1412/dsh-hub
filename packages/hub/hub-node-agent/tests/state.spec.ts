@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { generateHubIdentity, HubMessageId } from '@k1412/dsh-hub-protocol'
+import { generateHubIdentity, HubMessageId, type HubEnvelopeBody } from '@k1412/dsh-hub-protocol'
 import { HubNodeAgent } from '../src/agent.ts'
 import { HubNodeAgentState, loadHubNodeAgentConfig } from '../src/state.ts'
 
@@ -115,16 +115,9 @@ describe('Node Agent private state', () => {
     }
     const agent = new HubNodeAgent({ state })
     const internal = agent as unknown as {
-      connectorBody(body: {
-        type: 'stream.frame'
-        runtimeId: string
-        streamId: string
-        capability: string
-        stream: string
-        frameSequence: number
-        payload: Record<string, never>
-      }): void
+      connectorBody(body: HubEnvelopeBody): void
       connectorDisconnected(runtimeId: string): void
+      drainDeferredConnectorBodies(): void
       drainPendingRuntimeStates(): void
     }
     expect(() => {
@@ -138,10 +131,36 @@ describe('Node Agent private state', () => {
         payload: {},
       })
     }).not.toThrow()
+    expect(() => {
+      internal.connectorBody({
+        type: 'stream.frame',
+        runtimeId: 'default',
+        streamId: 'interaction-stream-0001',
+        capability: 'dsh.web',
+        stream: 'mux',
+        frameSequence: 2,
+        payload: {
+          type: 'server-request',
+          rpcId: 'question-rpc-0001',
+          method: 'question/requested',
+          payload: {
+            type: 'question/requested', sessionId: 'session-one',
+            questions: [{ id: 'choice', question: 'Continue?' }],
+          },
+        },
+      })
+    }).not.toThrow()
     expect(() => { internal.connectorDisconnected('default') }).not.toThrow()
     expect(state.journal.outboundUsage().records).toBe(10_000)
 
     state.journal.acknowledgeOutbound(1)
+    internal.drainDeferredConnectorBodies()
+    expect(state.journal.pendingOutbound(10_000).at(-1)?.body).toMatchObject({
+      type: 'stream.frame', capability: 'dsh.web', stream: 'mux',
+      payload: { method: 'question/requested' },
+    })
+
+    state.journal.acknowledgeOutbound(2)
     internal.drainPendingRuntimeStates()
     expect(state.journal.pendingOutbound(10_000).at(-1)?.body).toEqual({
       type: 'runtime.goodbye', runtimeId: 'default', reason: 'connector-stopped',

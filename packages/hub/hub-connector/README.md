@@ -12,6 +12,8 @@ The release bundle contributes one Cordis row to an existing profile. Its namesp
 
 Connector detects the DSH version from the CLI package that launched the runtime. Set `DSH_HUB_DSH_VERSION` on the DSH process only when an embedding launcher hides that package path; an explicit `dshVersion` plugin setting takes precedence over both.
 
+When Node Agent requests authoritative resynchronization, Connector replaces only its owner-only IPC and Host event subscriptions. The DSH process, live Agent, goal, and tool execution continue unchanged. Opening a fresh ApiProxy mux replays any still-pending question or approval with its stable request ID, allowing Hub to rebuild the interactive composer after a dropped connection.
+
 ## Model Experience
 
 None, as the Connector bridges operator control-plane calls and registers no model-facing prompt, tool, skill, or context.

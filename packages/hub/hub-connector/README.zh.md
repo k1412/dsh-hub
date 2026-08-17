@@ -12,6 +12,8 @@ Connector 只建立经过认证的本地 IPC 客户端连接。它没有 HTTP Se
 
 Connector 会从启动 Runtime 的 CLI 软件包中检测 DSH 版本。仅当嵌入式启动器隐藏了该软件包路径时，才需要在 DSH 进程上设置 `DSH_HUB_DSH_VERSION`；显式的 `dshVersion` 插件配置优先于这两种方式。
 
+Node Agent 请求权威重新同步时，Connector 只替换仅所有者可访问的 IPC 与 Host 事件订阅；DSH 进程、实时 Agent、目标和工具执行均不受影响。新的 ApiProxy Mux 会使用稳定 Request ID 重放仍处于等待状态的提问或审批，使 Hub 能在断线后重新构建交互式 Composer。
+
 ## 模型体验
 
 无，因为 Connector 只桥接操作员控制平面调用，不注册面向模型的 Prompt、工具、Skill 或 Context。
