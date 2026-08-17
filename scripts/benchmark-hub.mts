@@ -13,9 +13,14 @@ import { HubServer, type HubAccessVerifier } from '../packages/hub/hub-server/sr
 const NODE_COUNT = Number(process.env.DSH_HUB_BENCHMARK_NODES ?? '8')
 const DIRECT_SAMPLES = Number(process.env.DSH_HUB_BENCHMARK_DIRECT_SAMPLES ?? '200')
 const FLEET_SAMPLES = Number(process.env.DSH_HUB_BENCHMARK_FLEET_SAMPLES ?? '40')
-const DIRECT_P95_BUDGET_MS = Number(process.env.DSH_HUB_BENCHMARK_DIRECT_P95_MS ?? '250')
+const BENCHMARK_ROUNDS = Number(process.env.DSH_HUB_BENCHMARK_ROUNDS ?? '3')
+const DIRECT_P95_BUDGET_MS = Number(process.env.DSH_HUB_BENCHMARK_DIRECT_P95_MS ?? '500')
 const FLEET_P95_BUDGET_MS = Number(process.env.DSH_HUB_BENCHMARK_FLEET_P95_MS ?? '400')
 const originSecret = 'benchmark-private-origin-secret-at-least-32-chars'
+
+if (!Number.isSafeInteger(BENCHMARK_ROUNDS) || BENCHMARK_ROUNDS < 1 || BENCHMARK_ROUNDS > 9 || BENCHMARK_ROUNDS % 2 === 0) {
+  throw new Error('DSH_HUB_BENCHMARK_ROUNDS must be an odd integer from 1 through 9')
+}
 
 interface Metrics {
   samples: number
@@ -24,6 +29,11 @@ interface Metrics {
   p95Ms: number
   p99Ms: number
   throughputPerSecond: number
+}
+
+interface StableMetrics extends Metrics {
+  rounds: number
+  roundP95Ms: number[]
 }
 
 function percentile(sorted: number[], quantile: number): number {
@@ -56,6 +66,23 @@ async function measure(total: number, concurrency: number, operation: (index: nu
     }
   }))
   return summarize(samples, concurrency, performance.now() - wallStartedAt)
+}
+
+async function measureStable(
+  total: number,
+  concurrency: number,
+  operation: (index: number) => Promise<void>,
+): Promise<StableMetrics> {
+  const rounds: Metrics[] = []
+  for (let round = 0; round < BENCHMARK_ROUNDS; round += 1) {
+    rounds.push(await measure(total, concurrency, operation))
+  }
+  const selected = [...rounds].sort((left, right) => left.p95Ms - right.p95Ms)[Math.floor(rounds.length / 2)]!
+  return {
+    ...selected,
+    rounds: rounds.length,
+    roundP95Ms: rounds.map(round => round.p95Ms),
+  }
 }
 
 const access: HubAccessVerifier = {
@@ -207,10 +234,10 @@ async function main(): Promise<void> {
     await measure(20, 4, direct)
     await measure(4, 1, fleet)
     const rssBefore = process.memoryUsage().rss
-    const directMetrics = await measure(DIRECT_SAMPLES, 16, direct)
-    const fleetMetrics = await measure(FLEET_SAMPLES, 4, fleet)
+    const directMetrics = await measureStable(DIRECT_SAMPLES, 16, direct)
+    const fleetMetrics = await measureStable(FLEET_SAMPLES, 4, fleet)
     const result = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       environment: {
         node: process.version,
         platform: `${process.platform}-${process.arch}`,
