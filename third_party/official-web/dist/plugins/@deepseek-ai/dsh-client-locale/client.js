@@ -875,8 +875,8 @@ window.__ModuleLoader__.load({
 		/** English dictionary, checked complete against the zh key set. */
 		const en = { "language.title": "Language" };
 		//#endregion
-		//#region \0dsh-css:/home/wuyang/Code/deepcode/dsh-hub/packages/client/locale/src/client/LanguageRow.module.css.mjs
-		const css = ".u6PAwW_row{border-bottom:1px solid var(--dsw-alias-border-l2);align-items:center;gap:8px;padding:16px 0;display:flex}.u6PAwW_rowText{flex-direction:column;flex:1;gap:4px;min-width:0;padding-right:48px;display:flex}.u6PAwW_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}.u6PAwW_selector{background:var(--dsw-alias-bg-module-platform);height:36px;font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;border-radius:18px;align-items:center;gap:12px;padding:0 14px;font-size:14px;line-height:22px;display:inline-flex}.u6PAwW_selector:hover{background:var(--dsw-alias-interactive-bg-hover)}.u6PAwW_chevron{flex:none}";
+		//#region \0dsh-css:/tmp/dsh-hub-completion-audit-20260818/packages/client/locale/src/client/LanguageRow.module.css.mjs
+		const css = "._5mMyeq_row{border-bottom:1px solid var(--dsw-alias-border-l2);align-items:center;gap:8px;padding:16px 0;display:flex}._5mMyeq_rowText{flex-direction:column;flex:1;gap:4px;min-width:0;padding-right:48px;display:flex}._5mMyeq_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}._5mMyeq_selector{background:var(--dsw-alias-bg-module-platform);height:36px;font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;border:none;border-radius:18px;align-items:center;gap:12px;padding:0 14px;font-size:14px;line-height:22px;display:inline-flex}._5mMyeq_selector:hover{background:var(--dsw-alias-interactive-bg-hover)}._5mMyeq_chevron{flex:none}";
 		const tagId = "@deepseek-ai/dsh-client-locale/LanguageRow.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -886,11 +886,11 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var LanguageRow_module_css_default = {
-			"chevron": "u6PAwW_chevron",
-			"rowText": "u6PAwW_rowText",
-			"selector": "u6PAwW_selector",
-			"row": "u6PAwW_row",
-			"title": "u6PAwW_title"
+			"rowText": "_5mMyeq_rowText",
+			"row": "_5mMyeq_row",
+			"title": "_5mMyeq_title",
+			"selector": "_5mMyeq_selector",
+			"chevron": "_5mMyeq_chevron"
 		};
 		//#endregion
 		//#region lib/types/client/LanguageRow.js
@@ -1181,7 +1181,15 @@ window.__ModuleLoader__.load({
 		* @param ctx - client cordis context.
 		*/
 		function apply(ctx) {
-			const locale = new LocaleRuntime(ctx, ctx.settingsScope.bind({ namespace: LOCALE_SETTINGS_NAMESPACE }));
+			const locale = new LocaleRuntime(ctx, ctx.settingsScope.bind({
+				namespace: LOCALE_SETTINGS_NAMESPACE,
+				browserLocal: true,
+				decode: (section) => {
+					if (typeof section !== "object" || section === null || Array.isArray(section)) return void 0;
+					const preference = section.preference;
+					return preference === void 0 || preference === "zh" || preference === "en" ? { ...preference === void 0 ? {} : { preference } } : void 0;
+				}
+			}));
 			locale.register(COMMON_NS, {
 				zh: zh$1,
 				en: en$1

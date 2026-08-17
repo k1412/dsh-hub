@@ -37,6 +37,8 @@ Protocol, authentication, storage, plugin transaction, snapshot, terminal, and r
 
 The reviewed official Web snapshot lives in `third_party/official-web`. An update must pin the upstream commit, include a reproducible source patch, refresh attribution, and pass production-CSP, desktop, and 390px mobile regressions. Do not hand-edit minified JavaScript.
 
+CI is split by evidence boundary: Ubuntu/macOS run the full core checks; the two-node job proves isolation and recovery; performance retains control-plane metrics; Web exercises the real official composition on desktop and at 390px; Windows retains installer parsing, portable protocol/client tests, and a Web build; documentation verifies bilingual coverage, links, privacy, and the repository boundary; and the container job must actually start the read-only non-root image and verify both health and Origin Secret isolation. Do not retain a generic job that merely duplicates another platform without proving platform behavior.
+
 ## Releases
 
 Stable tags use `hub-v<version>`. The release workflow repeats type-check, lint, unit and multi-node tests, Web regressions, and packed-install verification, then publishes checksum, SBOM, and provenance-bearing artifacts.

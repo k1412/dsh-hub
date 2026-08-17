@@ -22,12 +22,14 @@ Settings scopes are:
 | Page or setting | Owner |
 |---|---|
 | General permissions, default agent, and submission behavior | Current Runtime |
-| General language and appearance | Current browser, independent of nodes |
+| General language and appearance | Current browser origin, independent of nodes; current tab when Storage is denied |
 | Models, configurable plugins, and Agent presets | Current Runtime |
 | Hub nodes | Hub-global |
 | Node plugins, update history, and managed-scope snapshots | Management target selected inside Node plugins |
 
 The official **Plugins** page configures runtime settings for DSH feature plugins. Hub's separate **Node plugins** page manages package inventory, updates, and recovery; they are not the same operation.
+
+Language and appearance synchronize across tabs on the same browser origin but are not written to node Host settings; standalone official DSH Web on loopback retains the official Host-setting behavior. Both **Plugins** and **Node plugins** reload their target Runtime after a target switch and discard a late result from the previous Runtime.
 
 ## Enroll nodes and choose a fallback runtime
 
@@ -47,6 +49,8 @@ If enrollment reports that a non-JSON page was returned before reaching Hub, the
 ## Plugin state, update, and rollback
 
 Open **Settings → Node plugins** and choose a target runtime. **Current plugins** comes from the node's current DSH profile, not a Hub cache:
+
+Changing **Management target** immediately enters loading state and reads inventory, update history, and snapshots again. A response arriving later from the old node cannot be displayed or applied.
 
 - **Healthy** means the package is installed, enabled in the profile bundle list, and its installed version matches the managed record.
 - **Disabled** means the package exists but is not enabled.

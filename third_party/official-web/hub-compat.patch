@@ -309,6 +309,80 @@ index 4d8621e..dcc0a2d 100644
      "src/client/index.ts",
      "src/client/random-uuid.ts",
      "src/client/rpc.ts",
+diff --git a/packages/client/locale/src/client/index.ts b/packages/client/locale/src/client/index.ts
+index 8291187..97f357e 100644
+--- a/packages/client/locale/src/client/index.ts
++++ b/packages/client/locale/src/client/index.ts
+@@ -353,7 +353,17 @@ export const inject = ['slots', 'connection', 'remote', 'settingsScope']
+  * @param ctx - client cordis context.
+  */
+ export function apply(ctx: ClientContext): void {
+-  const host = ctx.settingsScope.bind<LocaleSettings>({ namespace: LOCALE_SETTINGS_NAMESPACE })
++  const host = ctx.settingsScope.bind<LocaleSettings>({
++    namespace: LOCALE_SETTINGS_NAMESPACE,
++    browserLocal: true,
++    decode: (section) => {
++      if (typeof section !== 'object' || section === null || Array.isArray(section)) return undefined
++      const preference = (section as { preference?: unknown }).preference
++      return preference === undefined || preference === 'zh' || preference === 'en'
++        ? { ...(preference === undefined ? {} : { preference }) }
++        : undefined
++    },
++  })
+   const locale = new LocaleRuntime(ctx, host)
+   locale.register(COMMON_NS, { zh, en })
+   locale.register(SETTINGS_NS, { zh: settingsZh, en: settingsEn })
+diff --git a/packages/client/locale/tests/apply.client.spec.ts b/packages/client/locale/tests/apply.client.spec.ts
+index dd38786..d0b7531 100644
+--- a/packages/client/locale/tests/apply.client.spec.ts
++++ b/packages/client/locale/tests/apply.client.spec.ts
+@@ -16,7 +16,7 @@ import type { createLanguageRowStore } from '../src/client/settings-store.ts'
+ 
+ const SLOT = 'settings.general.item'
+ 
+-async function bench() {
++async function bench(isLoopback = true) {
+   const ctx = new Context()
+   await ctx.plugin(SlotRegistry).await()
+   let preference: string | undefined
+@@ -44,7 +44,7 @@ async function bench() {
+       result: { ok: true as const, value: namespace() },
+     }
+   })
+-  ctx.provide('connection', { api: { settings: { describe, mutate } }, isLoopback: true } as never)
++  ctx.provide('connection', { api: { settings: { describe, mutate } }, isLoopback } as never)
+   // The settings transport and the forwarded-event port the plugin injects.
+   new TestRemote(ctx)
+   await ctx.plugin(SettingsScopeBinder).await()
+@@ -87,6 +87,28 @@ describe('locale apply', () => {
+     expect(inject).toEqual(['slots', 'connection', 'remote', 'settingsScope'])
+   })
+ 
++  it('persists the Hub language in this browser without mutating a selected node', async () => {
++    const browserSettings = new Map<string, string>()
++    vi.stubGlobal('localStorage', {
++      getItem: (key: string) => browserSettings.get(key) ?? null,
++      setItem: (key: string, value: string) => { browserSettings.set(key, value) },
++    })
++    const b = await bench(false)
++    await b.ctx.plugin({ inject: [...inject], apply }).await()
++    const locale = b.ctx.get('locale') as LocaleRuntime
++    locale.setLocale('en')
++    await Promise.resolve()
++    expect(JSON.parse(browserSettings.get(`dsh.settings.${LOCALE_SETTINGS_NAMESPACE}`) ?? '')).toEqual({
++      preference: 'en',
++    })
++    b.ctx.emit('connection/reset')
++    await Promise.resolve()
++    expect(locale.getLocale().active).toBe('en')
++    expect(b.describe).not.toHaveBeenCalled()
++    expect(b.mutate).not.toHaveBeenCalled()
++    await b.ctx.fiber.dispose()
++  })
++
+   it('provides the service with base + settings dictionaries and registers the row (declaration before or after apply)', async () => {
+     const before = await bench()
+     declareItems(before.slots)
 diff --git a/packages/client/runtime/src/client/contract/session.ts b/packages/client/runtime/src/client/contract/session.ts
 index c3ef72e..fcfcef5 100644
 --- a/packages/client/runtime/src/client/contract/session.ts
@@ -327,6 +401,33 @@ index c3ef72e..fcfcef5 100644
    /**
     * Execute one slash-command line against this session's agent — pure
     * admission semantics (the host executor durably logs the lifecycle).
+diff --git a/packages/client/runtime/src/client/contract/settings-scope.ts b/packages/client/runtime/src/client/contract/settings-scope.ts
+index cb22cb1..cddb37e 100644
+--- a/packages/client/runtime/src/client/contract/settings-scope.ts
++++ b/packages/client/runtime/src/client/contract/settings-scope.ts
+@@ -32,14 +32,20 @@ export interface SettingsScopeSnapshot<T> {
+   revision: number | undefined
+   /** Whether the Host document accepts writes; memory mode never does. */
+   writable: boolean
+-  /** `host` syncs with the Host document; `memory` keeps a remote browser process-local. */
+-  mode: 'host' | 'memory'
++  /** `host` syncs with the Host document; `browser` persists on this origin; `memory` is process-local. */
++  mode: 'host' | 'browser' | 'memory'
+ }
+ 
+ /** Domain-owned description of one settings namespace consumed by a browser plugin. */
+ export interface SettingsScopeSpec<T> {
+   /** Settings namespace registered by the owning Host plugin. */
+   namespace: string
++  /**
++   * Keep this UI-only preference in browser storage on an authenticated
++   * non-loopback control plane. Loopback Web continues to use the Host
++   * document, preserving the standalone product's behavior.
++   */
++  browserLocal?: boolean
+   /**
+    * Narrow one wire section; undefined keeps the last accepted value. The
+    * default validates the section against the namespace's own serialized wire
 diff --git a/packages/client/runtime/src/client/sessions/session.ts b/packages/client/runtime/src/client/sessions/session.ts
 index 3e5ec5a..850d6bf 100644
 --- a/packages/client/runtime/src/client/sessions/session.ts
@@ -1114,6 +1215,118 @@ index dc7f32e..9584de8 100644
    )
    const welcomeInjected = (): WelcomeNoticeInjected => ({
      controller: welcomeController,
+diff --git a/packages/client/ui-settings-plugin-inventory/src/client/PluginInventorySettingsTab.tsx b/packages/client/ui-settings-plugin-inventory/src/client/PluginInventorySettingsTab.tsx
+index 12fd3d2..6475294 100644
+--- a/packages/client/ui-settings-plugin-inventory/src/client/PluginInventorySettingsTab.tsx
++++ b/packages/client/ui-settings-plugin-inventory/src/client/PluginInventorySettingsTab.tsx
+@@ -12,6 +12,8 @@ import css from './PluginInventorySettingsTab.module.css'
+ export interface PluginInventorySettingsTabInjected {
+   /** Read a current Host inventory snapshot. */
+   list: () => Promise<PluginInventorySnapshot>
++  /** Re-read when an authenticated embedding changes the owning Runtime. */
++  subscribeTarget: (listener: () => void) => () => void
+ }
+ 
+ type PluginInventoryEntry = PluginInventorySnapshot['entries'][number]
+@@ -61,13 +63,18 @@ function matches(entry: PluginInventoryEntry, normalizedQuery: string): boolean
+ }
+ 
+ /** Render the read-only current Loader inventory. */
+-export function PluginInventorySettingsTab({ list, t }: PluginInventorySettingsTabProps): ReactNode {
++export function PluginInventorySettingsTab({ list, subscribeTarget, t }: PluginInventorySettingsTabProps): ReactNode {
+   const catalogId = useId()
+   const [request, setRequest] = useState(0)
+   const [query, setQuery] = useState('')
+   const [expanded, setExpanded] = useState<PluginInventoryEntry['entryId'] | null>(null)
+   const [state, setState] = useState<ViewState>({ status: 'loading' })
+ 
++  useEffect(() => subscribeTarget(() => {
++    setState({ status: 'loading' })
++    setRequest(value => value + 1)
++  }), [subscribeTarget])
++
+   useEffect(() => {
+     let current = true
+     void Promise.resolve().then(() => list()).then(
+diff --git a/packages/client/ui-settings-plugin-inventory/src/client/index.ts b/packages/client/ui-settings-plugin-inventory/src/client/index.ts
+index ccfd8bd..0262b4b 100644
+--- a/packages/client/ui-settings-plugin-inventory/src/client/index.ts
++++ b/packages/client/ui-settings-plugin-inventory/src/client/index.ts
+@@ -34,7 +34,9 @@ export function apply(ctx: ClientContext): void {
+     }
+     return result.value
+   }
+-  const injected = (): PluginInventorySettingsTabInjected => ({ list })
++  const subscribeTarget: PluginInventorySettingsTabInjected['subscribeTarget'] = listener =>
++    ctx.on('connection/reset', listener)
++  const injected = (): PluginInventorySettingsTabInjected => ({ list, subscribeTarget })
+ 
+   ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
+     name: 'settings.plugins.tab',
+diff --git a/packages/client/ui-settings-plugin-inventory/tests/browser-plugin.client.spec.tsx b/packages/client/ui-settings-plugin-inventory/tests/browser-plugin.client.spec.tsx
+index b955db8..c38004f 100644
+--- a/packages/client/ui-settings-plugin-inventory/tests/browser-plugin.client.spec.tsx
++++ b/packages/client/ui-settings-plugin-inventory/tests/browser-plugin.client.spec.tsx
+@@ -62,6 +62,11 @@ describe('ui-settings-plugin-inventory browser plugin', () => {
+     const injected = (entry.inject as unknown as () => PluginInventorySettingsTabInjected)()
+     await expect(injected.list()).resolves.toEqual(EMPTY)
+     expect(b.list).toHaveBeenCalledOnce()
++    const targetChanged = vi.fn()
++    const unsubscribe = injected.subscribeTarget(targetChanged)
++    b.ctx.emit('connection/reset')
++    expect(targetChanged).toHaveBeenCalledOnce()
++    unsubscribe()
+     b.list.mockResolvedValueOnce({ ok: false, error: { code: 'REMOTE_ERROR', message: 'unavailable' } })
+     await expect(injected.list()).rejects.toThrow('pluginInventory.list failed: REMOTE_ERROR: unavailable')
+     await b.ctx.fiber.dispose()
+diff --git a/packages/client/ui-settings-plugin-inventory/tests/components.client.spec.tsx b/packages/client/ui-settings-plugin-inventory/tests/components.client.spec.tsx
+index bec1d64..2c9a71d 100644
+--- a/packages/client/ui-settings-plugin-inventory/tests/components.client.spec.tsx
++++ b/packages/client/ui-settings-plugin-inventory/tests/components.client.spec.tsx
+@@ -13,10 +13,14 @@ afterEach(cleanup)
+ type Snapshot = Awaited<ReturnType<PluginInventorySettingsTabInjected['list']>>
+ const t = ((key: PluginInventoryLocaleKey): string => en[key]) as PluginInventorySettingsTabProps['t']
+ 
+-function props(list: PluginInventorySettingsTabInjected['list']): PluginInventorySettingsTabProps {
++function props(
++  list: PluginInventorySettingsTabInjected['list'],
++  subscribeTarget: PluginInventorySettingsTabInjected['subscribeTarget'] = () => () => undefined,
++): PluginInventorySettingsTabProps {
+   return {
+     t,
+     list,
++    subscribeTarget,
+   } as PluginInventorySettingsTabProps
+ }
+ 
+@@ -124,4 +128,27 @@ describe('PluginInventorySettingsTab', () => {
+     pendingFailure.unmount()
+     await act(async () => { deferredFailure.reject(new Error('late failure')) })
+   })
++
++  it('reloads for a new Runtime and fences the previous Runtime response', async () => {
++    const oldRuntime = Promise.withResolvers<Snapshot>()
++    const newRuntime = Promise.withResolvers<Snapshot>()
++    const list = vi.fn<PluginInventorySettingsTabInjected['list']>()
++      .mockReturnValueOnce(oldRuntime.promise)
++      .mockReturnValueOnce(newRuntime.promise)
++    let changeTarget = (): void => undefined
++    const subscribeTarget: PluginInventorySettingsTabInjected['subscribeTarget'] = (listener) => {
++      changeTarget = listener
++      return () => { changeTarget = () => undefined }
++    }
++    const view = render(<PluginInventorySettingsTab {...props(list, subscribeTarget)} />)
++    await waitFor(() => { expect(list).toHaveBeenCalledOnce() })
++
++    act(() => { changeTarget() })
++    await waitFor(() => { expect(list).toHaveBeenCalledTimes(2) })
++    await act(async () => { newRuntime.resolve(SNAPSHOT) })
++    expect(view.container.querySelector('[data-plugin-count]')?.textContent).toBe('7')
++
++    await act(async () => { oldRuntime.resolve({ entries: [] }) })
++    expect(view.container.querySelector('[data-plugin-count]')?.textContent).toBe('7')
++  })
+ })
 diff --git a/packages/client/ui-settings/README.i18n.yaml b/packages/client/ui-settings/README.i18n.yaml
 index ec7c333..c90ecbb 100644
 --- a/packages/client/ui-settings/README.i18n.yaml
@@ -1167,10 +1380,156 @@ index dce8dbf..0ed621a 100644
 +- **持久设置需要经过认证的载体决策**：普通远程浏览器只得到内存设置；经过审查的认证控制面文档可以把 `connection.settingsAccess` 设为 `host` 来开放 Host 设置，但这不会授予仅 Loopback 可用的桌面原生能力。认证、授权和请求归属必须由载体与服务端执行，而不是由本 UI 包承担。
  - **每次写入仅一个字段**：`set` 只发送单个 `set` op，因此需要同时改动两个字段的行没有事务可用，会发布两个 revision。
 diff --git a/packages/client/ui-settings/src/client/settings-scope.ts b/packages/client/ui-settings/src/client/settings-scope.ts
-index 4668c49..af97def 100644
+index 4668c49..f9ed8fe 100644
 --- a/packages/client/ui-settings/src/client/settings-scope.ts
 +++ b/packages/client/ui-settings/src/client/settings-scope.ts
-@@ -225,6 +225,8 @@ declare module '@deepseek-ai/cordis' {
+@@ -33,6 +33,25 @@ import type {} from '@deepseek-ai/dsh-api-remotes/types'
+ import type {} from '@deepseek-ai/dsh-settings/types'
+ type SettingsFace = Pick<IApiClient, 'settings'>
+ 
++interface BrowserStorage {
++  getItem(key: string): string | null
++  setItem(key: string, value: string): void
++}
++
++/** Read Storage defensively: sandboxed documents may throw on property access. */
++function browserStorage(): BrowserStorage | undefined {
++  try {
++    const candidate: unknown = Reflect.get(globalThis, 'localStorage')
++    if (typeof candidate !== 'object' || candidate === null) return undefined
++    const storage = candidate as Partial<BrowserStorage>
++    return typeof storage.getItem === 'function' && typeof storage.setItem === 'function'
++      ? storage as BrowserStorage
++      : undefined
++  } catch (_storageUnavailable) {
++    return undefined
++  }
++}
++
+ /**
+  * Serializes one namespace's Host reads and writes behind a snapshot store.
+  * Reads never block plugin activation; writes carry the latest known
+@@ -45,24 +64,26 @@ export class SettingsScopeController<T> implements SettingsScope<T> {
+   private readGeneration = 0
+   private writeGeneration = 0
+   private disposed = false
++  private browserValue: Record<string, unknown> = {}
++  private browserRevision = 0
+ 
+   /**
+    * @param api - settings wire face.
+    * @param spec - namespace identity and optional narrowing decoder.
+-   * @param persistence - remote browsers remain process-local because settings RPCs are loopback-only.
++   * @param persistence - Host, browser-origin, or process-local ownership.
+    */
+   constructor(
+     private readonly api: SettingsFace,
+     private readonly spec: SettingsScopeSpec<T>,
+-    private readonly persistence: 'host' | 'memory' = 'host',
++    private readonly persistence: 'host' | 'browser' | 'memory' = 'host',
+   ) {
+     this.store = createSnapshotStore<SettingsScopeSnapshot<T>>({
+-      status: persistence === 'host' ? 'loading' : 'unavailable',
++      status: persistence === 'memory' ? 'unavailable' : 'loading',
+       value: undefined,
+       base: undefined,
+       user: undefined,
+       revision: undefined,
+-      writable: false,
++      writable: persistence === 'browser',
+       mode: persistence,
+     })
+   }
+@@ -87,6 +108,10 @@ export class SettingsScopeController<T> implements SettingsScope<T> {
+    */
+   load(): Promise<void> {
+     const generation = ++this.readGeneration
++    if (this.persistence === 'browser') {
++      this.readBrowser(generation)
++      return Promise.resolve()
++    }
+     return this.enqueue(() => this.read(generation))
+   }
+ 
+@@ -114,6 +139,10 @@ export class SettingsScopeController<T> implements SettingsScope<T> {
+   private write(op: SettingsPathOpView): Promise<void> {
+     this.readGeneration += 1
+     const generation = ++this.writeGeneration
++    if (this.persistence === 'browser') {
++      this.writeBrowser(op, generation)
++      return Promise.resolve()
++    }
+     return this.enqueue(async () => {
+       const revision = this.getSnapshot().revision
+       let response: Awaited<ReturnType<SettingsFace['settings']['mutate']>>
+@@ -209,6 +238,66 @@ export class SettingsScopeController<T> implements SettingsScope<T> {
+     }
+     return failure === undefined ? view.value as T : undefined
+   }
++
++  /** Storage key is origin-scoped by the browser; the namespace keeps features independent. */
++  get browserStorageKey(): string | undefined {
++    return this.persistence === 'browser' ? `dsh.settings.${this.spec.namespace}` : undefined
++  }
++
++  private readBrowser(generation: number): void {
++    let value = this.browserValue
++    try {
++      const key = this.browserStorageKey
++      const raw = key === undefined ? null : browserStorage()?.getItem(key) ?? null
++      if (raw !== null) {
++        const parsed: unknown = JSON.parse(raw)
++        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
++          value = { ...parsed as Record<string, unknown> }
++        }
++      } else {
++        value = {}
++      }
++    } catch (_storageUnavailableOrInvalid) {
++      // Sandboxed/private browsers may deny Storage. Keep the live in-memory
++      // value writable for this page instead of breaking Settings boot.
++    }
++    if (this.disposed || generation !== this.readGeneration) return
++    this.browserValue = value
++    this.publishBrowser(value)
++  }
++
++  private writeBrowser(op: SettingsPathOpView, generation: number): void {
++    if (this.disposed || generation !== this.writeGeneration) return
++    const [field] = op.path
++    if (field === undefined || op.path.length !== 1) return
++    const value = op.op === 'set'
++      ? { ...this.browserValue, [field]: op.value }
++      : Object.fromEntries(Object.entries(this.browserValue).filter(([key]) => key !== field))
++    this.browserValue = value
++    try {
++      const key = this.browserStorageKey
++      if (key !== undefined) browserStorage()?.setItem(key, JSON.stringify(value))
++    } catch (_storageUnavailable) {
++      // The current page still owns the accepted value; persistence is best
++      // effort because browser policy may disable localStorage at runtime.
++    }
++    this.publishBrowser(value)
++  }
++
++  private publishBrowser(value: Record<string, unknown>): void {
++    const decoded = this.spec.decode === undefined
++      ? value as T
++      : this.spec.decode(value)
++    this.browserRevision += 1
++    this.store.update((draft) => {
++      draft.status = decoded === undefined ? 'unavailable' : 'ready'
++      draft.value = decoded
++      draft.base = undefined
++      draft.user = value
++      draft.revision = this.browserRevision
++      draft.writable = true
++    })
++  }
+ }
+ 
+ declare module '@deepseek-ai/cordis' {
+@@ -225,6 +314,8 @@ declare module '@deepseek-ai/cordis' {
   * (`packages/client/tsdown.client.ts`).
   */
  export class SettingsScopeBinder extends Service {
@@ -1179,22 +1538,39 @@ index 4668c49..af97def 100644
    /**
     * @param ctx - the providing plugin's context.
     */
-@@ -248,8 +250,9 @@ export class SettingsScopeBinder extends Service {
+@@ -245,11 +336,15 @@ export class SettingsScopeBinder extends Service {
+   bind<T>(spec: SettingsScopeSpec<T>): SettingsScope<T> {
+     const ctx = this.ctx
+     const connection = ctx.get('connection') as ConnectionHandle
++    const persistence = spec.browserLocal === true && !connection.isLoopback
++      ? 'browser'
++      : connection.settingsAccess ?? (connection.isLoopback ? 'host' : 'memory')
      const controller = new SettingsScopeController<T>(
        connection.api,
        spec,
 -      connection.isLoopback ? 'host' : 'memory',
-+      connection.settingsAccess ?? (connection.isLoopback ? 'host' : 'memory'),
++      persistence,
      )
-+    this.controllers.add(controller as SettingsScopeController<unknown>)
++    this.controllers.add(controller)
      ctx.effect(() => {
        const refresh = (namespace?: string): void => {
          if (namespace !== undefined && namespace !== spec.namespace) return
-@@ -262,9 +265,20 @@ export class SettingsScopeBinder extends Service {
+@@ -259,12 +354,31 @@ export class SettingsScopeBinder extends Service {
+         (ctx.get('remote') as Context['remote']).$on('settings/document-updated', refresh),
+         ctx.on('connection/reset', () => { refresh() }),
+       ]
++      const storageKey = controller.browserStorageKey
++      if (storageKey !== undefined && typeof globalThis.addEventListener === 'function') {
++        const onStorage = (event: Event): void => {
++          if ((event as StorageEvent).key === storageKey) refresh()
++        }
++        globalThis.addEventListener('storage', onStorage)
++        disposers.push(() => { globalThis.removeEventListener('storage', onStorage) })
++      }
        void controller.load()
        return async () => {
          for (const dispose of disposers) dispose()
-+        this.controllers.delete(controller as SettingsScopeController<unknown>)
++        this.controllers.delete(controller)
          await controller.dispose()
        }
      }, `ui-settings: ${spec.namespace} settings scope`)
@@ -1212,10 +1588,50 @@ index 4668c49..af97def 100644
 +  }
  }
 diff --git a/packages/client/ui-settings/tests/settings-scope.client.spec.ts b/packages/client/ui-settings/tests/settings-scope.client.spec.ts
-index 4290020..35519e3 100644
+index 4290020..f619017 100644
 --- a/packages/client/ui-settings/tests/settings-scope.client.spec.ts
 +++ b/packages/client/ui-settings/tests/settings-scope.client.spec.ts
-@@ -366,6 +366,35 @@ describe('SettingsScopeController', () => {
+@@ -63,6 +63,39 @@ function trackValues(scope: SettingsScope<UiTestSettings>): Array<UiTestSettings
+ }
+ 
+ describe('SettingsScopeController', () => {
++  it('persists an opted-in browser scope without crossing the Host wire', async () => {
++    const values = new Map<string, string>([['dsh.settings.ui-test', '{"preference":"dark"}']])
++    vi.stubGlobal('localStorage', {
++      getItem: (key: string) => values.get(key) ?? null,
++      setItem: (key: string, value: string) => { values.set(key, value) },
++    })
++    const describeCall = vi.fn()
++    const mutate = vi.fn()
++    try {
++      const scope = new SettingsScopeController<UiTestSettings>(
++        { settings: { describe: describeCall, mutate } } as never,
++        { namespace: 'ui-test' },
++        'browser',
++      )
++      await scope.load()
++      expect(scope.getSnapshot()).toMatchObject({
++        status: 'ready', value: { preference: 'dark' }, writable: true, mode: 'browser',
++      })
++
++      await scope.set('preference', 'light')
++      expect(JSON.parse(values.get('dsh.settings.ui-test') ?? '')).toEqual({ preference: 'light' })
++      expect(scope.getSnapshot()).toMatchObject({ value: { preference: 'light' }, mode: 'browser' })
++
++      values.set('dsh.settings.ui-test', '{"preference":"system"}')
++      await scope.load()
++      expect(scope.getSnapshot()).toMatchObject({ value: { preference: 'system' }, mode: 'browser' })
++      expect(describeCall).not.toHaveBeenCalled()
++      expect(mutate).not.toHaveBeenCalled()
++    } finally {
++      vi.unstubAllGlobals()
++    }
++  })
++
+   it('starts loading and publishes a schema-valid section with revision and writability', async () => {
+     const describeCall = vi.fn().mockResolvedValueOnce(described({ preference: 'dark' }, 3))
+     const scope = new SettingsScopeController<UiTestSettings>(
+@@ -366,6 +399,35 @@ describe('SettingsScopeController', () => {
    })
  })
  describe('SettingsScopeBinder.bind', () => {
@@ -1251,327 +1667,144 @@ index 4290020..35519e3 100644
    it('subscribes before the initial read and converges to the latest queued invalidation', async () => {
      const initial = deferred<ReturnType<typeof described>>()
      const describeCall = vi.fn()
-
-diff --git a/packages/client/ui-agent-preset/src/client/section-store.ts b/packages/client/ui-agent-preset/src/client/section-store.ts
-index 0499d24..9e7976a 100644
---- a/packages/client/ui-agent-preset/src/client/section-store.ts
-+++ b/packages/client/ui-agent-preset/src/client/section-store.ts
-@@ -16,7 +16,7 @@
- 
- import type { IApiClient } from '@deepseek-ai/dsh-api-remotes/client'
- import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
--import { beginRosterRead, messageOf, writeDefaultPreset } from './settings-store.ts'
-+import { messageOf, readRoster, writeDefaultPreset } from './settings-store.ts'
- 
- /** Ids a preset directory may be named, mirroring the host's own rule. */
- const PRESET_ID = /^[a-z0-9][a-z0-9-]*$/
-@@ -131,6 +131,7 @@ export function draftBlocker(
- export class AgentPresetSectionController {
-   /** Page snapshot the renderer subscribes to. */
-   readonly store: SnapshotStore<AgentPresetSectionState> = createSnapshotStore(INITIAL)
-+  private generation = 0
- 
-   constructor(
-     private readonly api: Pick<IApiClient, 'agentPresets' | 'settings'>,
-@@ -162,8 +163,15 @@ export class AgentPresetSectionController {
-    * @returns once the snapshot reflects the host.
-    */
-   async load(): Promise<void> {
--    const roster = await beginRosterRead(this.api, this.store)
--    if (roster === undefined) return
-+    const generation = ++this.generation
-+    this.set({ status: 'loading', error: null })
-+    const result = await readRoster(this.api)
-+    if (generation !== this.generation) return
-+    if (!result.ok) {
-+      this.set({ status: 'error', error: result.error })
-+      return
-+    }
-+    const roster = result.value
-     const { presets, authorable, hasDocument } = roster
-     if (presets.length === 0) {
-       // Nothing to manage leaves nothing to keep a dialog open over.
-@@ -191,9 +199,11 @@ export class AgentPresetSectionController {
-    * @returns once the composition loaded or the failure is on the page.
-    */
-   async view(id: string): Promise<void> {
-+    const generation = this.generation
-     this.set({ error: null })
-     try {
-       const response = await this.api.agentPresets.read({ agentPreset: id })
-+      if (generation !== this.generation) return
-       if (!response.result.ok) {
-         this.set({ error: response.result.error.message })
-         return
-@@ -201,6 +211,7 @@ export class AgentPresetSectionController {
-       const { name, content } = response.result.value
-       this.set({ view: { id, title: name ?? id, content } })
-     } catch (error) {
-+      if (generation !== this.generation) return
-       this.set({ error: messageOf(error) })
-     }
-   }
-@@ -253,6 +264,7 @@ export class AgentPresetSectionController {
-     const draft = this.store.getSnapshot().copy
-     if (draft === null || draft.saving) return
-     if (draftBlocker(draft, this.store.getSnapshot().rows) !== undefined) return
-+    const generation = this.generation
-     this.patchCopy({ saving: true, error: null })
-     try {
-       const name = draft.name.trim()
-@@ -261,6 +273,7 @@ export class AgentPresetSectionController {
-         agentPreset: draft.id,
-         ...name === '' ? {} : { name },
-       })
-+      if (generation !== this.generation) return
-       if (!response.result.ok) {
-         this.patchCopy({ saving: false, error: response.result.error.message })
-         return
-@@ -272,6 +285,7 @@ export class AgentPresetSectionController {
-       // else), so landing in them is the completion, not a follow-up.
-       await this.openLocation(draft.id)
-     } catch (error) {
-+      if (generation !== this.generation) return
-       this.patchCopy({ saving: false, error: messageOf(error) })
-     }
-   }
-@@ -283,8 +297,10 @@ export class AgentPresetSectionController {
-    * @returns once the host answered and the page reflects it.
-    */
-   async openLocation(id: string): Promise<void> {
-+    const generation = this.generation
-     try {
-       const response = await this.api.agentPresets.openDocument({ agentPreset: id })
-+      if (generation !== this.generation) return
-       if (!response.result.ok) {
-         this.set({ error: response.result.error.message })
-         return
-@@ -293,6 +309,7 @@ export class AgentPresetSectionController {
-       const { path } = response.result.value
-       this.set({ revealedPaths: { ...this.store.getSnapshot().revealedPaths, [id]: path } })
-     } catch (error) {
-+      if (generation !== this.generation) return
-       this.set({ error: messageOf(error) })
-     }
-   }
-@@ -316,9 +333,11 @@ export class AgentPresetSectionController {
-   async remove(): Promise<void> {
-     const { pendingDelete, deleting } = this.store.getSnapshot()
-     if (pendingDelete === null || deleting) return
-+    const generation = this.generation
-     this.set({ deleting: true, error: null })
-     try {
-       const response = await this.api.agentPresets.remove({ agentPreset: pendingDelete })
-+      if (generation !== this.generation) return
-       if (!response.result.ok) {
-         this.set({ deleting: false, pendingDelete: null, error: response.result.error.message })
-         return
-@@ -327,6 +346,7 @@ export class AgentPresetSectionController {
-       await this.load()
-       this.rosterChanged()
-     } catch (error) {
-+      if (generation !== this.generation) return
-       this.set({ deleting: false, pendingDelete: null, error: messageOf(error) })
-     }
-   }
-@@ -338,7 +358,9 @@ export class AgentPresetSectionController {
-    * @returns once the write settled and the roster was re-read.
-    */
-   async makeDefault(id: string): Promise<void> {
-+    const generation = this.generation
-     const failure = await writeDefaultPreset(this.api, id)
-+    if (generation !== this.generation) return
-     if (failure !== undefined) {
-       this.set({ error: failure })
-       return
-diff --git a/packages/client/ui-agent-preset/src/client/settings-store.ts b/packages/client/ui-agent-preset/src/client/settings-store.ts
-index 4f4e26b..6f99f19 100644
---- a/packages/client/ui-agent-preset/src/client/settings-store.ts
-+++ b/packages/client/ui-agent-preset/src/client/settings-store.ts
-@@ -111,30 +111,6 @@ export async function readRoster(api: Pick<IApiClient, 'agentPresets'>): Promise
-   }
- }
- 
--/**
-- * The opening move every roster-backed surface makes: refuse a read that is
-- * already in flight, mark the store loading, then read.
-- *
-- * A surface that gets `undefined` returns without touching its snapshot
-- * further — either another read owns it, or this one already wrote the
-- * failure. What differs between surfaces starts after this.
-- * @param api - the agent-preset wire face.
-- * @param store - the surface's own snapshot store.
-- * @returns the roster, or undefined when the caller should return.
-- */
--export async function beginRosterRead<S extends { status: string; error: string | null }>(
--  api: Pick<IApiClient, 'agentPresets'>,
--  store: SnapshotStore<S>,
--): Promise<RosterValue | undefined> {
--  const before = store.getSnapshot()
--  if (before.status === 'loading') return undefined
--  store.set({ ...before, status: 'loading', error: null })
--  const roster = await readRoster(api)
--  if (roster.ok) return roster.value
--  store.set({ ...store.getSnapshot(), status: 'error', error: roster.error })
--  return undefined
--}
--
- /**
-  * The roster entries as the pickers render them: healthy presets only.
-  *
-@@ -190,6 +166,7 @@ const INITIAL: AgentPresetSettingsState = {
- export class AgentPresetSettingsController {
-   /** Row snapshot the renderer subscribes to. */
-   readonly store: SnapshotStore<AgentPresetSettingsState> = createSnapshotStore(INITIAL)
-+  private generation = 0
- 
-   constructor(private readonly api: IApiClient) {}
- 
-@@ -204,8 +181,15 @@ export class AgentPresetSettingsController {
-    * @returns once the snapshot reflects the host.
-    */
-   async load(): Promise<void> {
--    const roster = await beginRosterRead(this.api, this.store)
--    if (roster === undefined) return
-+    const generation = ++this.generation
-+    this.set({ status: 'loading', error: null })
-+    const result = await readRoster(this.api)
-+    if (generation !== this.generation) return
-+    if (!result.ok) {
-+      this.set({ status: 'error', error: result.error })
-+      return
-+    }
-+    const roster = result.value
-     const { presets } = roster
-     const [first] = presets
-     if (first === undefined) {
-@@ -218,6 +202,7 @@ export class AgentPresetSettingsController {
-       // neither method, so a refused describe leaves the row read-only rather
-       // than offering a control whose write answers `settings-not-exposed`.
-       const described = await this.api.settings.describe({})
-+      if (generation !== this.generation) return
-       this.set({
-         status: 'ready',
-         error: null,
-@@ -228,6 +213,7 @@ export class AgentPresetSettingsController {
-         currentValue: presets.find(preset => preset.isDefault)?.id ?? first.id,
-       })
-     } catch (error) {
-+      if (generation !== this.generation) return
-       this.set({ status: 'error', error: messageOf(error) })
-     }
-   }
-@@ -242,8 +228,10 @@ export class AgentPresetSettingsController {
-   async select(id: string): Promise<void> {
-     const before = this.store.getSnapshot()
-     if (before.status === 'saving' || id === before.currentValue) return
-+    const generation = ++this.generation
-     this.set({ status: 'saving', error: null, currentValue: id })
-     const failure = await writeDefaultPreset(this.api, id)
-+    if (generation !== this.generation) return
-     if (failure !== undefined) {
-       this.set({ status: 'ready', currentValue: before.currentValue, error: failure })
-       return
-diff --git a/packages/client/ui-agent-preset/tests/section-store.client.spec.ts b/packages/client/ui-agent-preset/tests/section-store.client.spec.ts
-index dc62f74..4fce621 100644
---- a/packages/client/ui-agent-preset/tests/section-store.client.spec.ts
-+++ b/packages/client/ui-agent-preset/tests/section-store.client.spec.ts
-@@ -182,12 +182,37 @@ describe('loading the roster', () => {
-     expect(controller.store.getSnapshot().status).toBe('unavailable')
+@@ -423,4 +485,65 @@ describe('SettingsScopeBinder.bind', () => {
+     await fiber.dispose()
+     expect(describeCall).not.toHaveBeenCalled()
    })
- 
--  it('keeps one load in flight rather than stacking reads', async () => {
--    const { controller, calls } = harness()
-+  it('publishes the newest roster when an earlier Runtime read settles late', async () => {
-+    let finishFirst: ((value: unknown) => void) | undefined
-+    const first = new Promise(resolve => { finishFirst = resolve })
-+    let calls = 0
-+    const controller = new AgentPresetSectionController({
-+      agentPresets: {
-+        list: () => {
-+          calls += 1
-+          if (calls === 1) return first
-+          return ok({
-+            presets: [{ id: 'new-runtime', trust: 'system', isDefault: true }],
-+            authorable: false,
-+            hasDocument: false,
-+          })
-+        },
-+      },
-+    } as never)
- 
--    await Promise.all([controller.load(), controller.load()])
-+    const stale = controller.load()
-+    await controller.load()
-+    finishFirst?.({
-+      rpcId: 'old',
-+      result: { ok: true, value: {
-+        presets: [{ id: 'old-runtime', trust: 'system', isDefault: true }],
-+        authorable: false,
-+        hasDocument: false,
-+      } },
-+    })
-+    await stale
- 
--    expect(calls.filter(call => call.method === 'list')).toHaveLength(1)
-+    expect(controller.store.getSnapshot().rows.map(row => row.id)).toEqual(['new-runtime'])
-   })
- 
-   it('surfaces a refusal as the page error', async () => {
-diff --git a/packages/client/ui-agent-preset/tests/settings-store.client.spec.ts b/packages/client/ui-agent-preset/tests/settings-store.client.spec.ts
-index 0a98138..f8404cf 100644
---- a/packages/client/ui-agent-preset/tests/settings-store.client.spec.ts
-+++ b/packages/client/ui-agent-preset/tests/settings-store.client.spec.ts
-@@ -193,14 +193,45 @@ describe('the agent-preset settings controller', () => {
-     expect(controller.store.getSnapshot().currentValue).toBe('standard')
-   })
- 
--  it('ignores a load while one is already in flight', async () => {
--    const writes: Recorded[] = []
--    const controller = new AgentPresetSettingsController(fakeApi(
--      [{ id: 'standard', trust: 'system', isDefault: true }], { writes }))
--
--    await Promise.all([controller.load(), controller.load()])
-+  it('publishes the newest roster when an earlier Runtime read settles late', async () => {
-+    let finishFirst: ((value: unknown) => void) | undefined
-+    const first = new Promise(resolve => { finishFirst = resolve })
-+    let calls = 0
-+    const api = {
-+      agentPresets: {
-+        list: () => {
-+          calls += 1
-+          if (calls === 1) return first
-+          return Promise.resolve({
-+            rpcId: 'new',
-+            result: { ok: true as const, value: {
-+              presets: [{ id: 'new-runtime', trust: 'system' as const, isDefault: true }],
-+            } },
-+          })
-+        },
-+      },
-+      settings: {
-+        describe: () => Promise.resolve({
-+          rpcId: 'settings',
-+          result: { ok: true as const, value: { writable: true, hasDocument: true, namespaces: [] } },
-+        }),
-+      },
-+    } as unknown as IApiClient
-+    const controller = new AgentPresetSettingsController(api)
- 
--    expect(controller.store.getSnapshot().status).toBe('ready')
-+    const stale = controller.load()
-+    await controller.load()
-+    finishFirst?.({
-+      rpcId: 'old',
-+      result: { ok: true as const, value: {
-+        presets: [{ id: 'old-runtime', trust: 'system' as const, isDefault: true }],
-+      } },
-+    })
-+    await stale
 +
-+    expect(controller.store.getSnapshot()).toMatchObject({
-+      status: 'ready', currentValue: 'new-runtime',
++  it('keeps opted-in UI preferences browser-local on an authenticated control plane', async () => {
++    const values = new Map<string, string>([['dsh.settings.ui-test', '{"preference":"dark"}']])
++    vi.stubGlobal('localStorage', {
++      getItem: (key: string) => values.get(key) ?? null,
++      setItem: (key: string, value: string) => { values.set(key, value) },
 +    })
++    const describeCall = vi.fn()
++    const ctx = new Context()
++    ctx.provide('connection', {
++      api: { settings: { describe: describeCall } },
++      isLoopback: false,
++      settingsAccess: 'host',
++    } as never)
++    let scope!: SettingsScope<UiTestSettings>
++    new TestRemote(ctx)
++    await ctx.plugin(SettingsScopeBinder).await()
++    try {
++      const fiber = ctx.plugin({
++        inject: ['connection', 'remote', 'settingsScope'],
++        apply: (plugin: Context) => {
++          scope = plugin.settingsScope.bind<UiTestSettings>({ namespace: 'ui-test', browserLocal: true })
++        },
++      })
++      await fiber.await()
++      await vi.waitFor(() => {
++        expect(scope.getSnapshot()).toMatchObject({ value: { preference: 'dark' }, mode: 'browser' })
++      })
++      ctx.emit('connection/reset')
++      await Promise.resolve()
++      expect(scope.getSnapshot()).toMatchObject({ value: { preference: 'dark' }, mode: 'browser' })
++      expect(describeCall).not.toHaveBeenCalled()
++      await fiber.dispose()
++    } finally {
++      vi.unstubAllGlobals()
++      await ctx.fiber.dispose()
++    }
++  })
++
++  it('preserves Host persistence for an opted-in namespace on loopback Web', async () => {
++    const describeCall = vi.fn().mockResolvedValue(described({ preference: 'light' }, 2))
++    const ctx = new Context()
++    ctx.provide('connection', {
++      api: { settings: { describe: describeCall } },
++      isLoopback: true,
++    } as never)
++    let scope!: SettingsScope<UiTestSettings>
++    new TestRemote(ctx)
++    await ctx.plugin(SettingsScopeBinder).await()
++    const fiber = ctx.plugin({
++      inject: ['connection', 'remote', 'settingsScope'],
++      apply: (plugin: Context) => {
++        scope = plugin.settingsScope.bind<UiTestSettings>({ namespace: 'ui-test', browserLocal: true })
++      },
++    })
++    await fiber.await()
++    await vi.waitFor(() => { expect(scope.getSnapshot().mode).toBe('host') })
++    expect(describeCall).toHaveBeenCalledOnce()
++    await fiber.dispose()
++    await ctx.fiber.dispose()
++  })
+ })
+diff --git a/packages/client/ui-theme/src/client/index.ts b/packages/client/ui-theme/src/client/index.ts
+index 1e4ab30..b44f0fe 100644
+--- a/packages/client/ui-theme/src/client/index.ts
++++ b/packages/client/ui-theme/src/client/index.ts
+@@ -382,7 +382,15 @@ export const inject = ['slots', 'locale', 'connection', 'remote', 'settingsScope
+  * @param ctx - client cordis context.
+  */
+ export function apply(ctx: ClientContext): void {
+-  const host = ctx.settingsScope.bind<ThemeSettings>({ namespace: THEME_SETTINGS_NAMESPACE })
++  const host = ctx.settingsScope.bind<ThemeSettings>({
++    namespace: THEME_SETTINGS_NAMESPACE,
++    browserLocal: true,
++    decode: (section) => {
++      if (typeof section !== 'object' || section === null || Array.isArray(section)) return undefined
++      const preference = (section as { preference?: unknown }).preference
++      return isThemePreference(preference) ? { preference } : { preference: DEFAULT_PREFERENCE }
++    },
++  })
+   const theme = new ThemeRuntime(ctx, host)
+   ctx.provide('theme', theme)
+ 
+diff --git a/packages/client/ui-theme/tests/apply.client.spec.ts b/packages/client/ui-theme/tests/apply.client.spec.ts
+index fb84c98..27e5c81 100644
+--- a/packages/client/ui-theme/tests/apply.client.spec.ts
++++ b/packages/client/ui-theme/tests/apply.client.spec.ts
+@@ -2,7 +2,7 @@
+  * locale service, declaration-aware Appearance row registration, snapshot
+  * projection into the row store, and HMR collapse recovery. */
+ import { Context } from '@deepseek-ai/cordis'
+-import { describe, expect, it, vi } from 'vitest'
++import { afterEach, describe, expect, it, vi } from 'vitest'
+ import { SlotRegistry } from '@deepseek-ai/dsh-client-runtime/client'
+ import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
+ import { TestRemote, usePinnedBrowserLanguages } from '@deepseek-ai/dsh-client-test-runtime'
+@@ -16,6 +16,7 @@ import type { createAppearanceRowStore } from '../src/client/settings-store.ts'
+ // The service reads its initial locale from the browser; these specs assert
+ // the shipped Chinese copy, so they state the browser they assume.
+ usePinnedBrowserLanguages('zh-CN')
++afterEach(() => { vi.unstubAllGlobals() })
+ 
+ const SLOT = 'settings.general.item'
+ 
+@@ -125,7 +126,7 @@ describe('ui-theme apply', () => {
+     await vi.waitFor(() => { expect(b.mutate).toHaveBeenCalledTimes(2) })
    })
  
-   it('reads an Error\'s message and stringifies anything else', () => {
+-  it('loads Host settings at boot, refreshes its namespace, and keeps remote browsers process-local', async () => {
++  it('loads Host settings at boot, refreshes its namespace, and keeps remote UI preferences browser-local', async () => {
+     const b = await bench()
+     b.setHostPreference('dark')
+     declareItems(b.slots)
+@@ -141,12 +142,23 @@ describe('ui-theme apply', () => {
+     b.ctx.emit('connection/reset')
+     await vi.waitFor(() => { expect(theme.getTheme().preference).toBe('dark') })
+ 
++    const browserSettings = new Map<string, string>()
++    vi.stubGlobal('localStorage', {
++      getItem: (key: string) => browserSettings.get(key) ?? null,
++      setItem: (key: string, value: string) => { browserSettings.set(key, value) },
++    })
+     const remote = await bench(false)
+     declareItems(remote.slots)
+     await remote.ctx.plugin({ inject: [...inject], apply }).await()
+     const remoteTheme = remote.ctx.get('theme') as ThemeRuntime
+     remoteTheme.setTheme('dark')
+     await Promise.resolve()
++    expect(JSON.parse(browserSettings.get(`dsh.settings.${THEME_SETTINGS_NAMESPACE}`) ?? '')).toEqual({
++      preference: 'dark',
++    })
++    remote.ctx.emit('connection/reset')
++    await Promise.resolve()
++    expect(remoteTheme.getTheme().preference).toBe('dark')
+     expect(remote.describe).not.toHaveBeenCalled()
+     expect(remote.mutate).not.toHaveBeenCalled()
+   })

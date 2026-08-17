@@ -70,7 +70,7 @@ export function HubSettingsTarget({ t, refreshNodeSettings = () => undefined }: 
 
   return (
     <div className={css.settingsTarget}>
-      <span>{t('settingsTarget')}</span>
+      <span className={css.settingsTargetLabel}>{t('settingsTarget')}</span>
       <Menu
         open={open}
         items={items}

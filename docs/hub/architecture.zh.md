@@ -44,6 +44,19 @@ Hub 客户端会占用 Workspace picker 前面的可选官方 `conversation.hero
 
 Hub 设置使用同源 REST，控制面事件接口可用 SSE；官方可重建事件通道和 Host 通道使用同源 WebSocket。Hub 每 20 秒向浏览器事件与应急终端 Socket 发送协议 Ping，使空闲连接能够穿过有界的反向代理超时；不再响应的对端会被终止并重连。经过认证的 Hub 文档会显式允许远程使用 Host 持久设置，但不会把公网 Origin 判定为 Loopback，桌面原生动作仍只限回环。浏览器重连后会重新加载节点权威基线。专用同源 WebSocket 承载交互式应急终端输入和输出。
 
+## 设置所有权与切换
+
+设置不是一份由 Hub 统一复制的 JSON。每项设置按权威所有者分流：
+
+| 类别 | 权威位置 | 切换行为 |
+|---|---|---|
+| 权限、模型、默认 Agent、发送行为、可配置 DSH 插件 | 当前 DSH Runtime | 通过编码后的节点／Runtime 地址调用 Host API |
+| 语言、外观 | Hub 浏览器 Origin 的本地 Storage | 不发送到节点；Storage 被拒绝时退化为标签页内存 |
+| 节点注册、吊销、传输健康 | Hub SQLite | 全局，不随 Runtime 切换 |
+| 插件包清单、更新历史、回退与快照 | “节点插件”页选定 Runtime 对应的 Node Agent 状态 | 每次切换重新读取，不由 Hub 缓存制品或快照 |
+
+切换设置 Runtime 会先原地更新 URL 所有权，再触发 Schema SettingsScope、直接 Host 控制器和官方插件清单的同一 `connection/reset` 边界。每个异步读取都绑定自己的目标代次；切换前发出的响应即使最后到达，也不能更新界面或参与后续写入。浏览器回归门禁在真实官方组合和 390px 视口中验证选择器可见、设置页不关闭、Document 不重载，并记录切换完成耗时。
+
 ## 节点传输
 
 每个 Node Agent 建立一条出站 WSS 连接。应用认证组合使用 Cloudflare Access Service Identity、首次使用的注册授权、固定的 Hub Ed25519 公钥、持久节点 Ed25519 密钥和新的签名挑战。替代连接建立时，连接代际会隔离旧 Socket。

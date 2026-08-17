@@ -22,8 +22,8 @@ window.__ModuleLoader__.load({
 			return n;
 		}
 		//#endregion
-		//#region \0dsh-css:/home/wuyang/Code/deepcode/dsh-hub/packages/client/ui-theme/src/client/AppearanceRow.module.css.mjs
-		const css = "._1fppea_group{border-bottom:1px solid var(--dsw-alias-border-l2);flex-direction:column;gap:8px;padding:16px 0;display:flex}._1fppea_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}._1fppea_cubeRow{flex-wrap:wrap;align-items:stretch;gap:8px;display:flex}._1fppea_themeCube{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;background:0 0;border-radius:16px;flex-direction:column;flex:180px;justify-content:center;align-items:center;gap:4px;padding:20px 32px;font-size:14px;line-height:22px;display:flex}._1fppea_themeCube:hover:not(._1fppea_selected){background:var(--dsw-alias-interactive-bg-hover)}._1fppea_selected{background:var(--dsw-alias-bg-module-platform);border-color:var(--dsw-static-neutral-bluish-400)}";
+		//#region \0dsh-css:/tmp/dsh-hub-completion-audit-20260818/packages/client/ui-theme/src/client/AppearanceRow.module.css.mjs
+		const css = ".GlUAra_group{border-bottom:1px solid var(--dsw-alias-border-l2);flex-direction:column;gap:8px;padding:16px 0;display:flex}.GlUAra_title{color:var(--dsw-alias-label-primary);font-size:14px;font-weight:400;line-height:22px}.GlUAra_cubeRow{flex-wrap:wrap;align-items:stretch;gap:8px;display:flex}.GlUAra_themeCube{box-sizing:border-box;border:1px solid var(--dsw-alias-border-l2);font:inherit;color:var(--dsw-alias-label-primary);cursor:pointer;background:0 0;border-radius:16px;flex-direction:column;flex:180px;justify-content:center;align-items:center;gap:4px;padding:20px 32px;font-size:14px;line-height:22px;display:flex}.GlUAra_themeCube:hover:not(.GlUAra_selected){background:var(--dsw-alias-interactive-bg-hover)}.GlUAra_selected{background:var(--dsw-alias-bg-module-platform);border-color:var(--dsw-static-neutral-bluish-400)}";
 		const tagId = "@deepseek-ai/dsh-client-ui-theme/AppearanceRow.module.css";
 		if (typeof document !== "undefined" && document.querySelector("style[data-plugin-css=" + JSON.stringify(tagId) + "]") === null) {
 			const tag = document.createElement("style");
@@ -33,11 +33,11 @@ window.__ModuleLoader__.load({
 			document.head.appendChild(tag);
 		}
 		var AppearanceRow_module_css_default = {
-			"title": "_1fppea_title",
-			"group": "_1fppea_group",
-			"themeCube": "_1fppea_themeCube",
-			"selected": "_1fppea_selected",
-			"cubeRow": "_1fppea_cubeRow"
+			"title": "GlUAra_title",
+			"group": "GlUAra_group",
+			"cubeRow": "GlUAra_cubeRow",
+			"themeCube": "GlUAra_themeCube",
+			"selected": "GlUAra_selected"
 		};
 		//#endregion
 		//#region lib/types/client/AppearanceRow.js
@@ -1272,7 +1272,15 @@ window.__ModuleLoader__.load({
 		* @param ctx - client cordis context.
 		*/
 		function apply(ctx) {
-			const theme = new ThemeRuntime(ctx, ctx.settingsScope.bind({ namespace: THEME_SETTINGS_NAMESPACE }));
+			const theme = new ThemeRuntime(ctx, ctx.settingsScope.bind({
+				namespace: THEME_SETTINGS_NAMESPACE,
+				browserLocal: true,
+				decode: (section) => {
+					if (typeof section !== "object" || section === null || Array.isArray(section)) return void 0;
+					const preference = section.preference;
+					return isThemePreference(preference) ? { preference } : { preference: DEFAULT_PREFERENCE };
+				}
+			}));
 			ctx.provide("theme", theme);
 			ctx.effect(() => ctx.locale.register(SETTINGS_NS, {
 				zh,

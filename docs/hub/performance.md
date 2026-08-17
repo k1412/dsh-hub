@@ -25,7 +25,7 @@ The ordinary `hub:test` suite includes two simultaneously connected signed nodes
 
 The Connector test fills all four bulk slots, submits Goal and Settings control concurrently, and requires both control results before any bulk slot is released. Browser release verification also checks the production CSP, official directory flow, desktop layout, and a 390 × 844 viewport with an overlay sidebar, bounded Runtime picker, full-screen Settings, and no horizontal overflow.
 
-The browser gate also records desktop boot, mobile boot, mobile sidebar open, and Settings open times. A local build on 2026-08-18 measured 331.58, 316.28, 77.49, and 106.32 ms respectively. Shared CI runners apply a 2.5-second order-of-magnitude regression budget to each measurement and retain the JSON artifact. These numbers cover local static assets and interaction completion only; they exclude login, node round trips, and model generation.
+The browser gate also records desktop boot, mobile boot, mobile sidebar open, Settings open, and in-place Settings Runtime switch times. The formal verification build on 2026-08-18 measured 336.26, 319.27, 82.95, 104.85, and 80.76 ms respectively. The switch check also requires Settings to remain open and the Document identity to remain unchanged. Shared CI runners apply a 2.5-second order-of-magnitude regression budget to each measurement and retain the JSON artifact. These numbers cover local static assets and interaction completion only; they exclude login, node round trips, and model generation.
 
 ## Known-interaction regression matrix
 
@@ -37,7 +37,7 @@ Formal releases pin previously observed failures to executable gates by product 
 | New session chooses a node and browses that node's directories | Hub Runtime picker component test plus official directory bundle and CSP browser tests |
 | Dialogs close and submit; conversations scroll; mobile has no horizontal overflow | Pinned official Web snapshot plus 390 × 844 geometry and interaction-timing gates |
 | Question answers and Goal pause/clear do not become 502s or remain pending forever | Signed two-node forwarding, interaction RPC ownership, failure-envelope conversion, and timeout-monitor tests |
-| Settings switch without a page reload or publishing a late response from the previous node | In-place URL switch, all-SettingsScope refresh, direct-controller generations, and all-carrier injection tests |
+| Settings switch without a page reload or publishing a late response from the previous node | Document identity, Settings visibility, and timing in the real 390px composition; in-place URL switch; all-SettingsScope refresh; plugin-inventory reload; and direct-controller generations |
 | One plugin registry 404 does not break the inventory | Mixed registry, external, and per-item-unavailable Node Agent and UI tests |
 | Cloudflare HTML during enrollment does not surface as a JSON parse error | Bootstrap content-type, HTML interception diagnosis, and sensitive-body non-echo tests |
 | One stalled, disconnected, or recovering node does not affect another | Simultaneous two-node, interactive reserve, independent journal, reconnect, and slow-fleet-budget tests |
@@ -57,16 +57,16 @@ pnpm run performance
 
 ## Reproducible control-plane benchmark
 
-`pnpm run performance` starts the real Hub HTTP server, WAL SQLite, capability state, and minimal indexes for eight Runtimes. Node results wake waiters through `command.result` on the next event-loop turn. It makes no model call, performs no Internet access, and does not traverse real signed WSS, so it measures **Hub HTTP, routing, SQLite, event waiting, and fleet-merge overhead**, not phone-to-NAS end-to-end latency.
+`pnpm run performance` starts the real Hub HTTP server, WAL SQLite, capability state, and minimal indexes for eight Runtimes. Node results wake waiters through `command.result` on the next event-loop turn. Each scenario runs three rounds by default; release judgment uses the round with the median p95 while retaining every round p95 in JSON. This preserves shared-runner jitter evidence without letting one scheduler pause masquerade as a sustained regression. It makes no model call, performs no Internet access, and does not traverse real signed WSS, so it measures **Hub HTTP, routing, SQLite, event waiting, and fleet-merge overhead**, not phone-to-NAS end-to-end latency.
 
 One clean run on 2026-08-18 using a Linux x64 development host and Node 22.22.1 produced:
 
 | Scenario | Samples / concurrency | p50 | p95 | p99 | Throughput |
 |---|---:|---:|---:|---:|---:|
-| Direct control of one selected node | 200 / 16 | 18.38 ms | 39.26 ms | 75.76 ms | 787.37/s |
-| Eight-node fleet read | 40 / 4 | 13.49 ms | 17.55 ms | 17.81 ms | 271.59/s |
+| Direct control of one selected node | 200 / 16 × 3 | 16.20 ms | 19.67 ms | 48.36 ms | 924.15/s |
+| Eight-node fleet read | 40 / 4 × 3 | 12.58 ms | 16.90 ms | 16.91 ms | 290.37/s |
 
-The run completed 572 commands and process RSS moved from 149,123,072 to 177,987,584 bytes. CI retains the complete JSON artifact even on failure and applies shared-runner regression budgets of 250 ms direct-control p95 and 400 ms fleet-read p95. These budgets detect order-of-magnitude regressions; they are not production latency promises. `DSH_HUB_BENCHMARK_*` environment variables can change node count, samples, and budgets.
+The run completed 1,612 commands and process RSS moved from 150,331,392 to 189,489,152 bytes. Direct-control round p95 values were 37.38, 19.67, and 17.81 ms; fleet rounds were 17.26, 16.90, and 16.83 ms. CI retains the complete JSON artifact even on failure and applies shared-runner regression budgets of 500 ms median-round direct-control p95 and 400 ms median-round fleet-read p95. These budgets detect sustained order-of-magnitude regressions; they are not production latency promises. `DSH_HUB_BENCHMARK_*` environment variables can change node count, samples, odd round count, and budgets.
 
 ## Observable indicators
 

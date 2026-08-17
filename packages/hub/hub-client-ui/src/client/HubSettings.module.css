@@ -200,7 +200,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .fileActions { display: flex; justify-content: flex-end; gap: 8px; }
 
 @media (max-width: 640px) {
-  .settingsTarget > span { display: none; }
+  .settingsTargetLabel { display: none; }
   .settingsTargetButton { max-width: min(60vw, 260px); height: 36px; }
   .section { gap: 12px; }
   .block,
