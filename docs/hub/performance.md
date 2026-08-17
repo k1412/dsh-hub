@@ -25,6 +25,25 @@ The ordinary `hub:test` suite includes two simultaneously connected signed nodes
 
 The Connector test fills all four bulk slots, submits Goal and Settings control concurrently, and requires both control results before any bulk slot is released. Browser release verification also checks the production CSP, official directory flow, desktop layout, and a 390 × 844 viewport with an overlay sidebar, bounded Runtime picker, full-screen Settings, and no horizontal overflow.
 
+The browser gate also records desktop boot, mobile boot, mobile sidebar open, and Settings open times. A local build on 2026-08-18 measured 331.58, 316.28, 77.49, and 106.32 ms respectively. Shared CI runners apply a 2.5-second order-of-magnitude regression budget to each measurement and retain the JSON artifact. These numbers cover local static assets and interaction completion only; they exclude login, node round trips, and model generation.
+
+## Known-interaction regression matrix
+
+Formal releases pin previously observed failures to executable gates by product behavior:
+
+| Behavior | Automated evidence |
+|---|---|
+| One fleet page combines every node, groups by folder, and attaches node labels | Multi-Runtime aggregation, identity ownership, and offline minimal-index tests |
+| New session chooses a node and browses that node's directories | Hub Runtime picker component test plus official directory bundle and CSP browser tests |
+| Dialogs close and submit; conversations scroll; mobile has no horizontal overflow | Pinned official Web snapshot plus 390 × 844 geometry and interaction-timing gates |
+| Question answers and Goal pause/clear do not become 502s or remain pending forever | Signed two-node forwarding, interaction RPC ownership, failure-envelope conversion, and timeout-monitor tests |
+| Settings switch without a page reload or publishing a late response from the previous node | In-place URL switch, all-SettingsScope refresh, direct-controller generations, and all-carrier injection tests |
+| One plugin registry 404 does not break the inventory | Mixed registry, external, and per-item-unavailable Node Agent and UI tests |
+| Cloudflare HTML during enrollment does not surface as a JSON parse error | Bootstrap content-type, HTML interception diagnosis, and sensitive-body non-echo tests |
+| One stalled, disconnected, or recovering node does not affect another | Simultaneous two-node, interactive reserve, independent journal, reconnect, and slow-fleet-budget tests |
+| Local Web, desktop, and Hub share one Runtime | Real Cordis Loader coexistence and shared ApiProxy session tests |
+| Plugin update auto-recovers and remains explicitly reversible; snapshot restore stays inside managed paths | Supervisor transaction, artifact version, idempotent snapshot, secret exclusion, and optimistic-concurrency tests |
+
 Run the deterministic checks with:
 
 ```bash

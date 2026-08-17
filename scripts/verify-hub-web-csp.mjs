@@ -3,8 +3,8 @@
 /** Verify that the assembled Hub UI boots under its production script policy. */
 
 import { createServer } from 'node:http'
-import { readFile, stat } from 'node:fs/promises'
-import { extname, resolve, sep } from 'node:path'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { dirname, extname, resolve, sep } from 'node:path'
 import { chromium } from 'playwright'
 import { HUB_CONTENT_SECURITY_POLICY } from '../packages/hub/hub-server/src/server.ts'
 
@@ -17,6 +17,19 @@ const mediaTypes = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.webmanifest': 'application/manifest+json',
+}
+const interactionBudgetMs = Number(process.env.DSH_HUB_UI_INTERACTION_BUDGET_MS ?? 2_500)
+if (!Number.isFinite(interactionBudgetMs) || interactionBudgetMs <= 0) {
+  throw new Error('DSH_HUB_UI_INTERACTION_BUDGET_MS must be a positive number')
+}
+const timings = {}
+
+function recordTiming(name, startedAt) {
+  const elapsedMs = Math.round((performance.now() - startedAt) * 100) / 100
+  timings[name] = elapsedMs
+  if (elapsedMs > interactionBudgetMs) {
+    throw new Error(`${name} exceeded the ${String(interactionBudgetMs)} ms UI regression budget: ${String(elapsedMs)} ms`)
+  }
 }
 
 const hubDocument = await readFile(resolve(staticRoot, 'index.html'), 'utf8')
@@ -94,12 +107,14 @@ try {
   const directoryFlowRequest = page.waitForRequest(request => request.url().includes(
     '/plugins/@deepseek-ai/dsh-client-ui-directory-picker-browse/client.js',
   ))
+  let startedAt = performance.now()
   await page.goto(`http://127.0.0.1:${address.port}/?nodeId=fixture-node&runtimeId=fixture-runtime`, {
     waitUntil: 'domcontentloaded',
   })
   await Promise.all([hubPluginRequest, directoryFlowRequest])
   await page.locator('#root').waitFor({ state: 'attached' })
   await page.waitForFunction(() => document.querySelector('#root')?.childElementCount !== 0)
+  recordTiming('desktopBootMs', startedAt)
   const policyErrors = await page.evaluate(() => globalThis.__hubCspViolations)
   if (pageErrors.length > 0 || policyErrors.length > 0) {
     throw new Error(`Hub Web failed under strict CSP:\n${[
@@ -112,11 +127,13 @@ try {
   const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' })
   const mobileErrors = []
   mobile.on('pageerror', error => mobileErrors.push(error.message))
+  startedAt = performance.now()
   await mobile.goto(`http://127.0.0.1:${address.port}/?nodeId=fixture-node&runtimeId=fixture-runtime`, {
     waitUntil: 'domcontentloaded',
   })
   await mobile.locator('#root').waitFor({ state: 'attached' })
   await mobile.waitForFunction(() => document.querySelector('#root')?.childElementCount !== 0)
+  recordTiming('mobileBootMs', startedAt)
 
   const frame = mobile.locator('#root > [data-slot="root"] > div').first()
   await frame.waitFor()
@@ -124,8 +141,10 @@ try {
     throw new Error('Hub Web mobile sidebar did not start in its compact state')
   }
   const tracksBefore = await frame.evaluate(element => getComputedStyle(element).gridTemplateColumns)
+  startedAt = performance.now()
   await frame.locator('button').first().click()
   await mobile.waitForFunction(() => document.querySelector('[data-mobile-sidebar-open]') !== null)
+  recordTiming('mobileSidebarOpenMs', startedAt)
   const tracksAfter = await frame.evaluate(element => getComputedStyle(element).gridTemplateColumns)
   if (tracksAfter !== tracksBefore) {
     throw new Error('Hub Web mobile sidebar reduced the conversation instead of opening as an overlay')
@@ -151,9 +170,11 @@ try {
     throw new Error(`Hub Web mobile composer geometry regressed: ${JSON.stringify({ composerBox, runtimePickerBox })}`)
   }
 
+  startedAt = performance.now()
   await mobile.locator('button[aria-haspopup="dialog"]').click()
   const settings = mobile.locator('[role="dialog"]')
   await settings.waitFor()
+  recordTiming('mobileSettingsOpenMs', startedAt)
   const mobileGeometry = await settings.evaluate((dialog) => {
     const rectangle = dialog.getBoundingClientRect()
     const navigation = dialog.querySelector('nav')
@@ -181,6 +202,20 @@ try {
   }
   await mobile.close()
   process.stdout.write('Hub Web: 390px sidebar and full-screen Settings verified\n')
+  const report = {
+    schemaVersion: 1,
+    measuredAt: new Date().toISOString(),
+    viewport: { width: 390, height: 844 },
+    interactionBudgetMs,
+    timings,
+  }
+  const reportPath = process.env.DSH_HUB_UI_BENCHMARK_JSON
+  if (reportPath !== undefined && reportPath !== '') {
+    const output = resolve(repositoryRoot, reportPath)
+    await mkdir(dirname(output), { recursive: true })
+    await writeFile(output, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 })
+  }
+  process.stdout.write(`Hub Web UI timings: ${JSON.stringify(timings)}\n`)
 } finally {
   await browser?.close()
   await new Promise(resolveClose => server.close(resolveClose))

@@ -1,7 +1,7 @@
 {
   "name": "@k1412/dsh-hub-client-ui",
   "description": "Official DSH Web settings extensions for Hub node and plugin management",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",

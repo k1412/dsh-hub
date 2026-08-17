@@ -1,6 +1,6 @@
 {
   "name": "@k1412/dsh-hub",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Self-hosted multi-node control plane for DeepSeek Harness",
   "license": "MIT",
   "private": true,
@@ -15,7 +15,7 @@
   ],
   "scripts": {
     "build": "pnpm run hub:web:build && pnpm run hub:server:build && pnpm run hub:release:pack",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run docs:check && pnpm run repo:check && pnpm run hub:web:csp:verify && pnpm run hub:server:verify && pnpm run hub:release:verify",
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run docs:check && pnpm run repo:check && pnpm run hub:web:build && pnpm run hub:web:csp:verify && pnpm run hub:server:verify && pnpm run hub:release:pack && pnpm run hub:release:verify",
     "clean": "node scripts/clean.mjs",
     "typecheck": "node scripts/run-hub-typecheck.mjs",
     "lint": "oxlint packages/hub apps/hub-web scripts",

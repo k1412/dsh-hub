@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -27,6 +28,29 @@ describe('reviewed official Web snapshot', () => {
       root,
       'third_party/official-web/dist/plugins/@k1412/dsh-hub-client-ui/client.js',
     ))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('pins the reproducible compatibility patch and every selected-target carrier', async () => {
+    const snapshot = JSON.parse(await readFile(
+      resolve(root, 'third_party/official-web/snapshot.json'), 'utf8',
+    )) as { compatibilityPatchSha256: string }
+    const patch = await readFile(resolve(root, 'third_party/official-web/hub-compat.patch'))
+    expect(createHash('sha256').update(patch).digest('hex')).toBe(snapshot.compatibilityPatchSha256)
+
+    const connection = await readFile(resolve(
+      root,
+      'third_party/official-web/dist/plugins/@deepseek-ai/dsh-client-connection/client.js',
+    ), 'utf8')
+    expect(connection).toContain('function withHubTarget(input)')
+    expect(connection).toContain('return globalThis.fetch(withHubTarget(input), init)')
+    expect(connection).toContain('const url = withHubTarget(new URL(path, this.resolveBase()))')
+    expect(connection).toContain('withHubTarget(new URL(`${channel}/${endpoint}`, resolveBase()))')
+
+    const agentPreset = await readFile(resolve(
+      root,
+      'third_party/official-web/dist/plugins/@deepseek-ai/dsh-client-ui-agent-preset/client.js',
+    ), 'utf8')
+    expect(agentPreset.match(/generation !== this\.generation/gu)?.length).toBeGreaterThanOrEqual(8)
   })
 
   it('disables Zod code generation before exposing the immutable boot graph', () => {

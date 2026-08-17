@@ -103,7 +103,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm run hub:web:build
-      - run: pnpm run hub:web:csp:verify
+      - name: Verify desktop/mobile interactions and record UI timings
+        run: DSH_HUB_UI_BENCHMARK_JSON=.artifacts/ui-performance.json pnpm run hub:web:csp:verify
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: hub-ui-performance
+          path: .artifacts/ui-performance.json
       - name: Verify Hub UI components and target switching
         run: pnpm exec vitest run packages/hub/hub-client-ui/tests apps/hub-web/tests
 

@@ -1251,3 +1251,327 @@ index 4290020..35519e3 100644
    it('subscribes before the initial read and converges to the latest queued invalidation', async () => {
      const initial = deferred<ReturnType<typeof described>>()
      const describeCall = vi.fn()
+
+diff --git a/packages/client/ui-agent-preset/src/client/section-store.ts b/packages/client/ui-agent-preset/src/client/section-store.ts
+index 0499d24..9e7976a 100644
+--- a/packages/client/ui-agent-preset/src/client/section-store.ts
++++ b/packages/client/ui-agent-preset/src/client/section-store.ts
+@@ -16,7 +16,7 @@
+ 
+ import type { IApiClient } from '@deepseek-ai/dsh-api-remotes/client'
+ import { createSnapshotStore, type SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
+-import { beginRosterRead, messageOf, writeDefaultPreset } from './settings-store.ts'
++import { messageOf, readRoster, writeDefaultPreset } from './settings-store.ts'
+ 
+ /** Ids a preset directory may be named, mirroring the host's own rule. */
+ const PRESET_ID = /^[a-z0-9][a-z0-9-]*$/
+@@ -131,6 +131,7 @@ export function draftBlocker(
+ export class AgentPresetSectionController {
+   /** Page snapshot the renderer subscribes to. */
+   readonly store: SnapshotStore<AgentPresetSectionState> = createSnapshotStore(INITIAL)
++  private generation = 0
+ 
+   constructor(
+     private readonly api: Pick<IApiClient, 'agentPresets' | 'settings'>,
+@@ -162,8 +163,15 @@ export class AgentPresetSectionController {
+    * @returns once the snapshot reflects the host.
+    */
+   async load(): Promise<void> {
+-    const roster = await beginRosterRead(this.api, this.store)
+-    if (roster === undefined) return
++    const generation = ++this.generation
++    this.set({ status: 'loading', error: null })
++    const result = await readRoster(this.api)
++    if (generation !== this.generation) return
++    if (!result.ok) {
++      this.set({ status: 'error', error: result.error })
++      return
++    }
++    const roster = result.value
+     const { presets, authorable, hasDocument } = roster
+     if (presets.length === 0) {
+       // Nothing to manage leaves nothing to keep a dialog open over.
+@@ -191,9 +199,11 @@ export class AgentPresetSectionController {
+    * @returns once the composition loaded or the failure is on the page.
+    */
+   async view(id: string): Promise<void> {
++    const generation = this.generation
+     this.set({ error: null })
+     try {
+       const response = await this.api.agentPresets.read({ agentPreset: id })
++      if (generation !== this.generation) return
+       if (!response.result.ok) {
+         this.set({ error: response.result.error.message })
+         return
+@@ -201,6 +211,7 @@ export class AgentPresetSectionController {
+       const { name, content } = response.result.value
+       this.set({ view: { id, title: name ?? id, content } })
+     } catch (error) {
++      if (generation !== this.generation) return
+       this.set({ error: messageOf(error) })
+     }
+   }
+@@ -253,6 +264,7 @@ export class AgentPresetSectionController {
+     const draft = this.store.getSnapshot().copy
+     if (draft === null || draft.saving) return
+     if (draftBlocker(draft, this.store.getSnapshot().rows) !== undefined) return
++    const generation = this.generation
+     this.patchCopy({ saving: true, error: null })
+     try {
+       const name = draft.name.trim()
+@@ -261,6 +273,7 @@ export class AgentPresetSectionController {
+         agentPreset: draft.id,
+         ...name === '' ? {} : { name },
+       })
++      if (generation !== this.generation) return
+       if (!response.result.ok) {
+         this.patchCopy({ saving: false, error: response.result.error.message })
+         return
+@@ -272,6 +285,7 @@ export class AgentPresetSectionController {
+       // else), so landing in them is the completion, not a follow-up.
+       await this.openLocation(draft.id)
+     } catch (error) {
++      if (generation !== this.generation) return
+       this.patchCopy({ saving: false, error: messageOf(error) })
+     }
+   }
+@@ -283,8 +297,10 @@ export class AgentPresetSectionController {
+    * @returns once the host answered and the page reflects it.
+    */
+   async openLocation(id: string): Promise<void> {
++    const generation = this.generation
+     try {
+       const response = await this.api.agentPresets.openDocument({ agentPreset: id })
++      if (generation !== this.generation) return
+       if (!response.result.ok) {
+         this.set({ error: response.result.error.message })
+         return
+@@ -293,6 +309,7 @@ export class AgentPresetSectionController {
+       const { path } = response.result.value
+       this.set({ revealedPaths: { ...this.store.getSnapshot().revealedPaths, [id]: path } })
+     } catch (error) {
++      if (generation !== this.generation) return
+       this.set({ error: messageOf(error) })
+     }
+   }
+@@ -316,9 +333,11 @@ export class AgentPresetSectionController {
+   async remove(): Promise<void> {
+     const { pendingDelete, deleting } = this.store.getSnapshot()
+     if (pendingDelete === null || deleting) return
++    const generation = this.generation
+     this.set({ deleting: true, error: null })
+     try {
+       const response = await this.api.agentPresets.remove({ agentPreset: pendingDelete })
++      if (generation !== this.generation) return
+       if (!response.result.ok) {
+         this.set({ deleting: false, pendingDelete: null, error: response.result.error.message })
+         return
+@@ -327,6 +346,7 @@ export class AgentPresetSectionController {
+       await this.load()
+       this.rosterChanged()
+     } catch (error) {
++      if (generation !== this.generation) return
+       this.set({ deleting: false, pendingDelete: null, error: messageOf(error) })
+     }
+   }
+@@ -338,7 +358,9 @@ export class AgentPresetSectionController {
+    * @returns once the write settled and the roster was re-read.
+    */
+   async makeDefault(id: string): Promise<void> {
++    const generation = this.generation
+     const failure = await writeDefaultPreset(this.api, id)
++    if (generation !== this.generation) return
+     if (failure !== undefined) {
+       this.set({ error: failure })
+       return
+diff --git a/packages/client/ui-agent-preset/src/client/settings-store.ts b/packages/client/ui-agent-preset/src/client/settings-store.ts
+index 4f4e26b..6f99f19 100644
+--- a/packages/client/ui-agent-preset/src/client/settings-store.ts
++++ b/packages/client/ui-agent-preset/src/client/settings-store.ts
+@@ -111,30 +111,6 @@ export async function readRoster(api: Pick<IApiClient, 'agentPresets'>): Promise
+   }
+ }
+ 
+-/**
+- * The opening move every roster-backed surface makes: refuse a read that is
+- * already in flight, mark the store loading, then read.
+- *
+- * A surface that gets `undefined` returns without touching its snapshot
+- * further — either another read owns it, or this one already wrote the
+- * failure. What differs between surfaces starts after this.
+- * @param api - the agent-preset wire face.
+- * @param store - the surface's own snapshot store.
+- * @returns the roster, or undefined when the caller should return.
+- */
+-export async function beginRosterRead<S extends { status: string; error: string | null }>(
+-  api: Pick<IApiClient, 'agentPresets'>,
+-  store: SnapshotStore<S>,
+-): Promise<RosterValue | undefined> {
+-  const before = store.getSnapshot()
+-  if (before.status === 'loading') return undefined
+-  store.set({ ...before, status: 'loading', error: null })
+-  const roster = await readRoster(api)
+-  if (roster.ok) return roster.value
+-  store.set({ ...store.getSnapshot(), status: 'error', error: roster.error })
+-  return undefined
+-}
+-
+ /**
+  * The roster entries as the pickers render them: healthy presets only.
+  *
+@@ -190,6 +166,7 @@ const INITIAL: AgentPresetSettingsState = {
+ export class AgentPresetSettingsController {
+   /** Row snapshot the renderer subscribes to. */
+   readonly store: SnapshotStore<AgentPresetSettingsState> = createSnapshotStore(INITIAL)
++  private generation = 0
+ 
+   constructor(private readonly api: IApiClient) {}
+ 
+@@ -204,8 +181,15 @@ export class AgentPresetSettingsController {
+    * @returns once the snapshot reflects the host.
+    */
+   async load(): Promise<void> {
+-    const roster = await beginRosterRead(this.api, this.store)
+-    if (roster === undefined) return
++    const generation = ++this.generation
++    this.set({ status: 'loading', error: null })
++    const result = await readRoster(this.api)
++    if (generation !== this.generation) return
++    if (!result.ok) {
++      this.set({ status: 'error', error: result.error })
++      return
++    }
++    const roster = result.value
+     const { presets } = roster
+     const [first] = presets
+     if (first === undefined) {
+@@ -218,6 +202,7 @@ export class AgentPresetSettingsController {
+       // neither method, so a refused describe leaves the row read-only rather
+       // than offering a control whose write answers `settings-not-exposed`.
+       const described = await this.api.settings.describe({})
++      if (generation !== this.generation) return
+       this.set({
+         status: 'ready',
+         error: null,
+@@ -228,6 +213,7 @@ export class AgentPresetSettingsController {
+         currentValue: presets.find(preset => preset.isDefault)?.id ?? first.id,
+       })
+     } catch (error) {
++      if (generation !== this.generation) return
+       this.set({ status: 'error', error: messageOf(error) })
+     }
+   }
+@@ -242,8 +228,10 @@ export class AgentPresetSettingsController {
+   async select(id: string): Promise<void> {
+     const before = this.store.getSnapshot()
+     if (before.status === 'saving' || id === before.currentValue) return
++    const generation = ++this.generation
+     this.set({ status: 'saving', error: null, currentValue: id })
+     const failure = await writeDefaultPreset(this.api, id)
++    if (generation !== this.generation) return
+     if (failure !== undefined) {
+       this.set({ status: 'ready', currentValue: before.currentValue, error: failure })
+       return
+diff --git a/packages/client/ui-agent-preset/tests/section-store.client.spec.ts b/packages/client/ui-agent-preset/tests/section-store.client.spec.ts
+index dc62f74..4fce621 100644
+--- a/packages/client/ui-agent-preset/tests/section-store.client.spec.ts
++++ b/packages/client/ui-agent-preset/tests/section-store.client.spec.ts
+@@ -182,12 +182,37 @@ describe('loading the roster', () => {
+     expect(controller.store.getSnapshot().status).toBe('unavailable')
+   })
+ 
+-  it('keeps one load in flight rather than stacking reads', async () => {
+-    const { controller, calls } = harness()
++  it('publishes the newest roster when an earlier Runtime read settles late', async () => {
++    let finishFirst: ((value: unknown) => void) | undefined
++    const first = new Promise(resolve => { finishFirst = resolve })
++    let calls = 0
++    const controller = new AgentPresetSectionController({
++      agentPresets: {
++        list: () => {
++          calls += 1
++          if (calls === 1) return first
++          return ok({
++            presets: [{ id: 'new-runtime', trust: 'system', isDefault: true }],
++            authorable: false,
++            hasDocument: false,
++          })
++        },
++      },
++    } as never)
+ 
+-    await Promise.all([controller.load(), controller.load()])
++    const stale = controller.load()
++    await controller.load()
++    finishFirst?.({
++      rpcId: 'old',
++      result: { ok: true, value: {
++        presets: [{ id: 'old-runtime', trust: 'system', isDefault: true }],
++        authorable: false,
++        hasDocument: false,
++      } },
++    })
++    await stale
+ 
+-    expect(calls.filter(call => call.method === 'list')).toHaveLength(1)
++    expect(controller.store.getSnapshot().rows.map(row => row.id)).toEqual(['new-runtime'])
+   })
+ 
+   it('surfaces a refusal as the page error', async () => {
+diff --git a/packages/client/ui-agent-preset/tests/settings-store.client.spec.ts b/packages/client/ui-agent-preset/tests/settings-store.client.spec.ts
+index 0a98138..f8404cf 100644
+--- a/packages/client/ui-agent-preset/tests/settings-store.client.spec.ts
++++ b/packages/client/ui-agent-preset/tests/settings-store.client.spec.ts
+@@ -193,14 +193,45 @@ describe('the agent-preset settings controller', () => {
+     expect(controller.store.getSnapshot().currentValue).toBe('standard')
+   })
+ 
+-  it('ignores a load while one is already in flight', async () => {
+-    const writes: Recorded[] = []
+-    const controller = new AgentPresetSettingsController(fakeApi(
+-      [{ id: 'standard', trust: 'system', isDefault: true }], { writes }))
+-
+-    await Promise.all([controller.load(), controller.load()])
++  it('publishes the newest roster when an earlier Runtime read settles late', async () => {
++    let finishFirst: ((value: unknown) => void) | undefined
++    const first = new Promise(resolve => { finishFirst = resolve })
++    let calls = 0
++    const api = {
++      agentPresets: {
++        list: () => {
++          calls += 1
++          if (calls === 1) return first
++          return Promise.resolve({
++            rpcId: 'new',
++            result: { ok: true as const, value: {
++              presets: [{ id: 'new-runtime', trust: 'system' as const, isDefault: true }],
++            } },
++          })
++        },
++      },
++      settings: {
++        describe: () => Promise.resolve({
++          rpcId: 'settings',
++          result: { ok: true as const, value: { writable: true, hasDocument: true, namespaces: [] } },
++        }),
++      },
++    } as unknown as IApiClient
++    const controller = new AgentPresetSettingsController(api)
+ 
+-    expect(controller.store.getSnapshot().status).toBe('ready')
++    const stale = controller.load()
++    await controller.load()
++    finishFirst?.({
++      rpcId: 'old',
++      result: { ok: true as const, value: {
++        presets: [{ id: 'old-runtime', trust: 'system' as const, isDefault: true }],
++      } },
++    })
++    await stale
++
++    expect(controller.store.getSnapshot()).toMatchObject({
++      status: 'ready', currentValue: 'new-runtime',
++    })
+   })
+ 
+   it('reads an Error\'s message and stringifies anything else', () => {
