@@ -51,6 +51,28 @@ describe('reviewed official Web snapshot', () => {
       'third_party/official-web/dist/plugins/@deepseek-ai/dsh-client-ui-agent-preset/client.js',
     ), 'utf8')
     expect(agentPreset.match(/generation !== this\.generation/gu)?.length).toBeGreaterThanOrEqual(8)
+
+    const settings = await readFile(resolve(
+      root,
+      'third_party/official-web/dist/plugins/@deepseek-ai/dsh-client-ui-settings/client.js',
+    ), 'utf8')
+    expect(settings).toContain('spec.browserLocal === true && !connection.isLoopback')
+    expect(settings).toContain('`dsh.settings.${this.spec.namespace}`')
+
+    for (const plugin of ['locale', 'ui-theme']) {
+      const browserPreference = await readFile(resolve(
+        root,
+        `third_party/official-web/dist/plugins/@deepseek-ai/dsh-client-${plugin}/client.js`,
+      ), 'utf8')
+      expect(browserPreference).toContain('browserLocal: true')
+    }
+
+    const pluginInventory = await readFile(resolve(
+      root,
+      'third_party/official-web/dist/plugins/@deepseek-ai/dsh-client-ui-settings-plugin-inventory/client.js',
+    ), 'utf8')
+    expect(pluginInventory).toContain('subscribeTarget')
+    expect(pluginInventory).toContain('ctx.on("connection/reset", listener)')
   })
 
   it('disables Zod code generation before exposing the immutable boot graph', () => {

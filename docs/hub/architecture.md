@@ -44,6 +44,19 @@ The Hub client occupies the optional official `conversation.hero.runtime` seat b
 
 Hub Settings uses same-origin REST and exposes a control-event SSE endpoint. Official reconstructible event and Host channels use same-origin WebSockets. Hub sends a protocol Ping every 20 seconds on browser event and rescue-terminal sockets so an otherwise idle connection stays active through bounded reverse-proxy timeouts; a peer that stops answering is terminated and reconnects. The authenticated Hub document explicitly enables remote Host-backed Settings without classifying its public origin as loopback; native desktop actions remain loopback-only. The browser reloads node-authoritative baselines after reconnect. A dedicated same-origin WebSocket carries interactive rescue-terminal input and output.
 
+## Settings ownership and switching
+
+Settings are not one JSON document copied into Hub. Each item is routed to its authoritative owner:
+
+| Category | Authority | Switch behavior |
+|---|---|---|
+| Permissions, models, default Agent, submission behavior, and configurable DSH plugins | Current DSH Runtime | Host API addressed by encoded node and Runtime |
+| Language and appearance | Local Storage for the Hub browser origin | Never sent to a node; falls back to tab memory when Storage is denied |
+| Node enrollment, revocation, and transport health | Hub SQLite | Global and independent of Runtime selection |
+| Package inventory, update history, rollback, and snapshots | Node Agent state for the Runtime selected in **Node plugins** | Re-read after every switch; artifacts and snapshots are not cached by Hub |
+
+A Settings Runtime switch first replaces the URL ownership in place, then sends one `connection/reset` boundary to schema SettingsScope, direct Host controllers, and official plugin inventory. Every asynchronous read is bound to its target generation, so a response issued before the switch cannot update the UI or participate in a later write even if it arrives last. The browser release gate verifies the selector is visible in the real official composition at 390px, Settings remains open, the Document is not reloaded, and switch completion time remains inside budget.
+
 ## Node transport
 
 Each Node Agent establishes one outbound WSS connection. Application authentication combines a Cloudflare Access service identity, an enrollment grant for first use, a pinned Hub Ed25519 key, a persistent node Ed25519 key, and a fresh signed challenge. Connection generations fence an older socket when a replacement connects.

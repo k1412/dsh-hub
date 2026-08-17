@@ -1,7 +1,7 @@
 {
   "name": "@k1412/dsh-hub-transport",
   "description": "Durable reliable-delivery state machine for DSH Hub WebSocket peers",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",

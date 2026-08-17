@@ -37,6 +37,8 @@ pnpm run build
 
 官方 Web 制品快照位于 `third_party/official-web`，更新时必须固定上游提交、提交可复现补丁、更新许可证说明，并通过生产 CSP、桌面和 390px 手机回归测试。不要手工修改压缩后的 JavaScript。
 
+CI 按证据边界拆分：Ubuntu/macOS 运行完整核心检查；双节点 Job 验证隔离与恢复；性能 Job 保存控制面指标；Web Job 运行真实官方组合的桌面/390px 交互；Windows Job 只保留 Windows 安装器解析、可移植协议/客户端测试和 Web 构建；文档 Job 检查双语、链接、隐私与仓库边界；容器 Job 必须实际启动只读、非 Root 镜像并验证健康检查与 Origin Secret 隔离。不要保留只重复其他平台、却不能证明平台行为的空泛 Job。
+
 ## 发布
 
 正式版本使用 `hub-v<version>` 标签。发布工作流会重复类型检查、Lint、单元与多节点测试、Web 回归、打包安装验证，并发布带 SHA-256、SBOM 和 Provenance 的制品。

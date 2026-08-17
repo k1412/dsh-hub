@@ -3,7 +3,7 @@
   "upstreamRepository": "https://github.com/deepseek-ai/deepseek-harness",
   "upstreamCommit": "47f943859bef60e4160492346772ded9b24f765a",
   "compatibilityCommit": "2c4bd8eae55ba682953b07c68d60246b97dd72a7",
-  "compatibilityPatchSha256": "0280acc0a69ed0d5edde409516049588512b4b1a0156b22e5a232493301ed093",
+  "compatibilityPatchSha256": "c53b55d369cd14d2b88da9a9ceab89088b50179956c62b9c51f8020fd14f9617",
   "entries": [
     {
       "id": "@deepseek-ai/dsh-typert-registry",

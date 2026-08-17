@@ -41,12 +41,12 @@ DSH Hub 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-har
 | 设置页／设置项 | 保存位置与作用域 | 切换方法 |
 |---|---|---|
 | 通用设置：权限、默认 Agent、发送行为 | 当前 Runtime | 设置顶部“当前 Runtime” |
-| 通用设置：语言、外观 | 当前浏览器 | 与节点无关 |
+| 通用设置：语言、外观 | 当前浏览器 Origin；Storage 不可用时退化为当前标签页 | 与节点无关 |
 | 模型、可配置插件、Agent 预设 | 当前 Runtime | 设置顶部“当前 Runtime” |
 | Hub 节点 | Hub 全局 | 无需切换节点 |
 | 节点插件、更新历史、受管范围快照 | 页面中明确选择的 Runtime | “节点插件”页的“管理目标” |
 
-切换 Runtime 不会刷新整个设置页；Hub 会同时失效官方的 Schema 设置和模型／权限／Agent 等直接 Host 控制器，并隔离旧节点晚到的响应，避免把 A 节点数据保存到 B 节点。完整操作说明见[控制台指南](docs/hub/console.zh.md)。
+切换 Runtime 不会刷新整个设置页；Hub 会同时失效官方的 Schema 设置、插件清单和模型／权限／Agent 等直接 Host 控制器，并隔离旧节点晚到的响应，避免把 A 节点数据保存到 B 节点。语言和外观不会随节点跳变。完整操作说明见[控制台指南](docs/hub/console.zh.md)。
 
 ## 插件更新、自动回退和快照
 
@@ -54,11 +54,15 @@ DSH Hub 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-har
 
 ![节点插件安全更新与一键回退](docs/assets/plugins.png)
 
+上图同时展示运行状态、来源分类、可用更新和每次更新留下的可操作回退点；切换“管理目标”会重新读取目标节点，不复用上一节点的清单。
+
 每次由 Hub 发起的更新都会核对依赖锁、下载精确版本、校验 SHA-256，并在节点本地自动保存旧 Manifest、锁文件、Cordis 配置和受管制品。安装或组合验证失败会立即自动恢复；成功后仍保留“一键回退到更新前”。外部文件、Workspace、Git 或独立 Release 安装的插件只展示状态，Hub 不会擅自改写来源。
 
 “受管范围快照”是另一层显式保护：它只包含选定的 Profile 配置、依赖或 Node Agent 配置中获准的数据目录，**不是操作系统整机镜像**；恢复前还会自动保存当前状态。插件日常更新不需要手工创建快照。
 
 ![受管范围快照与恢复](docs/assets/snapshots.png)
+
+快照页会直接说明收集范围、节点本地保存边界和恢复前保护点，不要求用户记住哈希或内部快照 ID。
 
 ## 核心设计
 

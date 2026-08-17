@@ -114,7 +114,7 @@ jobs:
         run: pnpm exec vitest run packages/hub/hub-client-ui/tests apps/hub-web/tests
 
   windows:
-    name: Hub / Windows
+    name: Hub / Windows installer and client
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -128,8 +128,6 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run typecheck
-      - run: pnpm run lint
       - name: Parse Windows node installer
         shell: pwsh
         run: |
@@ -144,6 +142,8 @@ jobs:
             $errors | ForEach-Object { Write-Error $_.Message }
             exit 1
           }
+      - name: Run portable protocol and browser-client regressions
+        run: pnpm exec vitest run packages/hub/hub-protocol/tests packages/hub/hub-capabilities/tests packages/hub/hub-client-ui/tests apps/hub-web/tests
       - run: pnpm run hub:web:build
 
   documentation:
@@ -178,6 +178,41 @@ jobs:
           file: deploy/hub/Dockerfile
           platforms: linux/amd64
           push: false
+          load: true
           tags: dsh-hub:ci
           cache-from: type=gha,scope=hub-ci
           cache-to: type=gha,mode=max,scope=hub-ci
+      - name: Start hardened image and verify health plus origin isolation
+        run: |
+          docker volume create dsh-hub-ci-state
+          docker run --detach --name dsh-hub-ci \
+            --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777 \
+            --volume dsh-hub-ci-state:/var/lib/dsh-hub \
+            --publish 127.0.0.1:18080:8080 \
+            --env DSH_HUB_OPERATOR_EMAILS=operator@example.com \
+            --env DSH_HUB_CF_TEAM_DOMAIN=example.cloudflareaccess.com \
+            --env DSH_HUB_CF_AUDIENCE=ci-audience \
+            --env DSH_HUB_ORIGIN_SECRET=ci-private-origin-secret-at-least-32-chars \
+            --env DSH_HUB_PUBLIC_ORIGIN=https://hub.example.com \
+            dsh-hub:ci
+          for attempt in $(seq 1 30); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' dsh-hub-ci)
+            if [ "$status" = healthy ]; then break; fi
+            if [ "$status" = unhealthy ]; then docker logs dsh-hub-ci; exit 1; fi
+            sleep 1
+          done
+          test "$(docker inspect --format '{{.State.Health.Status}}' dsh-hub-ci)" = healthy
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:18080/healthz)" = 404
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --header 'x-dsh-origin-secret: ci-private-origin-secret-at-least-32-chars' \
+            http://127.0.0.1:18080/healthz)" = 200
+          test "$(docker inspect --format '{{.Config.User}}' dsh-hub-ci)" = 10001:10001
+      - name: Print container diagnostics on failure
+        if: failure()
+        run: docker logs dsh-hub-ci || true
+      - name: Stop container fixture
+        if: always()
+        run: |
+          docker rm --force dsh-hub-ci || true
+          docker volume rm dsh-hub-ci-state || true

@@ -23,6 +23,12 @@ if (!Number.isFinite(interactionBudgetMs) || interactionBudgetMs <= 0) {
   throw new Error('DSH_HUB_UI_INTERACTION_BUDGET_MS must be a positive number')
 }
 const timings = {}
+const fixtureRuntimes = [
+  { nodeId: 'fixture-node', runtimeId: 'fixture-runtime', dshVersion: 'fixture', connectorVersion: 'fixture', online: true, lastSeenAt: 1,
+    capabilities: [{ name: 'dsh.web', version: '1.0.0', operations: [{ name: 'fetch' }] }] },
+  { nodeId: 'fixture-second', runtimeId: 'desktop', dshVersion: 'fixture', connectorVersion: 'fixture', online: true, lastSeenAt: 1,
+    capabilities: [{ name: 'dsh.web', version: '1.0.0', operations: [{ name: 'fetch' }] }] },
+]
 
 function recordTiming(name, startedAt) {
   const elapsedMs = Math.round((performance.now() - startedAt) * 100) / 100
@@ -55,6 +61,24 @@ const server = createServer((request, response) => {
   void (async () => {
     headers(response)
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+    if (request.method === 'GET' && url.pathname === '/hub/v1/nodes') {
+      response.statusCode = 200
+      response.setHeader('Content-Type', 'application/json; charset=utf-8')
+      response.end(JSON.stringify({
+        nodes: [
+          { nodeId: 'fixture-node', displayName: 'Fixture NAS', status: 'active', online: true, createdAt: 1, lastSeenAt: 1 },
+          { nodeId: 'fixture-second', displayName: 'Fixture Mac', status: 'active', online: true, createdAt: 1, lastSeenAt: 1 },
+        ],
+        runtimes: fixtureRuntimes,
+      }))
+      return
+    }
+    if (request.method === 'GET' && url.pathname === '/hub/v1/enrollments') {
+      response.statusCode = 200
+      response.setHeader('Content-Type', 'application/json; charset=utf-8')
+      response.end('{"enrollments":[]}')
+      return
+    }
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       response.statusCode = 503
       response.setHeader('Content-Type', 'application/json; charset=utf-8')
@@ -196,6 +220,20 @@ try {
     || mobileGeometry.documentWidth > mobileGeometry.viewportWidth
   ) {
     throw new Error(`Hub Web mobile Settings geometry regressed: ${JSON.stringify(mobileGeometry)}`)
+  }
+  const settingsTarget = mobile.getByRole('button', { name: /当前 Runtime|Current Runtime/u })
+  await settingsTarget.waitFor()
+  await mobile.evaluate(() => { document.documentElement.dataset.hubCspDocument = 'settings-target-switch' })
+  startedAt = performance.now()
+  await settingsTarget.click()
+  await mobile.getByRole('menuitem', { name: 'Fixture Mac · desktop' }).click()
+  await mobile.waitForFunction(() => new URL(globalThis.location.href).searchParams.get('nodeId') === 'fixture-second')
+  recordTiming('mobileSettingsTargetSwitchMs', startedAt)
+  if (await mobile.locator('html').getAttribute('data-hub-csp-document') !== 'settings-target-switch') {
+    throw new Error('Hub Web reloaded the document while changing its Settings Runtime target')
+  }
+  if (!await settings.isVisible()) {
+    throw new Error('Hub Web closed Settings while changing its Runtime target')
   }
   if (mobileErrors.length > 0) {
     throw new Error(`Hub Web mobile UI raised page errors:\n${mobileErrors.join('\n')}`)

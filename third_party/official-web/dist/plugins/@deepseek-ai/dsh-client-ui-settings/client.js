@@ -14,6 +14,17 @@ window.__ModuleLoader__.load({
 		* owns a preference); this file owns the wire behavior and the invalidation
 		* subscription, both of which are Settings-surface concerns.
 		*/
+		/** Read Storage defensively: sandboxed documents may throw on property access. */
+		function browserStorage() {
+			try {
+				const candidate = Reflect.get(globalThis, "localStorage");
+				if (typeof candidate !== "object" || candidate === null) return void 0;
+				const storage = candidate;
+				return typeof storage.getItem === "function" && typeof storage.setItem === "function" ? storage : void 0;
+			} catch (_storageUnavailable) {
+				return;
+			}
+		}
 		/**
 		* Serializes one namespace's Host reads and writes behind a snapshot store.
 		* Reads never block plugin activation; writes carry the latest known
@@ -29,22 +40,24 @@ window.__ModuleLoader__.load({
 			readGeneration = 0;
 			writeGeneration = 0;
 			disposed = false;
+			browserValue = {};
+			browserRevision = 0;
 			/**
 			* @param api - settings wire face.
 			* @param spec - namespace identity and optional narrowing decoder.
-			* @param persistence - remote browsers remain process-local because settings RPCs are loopback-only.
+			* @param persistence - Host, browser-origin, or process-local ownership.
 			*/
 			constructor(api, spec, persistence = "host") {
 				this.api = api;
 				this.spec = spec;
 				this.persistence = persistence;
 				this.store = (0, _deepseek_ai_dsh_client_runtime_client.createSnapshotStore)({
-					status: persistence === "host" ? "loading" : "unavailable",
+					status: persistence === "memory" ? "unavailable" : "loading",
 					value: void 0,
 					base: void 0,
 					user: void 0,
 					revision: void 0,
-					writable: false,
+					writable: persistence === "browser",
 					mode: persistence
 				});
 			}
@@ -66,6 +79,10 @@ window.__ModuleLoader__.load({
 			*/
 			load() {
 				const generation = ++this.readGeneration;
+				if (this.persistence === "browser") {
+					this.readBrowser(generation);
+					return Promise.resolve();
+				}
 				return this.enqueue(() => this.read(generation));
 			}
 			/**
@@ -97,6 +114,10 @@ window.__ModuleLoader__.load({
 			write(op) {
 				this.readGeneration += 1;
 				const generation = ++this.writeGeneration;
+				if (this.persistence === "browser") {
+					this.writeBrowser(op, generation);
+					return Promise.resolve();
+				}
 				return this.enqueue(async () => {
 					const revision = this.getSnapshot().revision;
 					let response;
@@ -179,6 +200,51 @@ window.__ModuleLoader__.load({
 				}
 				return failure === void 0 ? view.value : void 0;
 			}
+			/** Storage key is origin-scoped by the browser; the namespace keeps features independent. */
+			get browserStorageKey() {
+				return this.persistence === "browser" ? `dsh.settings.${this.spec.namespace}` : void 0;
+			}
+			readBrowser(generation) {
+				let value = this.browserValue;
+				try {
+					const key = this.browserStorageKey;
+					const raw = key === void 0 ? null : browserStorage()?.getItem(key) ?? null;
+					if (raw !== null) {
+						const parsed = JSON.parse(raw);
+						if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) value = { ...parsed };
+					} else value = {};
+				} catch (_storageUnavailableOrInvalid) {}
+				if (this.disposed || generation !== this.readGeneration) return;
+				this.browserValue = value;
+				this.publishBrowser(value);
+			}
+			writeBrowser(op, generation) {
+				if (this.disposed || generation !== this.writeGeneration) return;
+				const [field] = op.path;
+				if (field === void 0 || op.path.length !== 1) return;
+				const value = op.op === "set" ? {
+					...this.browserValue,
+					[field]: op.value
+				} : Object.fromEntries(Object.entries(this.browserValue).filter(([key]) => key !== field));
+				this.browserValue = value;
+				try {
+					const key = this.browserStorageKey;
+					if (key !== void 0) browserStorage()?.setItem(key, JSON.stringify(value));
+				} catch (_storageUnavailable) {}
+				this.publishBrowser(value);
+			}
+			publishBrowser(value) {
+				const decoded = this.spec.decode === void 0 ? value : this.spec.decode(value);
+				this.browserRevision += 1;
+				this.store.update((draft) => {
+					draft.status = decoded === void 0 ? "unavailable" : "ready";
+					draft.value = decoded;
+					draft.base = void 0;
+					draft.user = value;
+					draft.revision = this.browserRevision;
+					draft.writable = true;
+				});
+			}
 		};
 		/**
 		* The settings domain's base service. Features that own a preference reach the
@@ -208,7 +274,8 @@ window.__ModuleLoader__.load({
 			bind(spec) {
 				const ctx = this.ctx;
 				const connection = ctx.get("connection");
-				const controller = new SettingsScopeController(connection.api, spec, connection.settingsAccess ?? (connection.isLoopback ? "host" : "memory"));
+				const persistence = spec.browserLocal === true && !connection.isLoopback ? "browser" : connection.settingsAccess ?? (connection.isLoopback ? "host" : "memory");
+				const controller = new SettingsScopeController(connection.api, spec, persistence);
 				this.controllers.add(controller);
 				ctx.effect(() => {
 					const refresh = (namespace) => {
@@ -218,6 +285,16 @@ window.__ModuleLoader__.load({
 					const disposers = [ctx.get("remote").$on("settings/document-updated", refresh), ctx.on("connection/reset", () => {
 						refresh();
 					})];
+					const storageKey = controller.browserStorageKey;
+					if (storageKey !== void 0 && typeof globalThis.addEventListener === "function") {
+						const onStorage = (event) => {
+							if (event.key === storageKey) refresh();
+						};
+						globalThis.addEventListener("storage", onStorage);
+						disposers.push(() => {
+							globalThis.removeEventListener("storage", onStorage);
+						});
+					}
 					controller.load();
 					return async () => {
 						for (const dispose of disposers) dispose();
