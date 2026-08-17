@@ -24,8 +24,15 @@ import {
 import { clientRequestSchema, serverResponseSchema } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { SessionId } from '@deepseek-ai/dsh-session/types'
 
+declare module '@deepseek-ai/dsh-api-gateway/types' {
+  interface TypertGateway {
+    /** Compatibility dispatch exposed by the reviewed DSH Web/Host contract. */
+    dispatch(endpoint: string, payload: unknown, signal: AbortSignal): Promise<unknown>
+  }
+}
+
 /** Connector release sent in the authenticated local baseline. */
-export const HUB_CONNECTOR_VERSION = '0.1.1'
+export const HUB_CONNECTOR_VERSION = '0.2.0'
 
 /** Connector configuration stored in the DSH profile. */
 export interface Config {

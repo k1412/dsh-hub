@@ -20,7 +20,7 @@
 
 ## Documentation / 文档
 
-- [ ] English and Chinese documents are updated together and their pairing records are refreshed.
-- [ ] A current implemented Agent Note records every non-trivial product, architecture, test, or process decision.
+- [ ] Chinese primary documentation and its complete English mirror are updated together.
+- [ ] Reviewed Web snapshot changes pin the upstream commit and include a reproducible source patch.
 
 Issue: <!-- Fixes #NN or Related to #NN -->

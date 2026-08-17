@@ -4,6 +4,29 @@
 
 本教程使用 Docker Compose 安装一个 Hub，将其置于 Cloudflare Access 和受信任反向代理之后，并注册一个现有 DSH Profile。示例只使用通用名称和路径；环境特定的主机名、地址、Token 和邮箱地址必须保存在仓库之外。
 
+## 先选择拓扑
+
+DSH Hub 的认证模型在三种拓扑中保持一致。区别只在 Cloudflare 与 Hub Origin 之间怎样到达，不能因为使用内网或 VPN 就删除 Access、Hub 邮箱白名单或 Origin Secret。
+
+| 拓扑 | 流量路径 | 主机入站端口 | 推荐场景 |
+|---|---|---:|---|
+| 单机域名 | Cloudflare → 反向代理 → 回环 Hub | 443 | 云服务器、最少组件 |
+| Cloudflare Tunnel | Cloudflare → 出站 `cloudflared` → 本机反向代理 → 回环 Hub | 0 | NAS、家庭网络、无公网 IP |
+| 入口与 Hub 分离 | Cloudflare → VPS 反向代理 → Tailscale/WireGuard → NAS Hub | VPS 443；NAS 0 | VPS 只做入口，Hub 与数据在 NAS |
+
+Tunnel 和 Overlay Network 都只解决 Origin 可达性。Cloudflare 官方将 Tunnel 定义为无需开放入站端口的出站连接，并建议在 Self-hosted Application 上先配置 Access，再发布 Tunnel Route；本项目仍在 Hub 内验证 Application JWT 和操作员邮箱。参阅 [Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/)、[发布 Self-hosted Application](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/)和 [Tunnel Access Origin 参数](https://developers.cloudflare.com/tunnel/advanced/origin-parameters/#access-settings)。
+
+### 最小安全配置
+
+以下六项是生产基线，不是可选增强：
+
+1. 公共请求先通过 Cloudflare Access，人员 Allow Policy 只包含预期账号。
+2. Hub 配置精确的操作员邮箱白名单，并独立验证 JWT Issuer、Audience、签名与时间声明。
+3. Origin 只绑定回环、私网或 Overlay 接口；防火墙只允许受信任反向代理。
+4. 反向代理先删除客户端提交的 Origin Secret Header，再注入只保存在服务器上的随机值。
+5. 每个节点独享一个 Service Token、一套 Ed25519 身份和一个短期一次性注册码。
+6. 容器镜像固定 Digest，状态目录仅容器 UID 可写，并保留可恢复的加密备份。
+
 ## 前置条件
 
 - 一台安装 Docker Engine 和 Compose v2 的 Linux Docker 主机。
@@ -25,6 +48,42 @@ Hub 会独立验证 Access JWT。浏览器 JWT 必须携带白名单邮箱，节
 配置反向代理删除客户端提交的所有 `X-DSH-Origin-Secret` Header，并添加自己的固定随机值。转发 HTTP Upgrade，并对 SSE 禁用响应缓冲。Origin 只能通过回环或私有网络路由，其防火墙只允许代理访问。
 
 直接访问 Hub IP 和端口的请求不包含代理持有的密钥，因此只会收到 Not Found。即使防火墙或 Overlay Network 已限制可达范围，仍必须启用 Origin Secret 检查。
+
+### Nginx 示例
+
+把真实 Secret 放进仅 Root 可读的独立片段，不要直接提交到主配置：
+
+```nginx
+# /etc/nginx/snippets/dsh-hub-origin-secret.conf，chmod 600
+proxy_set_header X-DSH-Origin-Secret "replace-with-random-secret";
+```
+
+站点配置只引用该片段：
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    include /etc/nginx/snippets/dsh-hub-origin-secret.conf;
+    proxy_buffering off;
+    proxy_read_timeout 3600s;
+}
+```
+
+`proxy_set_header` 会用受保护片段中的固定值覆盖同名客户端 Header。配置审查必须确认没有另一个 `location` 绕过该片段。不同 Nginx 发行版需要自行定义 `$connection_upgrade` Map，或者使用等价的固定 Upgrade 配置。
+
+### Cloudflare Tunnel 内网模式
+
+在 Zero Trust Dashboard 创建 Tunnel，把 `hub.example.com` 的 Published Application Route 指向 `http://127.0.0.1:8443` 上的本机 Nginx/Caddy，而不是直接指向 Hub `8080`。本机反向代理负责注入 Origin Secret，再转发到回环 Hub。启用该 Route 的 **Protect with Access**，填写精确 Team Name 与 Application Audience；Hub 仍执行自己的 JWT 验证。
+
+`cloudflared`、反向代理和 Hub 可以在同一台 NAS 上，主机防火墙拒绝全部互联网入站，只允许必要的出站 DNS、HTTPS/QUIC 与制品下载。Tunnel Token 与 Origin Secret 是不同凭据，不得复用。远程管理的 Tunnel 应在 Dashboard 配置 Route；本地管理的配置必须以一个 `http_status:404` Catch-all 结束。
+
+### VPS 入口、NAS Hub 模式
+
+VPS 的反向代理通过 Tailscale 或 WireGuard 私网地址访问 NAS Hub。NAS 端口只绑定 Overlay 接口，并用主机防火墙限制到 VPS 的确切 Overlay 地址。Origin Secret 只存在于 VPS 反向代理和 NAS Hub 环境中。不要让公网 DNS 解析或 Nginx 配置暴露 NAS 的真实地址，也不要把 Tailscale ACL 当成操作员登录。
 
 ## 3. 启动 Hub
 
@@ -109,3 +168,25 @@ Node Agent 使用非默认 State Directory 或 IPC Endpoint 时，应在 DSH 进
 ```
 
 同一机器上的多个 DSH Profile 可以共享 Node Agent Socket，但每个独立运行的进程都必须使用唯一 Runtime ID 和 Profile Directory。没有匹配管理配置项的 Runtime 只公开 Connector 能力。不得让两个并发 DSH 进程指向同一个会话存储目录。
+
+## 推荐安全增强
+
+这些设置不改变产品模型，可按环境逐步增加：
+
+- Cloudflare Access 开启较短 Session Duration、强制 MFA、Instant Auth，并在设备可管理时加入 Device Posture；
+- 非回环的反向代理到 Origin 链路使用经过验证的 TLS 或 mTLS，不使用 `noTLSVerify`；
+- Hub 与节点账户使用磁盘加密，备份加密后复制到不同故障域，并定期做隔离恢复演练；
+- 限制 Hub 容器和 Node Agent 的出站目的地，同时保留 GitHub Release、npm、Cloudflare 和模型提供方所需地址；
+- 把 Access、反向代理、Hub 审计与节点服务日志送到独立日志系统，监控连续认证失败、节点撤销、连接代次频繁变化、可靠队列压力和备份过期；
+- 对节点工作区做操作系统级隔离。Hub 的“最高权限”指 Node Agent 账户的全部权限，不要求该账户拥有整台机器的管理员权限。
+
+## 上线验收清单
+
+- 隐私窗口访问域名时先进入 Cloudflare 登录，非白名单账号被拒绝；
+- 直接访问 Origin IP/端口，`/healthz`、首页、REST、SSE 和 WebSocket 均不会泄露；
+- 删除反向代理注入 Header 后公共入口失效，恢复后重新可用；
+- 两个节点使用不同 Service Token，同时在线并各自创建会话；
+- 停掉其中一个 Node Agent，另一个节点的聊天和设置仍然完成；
+- 恢复离线节点后只重放该节点自己的积压，双向队列回落到接近零；
+- 本地 Web、桌面端与 Hub 能交替继续同一会话；
+- 备份文件权限、Manifest、SQLite 完整性和一次隔离恢复均已验证。

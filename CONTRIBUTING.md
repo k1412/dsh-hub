@@ -1,59 +1,42 @@
-# Contributing
+# 参与 DSH Hub
 
-English | [中文](CONTRIBUTING.zh.md)
+中文 | [English](CONTRIBUTING.en.md)
 
-DSH Hub accepts focused issues and pull requests. The repository is a fork of DeepSeek Harness: Hub code is maintained here, while a change intended for upstream DSH should be isolated from Hub-specific work and proposed to the upstream project under its contribution policy.
+欢迎提交聚焦、可验证的 Issue 和 Pull Request。DSH Hub 是独立的社区项目：这里只维护多节点控制面；适用于所有 DeepSeek Harness 用户的改动应优先提交到上游。
 
-## Product invariants
+## 不可破坏的产品边界
 
-Contributions must preserve these boundaries:
+- Hub 是单操作员、节点账户最高权限的控制面；节点不再增加第二层交互确认。
+- Hub 不是 DSH Runtime，不提供本地执行模式，也不在 Hub 内托管 DSH 插件。
+- 节点只主动出站连接；Connector 不暴露或反向代理节点的本地 Web 端口。
+- Connector、本地 Web 和桌面端共享同一个现有 DSH Runtime 与会话存储。
+- 节点数据是事实来源；Hub 不透明镜像会话全文或节点文件。
+- 节点不能向 Hub 浏览器 Origin 注入临时 JavaScript。
 
-- Hub is a single-user, full-authority control plane. Enrolled nodes do not add a second interactive approval layer.
-- Hub is not a DSH runtime and has no local execution mode or Hub-side DSH plugin host.
-- Nodes connect outbound; Connector does not expose or proxy the DSH Web listener.
-- Connector, local Web, and desktop clients share the existing DSH runtime and session owner.
-- Node data remains authoritative; Hub stores control state and explicit artifacts, not a transparent content mirror.
-- A node never supplies executable JavaScript to the authenticated Hub browser origin.
+如果你的产品希望改变“Hub 拥有节点账户全部权限”、增加逐节点批准或在 Hub 内执行 DSH，请维护独立 Fork，不要直接改变本项目默认模型。
 
-A product that intentionally changes the full-authority contract, adds node confirmation, or runs DSH inside Hub should be maintained as a separate fork rather than submitted as a behavior change here.
+## 开发流程
 
-## Before opening a pull request
+1. 行为变更先建立或关联 Issue，从最新 `master` 创建主题分支。
+2. 一个 PR 解决一个问题；不要混入无关格式化或上游同步。
+3. 不得提交密钥、注册码、Token、私钥、私人邮箱、真实域名、IP 或目录。文档使用 `hub.example.com` 等通用示例。
+4. 用户可见行为、部署和安全边界同时更新中文主文档与完整英文镜像。
+5. PR 填写用户结果、测试证据、安全影响、兼容性影响和文档变化。
 
-Open or reference an issue for a behavioral change. Create a topic branch from current `master`, keep unrelated upstream and Hub changes in separate commits or pull requests, and do not rewrite generated or vendored material without following its owning workflow.
+仓库目前可以由维护者直接推进；有第二位贡献者后，协议、认证、完整节点权限、部署和发布工作流的变更至少需要一位非作者 Review。所有必需 CI 通过后 Squash Merge。不要为了绕开安全不变量而降低检查或自行合并争议改动。
 
-Never commit credentials, enrollment codes, Access tokens, private keys, personal identifiers, or deployment-specific hostnames and addresses. Use generic examples in public documentation and `.env.example`; keep live configuration in the deployment secret store.
+## 本地验证
 
-Every non-trivial change adds or updates an [Agent Note](.agents/notes/README.md). English and Chinese documents change together, retain identical structure and link targets, and refresh their `.i18n.yaml` record.
-
-## Validation
-
-Run the narrowest package tests while developing, then run the Hub gates before requesting review:
-
-```sh
+```bash
 pnpm install --frozen-lockfile
-pnpm run hub:typecheck
-pnpm run hub:lint
-pnpm run hub:test
-pnpm run hub:web:build
-pnpm run test:gui
-DSH_SNAPSHOT=replay pnpm run test:web
-pnpm run hub:release:pack
-pnpm run hub:release:verify
-pnpm run doc-sync
+pnpm run check
+pnpm run build
 ```
 
-Protocol, authentication, storage, plugin transaction, snapshot, terminal, or recovery changes require tests for malformed input and failure behavior in addition to the successful path. Connector changes require a real Cordis Loader composition test and must preserve local Web and desktop coexistence. Deployment changes require a Linux AMD64 container build and an origin-isolation smoke test.
+协议、认证、存储、插件事务、快照、终端和恢复变更必须覆盖非法输入与失败路径。机群路由或传输变更还必须通过真实的同时多节点集成测试：两套独立身份与 Journal 并发请求、单节点断连隔离、重连后只恢复各自积压。
 
-Fleet routing or transport scheduling changes also require a simultaneous multi-node integration test. It must use distinct signed node identities and journals, exercise concurrent owner-directed Web and control requests, prove that one stalled or disconnected node cannot block or receive another node's result, and verify owner-only backlog recovery after reconnect.
+官方 Web 制品快照位于 `third_party/official-web`，更新时必须固定上游提交、提交可复现补丁、更新许可证说明，并通过生产 CSP、桌面和 390px 手机回归测试。不要手工修改压缩后的 JavaScript。
 
-## Pull request and review
+## 发布
 
-Complete the pull request template with the issue, user-visible outcome, validation evidence, security impact, compatibility impact, and documentation changes. Keep the diff reviewable, preserve repository formatting and package boundaries, and respond to review with new commits until approval.
-
-The `Hub CI` checks must pass on Linux and macOS, Windows type-check, official Web regression, documentation, and Linux AMD64 container jobs. CODEOWNERS review is required for Hub protocol, authentication, node authority, deployment, and release workflow paths. Merge by squash after approval so `master` retains one reviewed change per pull request.
-
-This fork keeps inherited upstream Harness CI, DSH/Vendor publication, real-API E2E, documentation deployment, Sandbox, and Landlock workflows manual-only. Do not restore their PR, push, or schedule triggers merely to add checks: add a bounded Hub-owned gate to `hub-ci.yml`, or document why the fork is deliberately taking ownership of an upstream release family.
-
-## Releases
-
-Hub releases use tags of the form `hub-v<package-version>`. The release workflow verifies tests and packed installation, publishes checksum-protected Node Agent and Connector assets, and publishes a provenance-bearing Linux AMD64 image. Release tags are created only from reviewed `master` commits.
+正式版本使用 `hub-v<version>` 标签。发布工作流会重复类型检查、Lint、单元与多节点测试、Web 回归、打包安装验证，并发布带 SHA-256、SBOM 和 Provenance 的制品。

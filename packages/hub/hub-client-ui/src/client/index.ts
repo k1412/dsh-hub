@@ -14,9 +14,27 @@ export type { HubSettingsLocaleKey } from './locales.ts'
 export * from './api.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    /** Hub compatibility seat added by the reviewed Web artifact snapshot. */
+    'conversation.hero.runtime': {
+      kind: 'single'
+      scope: 'root'
+      owner: {
+        selectedWorkspaceId?: string | undefined
+        onTargetChange: () => void
+      }
+    }
+  }
   interface LocaleNamespaceMap {
     /** Hub-only Settings navigation copy. */
     'hub.settings': HubSettingsLocaleKey
+  }
+}
+
+declare module '@deepseek-ai/dsh-client-ui-settings/client' {
+  interface SettingsScopeBinder {
+    /** Refresh every target-scoped Settings controller without remounting the page. */
+    refreshAll(): void
   }
 }
 

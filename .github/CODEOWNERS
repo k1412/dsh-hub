@@ -2,5 +2,8 @@
 /packages/hub/ @k1412
 /apps/hub-web/ @k1412
 /deploy/hub/ @k1412
+/deploy/node/ @k1412
 /docs/hub/ @k1412
+/third_party/official-web/ @k1412
+/SECURITY.md @k1412
 /.github/workflows/ @k1412

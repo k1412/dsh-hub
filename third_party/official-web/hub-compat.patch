@@ -1,0 +1,1253 @@
+diff --git a/apps/web/tests/pwsh-terminal.overlay.yml b/apps/web/tests/pwsh-terminal.overlay.yml
+index 43afe77..573aa30 100644
+--- a/apps/web/tests/pwsh-terminal.overlay.yml
++++ b/apps/web/tests/pwsh-terminal.overlay.yml
+@@ -1,6 +1,7 @@
+ # The pwsh terminal-card lane swaps the shipped bash stack for the PowerShell
+ # twin: the bash executor row is disabled (patches cannot rename a row — `name`
+-# is a guard) and the pwsh executor + tool are inserted. The permission service
++# is a guard), the shipped disabled pwsh tool row is enabled, and only the
++# pwsh executor is inserted. The permission service
+ # refuses an unconfined executor by design (presets bundle a sandbox mode), so
+ # its row is disabled too — this lane renders a seeded session, never a
+ # permission decision. The seeded scenario renders the logged pwsh call/result
+@@ -13,8 +14,9 @@
+ - id: permission
+   name: '@deepseek-ai/dsh-permission-presets'
+   disabled: true
++- id: tool-pwsh
++  name: '@deepseek-ai/dsh-tool-pwsh'
++  disabled: false
+ - insert:
+     - id: pwsh-local
+       name: '@deepseek-ai/dsh-pwsh-local'
+-    - id: tool-pwsh
+-      name: '@deepseek-ai/dsh-tool-pwsh'
+diff --git a/apps/web/tests/workspace-management.e2e.ts b/apps/web/tests/workspace-management.e2e.ts
+index 4ab839c..60e67e0 100644
+--- a/apps/web/tests/workspace-management.e2e.ts
++++ b/apps/web/tests/workspace-management.e2e.ts
+@@ -107,9 +107,17 @@ describe('web e2e: workspace management (create / rename / flat view / hover aff
+     const button = row.getByRole('button', { name })
+     await expect.poll(async () => {
+       await row.hover()
+-      return await button.isVisible()
++      if (!await button.isVisible()) return false
++      try {
++        // Hover projection updates can replace the row between a visibility
++        // probe and Playwright's stability wait. Keep both operations in the
++        // retry loop and bypass only the animation stability check.
++        await button.click({ force: true, timeout: 1_000 })
++        return true
++      } catch {
++        return false
++      }
+     }, { timeout: 10_000 }).toBe(true)
+-    await button.click()
+   }
+ 
+   beforeAll(async () => {
+diff --git a/packages/client/connection/README.i18n.yaml b/packages/client/connection/README.i18n.yaml
+index 4745644..c0b438b 100644
+--- a/packages/client/connection/README.i18n.yaml
++++ b/packages/client/connection/README.i18n.yaml
+@@ -2,5 +2,5 @@
+ # side as of the last confirmed-consistent state. Both languages carry equal authority;
+ # after editing either side, bring the other along and re-record with:
+ #   pnpm run verify-translation-pairing --write packages/client/connection/README.md
+-README.md: f0a707cc5f3a962c7852f7323c727d0a39a57b10
+-README.zh.md: b529eebf9af93e36b6b92c19964678b7f5a04ea1
++README.md: d564e4fd67dbd8c42eed5fcd3101f10b178341ca
++README.zh.md: 83ca70a52c28a5b638ab6ac28a8703dab174a937
+diff --git a/packages/client/connection/README.md b/packages/client/connection/README.md
+index f0a707c..d564e4f 100644
+--- a/packages/client/connection/README.md
++++ b/packages/client/connection/README.md
+@@ -4,6 +4,8 @@ English | [中文](README.zh.md)
+ 
+ Wire consumer layer: the client plugin's apply mounts `ctx.connection` (shared api client + current-page loopback state + observable generation-scoped `hostDescription` + single-consumer stream-loop starter); the export face carries the wire contract types, the `AbstractApiClient` abstraction, and the loop's sink/config types. Each successful readiness handshake publishes the exact `host.describe` value before `onConnected`; generation loss and explicit stop clear it, so native-capability consumers never retain a disconnected answer. The browser carrier uses HTTP POST for unary and respond operations and opens one downlink-only WebSocket each for `events.mux` and `events.host`; the in-process carrier satisfies the same two-stream abstraction. The Host half owns the single `/api` route and its Fetch bridge; a registered Typert interceptor claims its Remote endpoints before the API Proxy fallback. Loopback hostname classification stays package-internal: the `/api` Host fence and WebSocket upgrades use it directly, while other client plugins consume the derived `ctx.connection.isLoopback` state. The node half's `/api` route pins the privileged method set (`host.pickDirectory`, `host.openPath`, and the whole configuration plane — `settings.describe`/`openDocument`/`update`/`replace`/`mutate` and `credentials.describe`/`set`/`unset`; reads and native actions included, since describing returns the exposed configuration, opening acts on the Host desktop, and probing an arbitrary reference reports where a credential comes from — and the agent-preset authoring plane, `agentPreset.read`/`copy`/`openDocument`/`remove`, since a composition names the plugins a session runs, so reading one is reconnaissance, and copy/remove/openDocument manage the roster and drive the host desktop (authoring is copy-only, so none of them accepts composition text or a path); `agentPreset.list` and `agentPreset.select` stay out — the roster carries only ids and trust, and choosing a preset grants nothing `session.create`'s own `agentPreset` did not, over a default that already carries bash) to loopback by passing the trust fence with an empty trust list — a declared `trustedHosts` authority reaches every other method, while these stay loopback-local until a real authentication layer exists. The platform carriers and ConnectionController loop are package-internal; apply selects and drives them. The downlink boundary is documented in the [WebSocket downlink carrier Agent Note](../../../.agents/notes/implemented/architecture/2026-08-04-websocket-downlink-carrier.md).
+ 
++`ctx.connection.settingsAccess` is deliberately independent from `isLoopback`. Loopback pages receive `host`; ordinary remote pages receive `memory`. A reviewed authenticated control-plane build may opt into Host-backed Settings with the static document marker `<meta name="dsh-settings-access" content="authenticated-control-plane" />`. The marker is not authentication and must never be added to a generic public Web build: the serving application must already authenticate and authorize every API call and route each request to its selected Host. Native path picking, opening, credential access, and other loopback-only methods continue to use `isLoopback` and are not unlocked by the marker.
++
+ ## /api browser-trust fence
+ 
+ The node half guards every entry under `/api` before bridging or upgrading (`src/api-request-trust.ts`). Every request — browser-marked or not — must present a `Host` that is a loopback authority or matches a `trustedHosts` entry: exact on `host:port` entries, any port on port-less entries, both sides compared through WHATWG normalization (DNS-rebinding defense). There is deliberately no shortcut for unmarked HTTP requests: over plain HTTP a browser attaches neither `Origin` nor Fetch-Metadata to image and navigation reads, so an unmarked request may still be a rebound browser read with a readable response, and Host is the one header rebinding cannot forge; a browser WebSocket handshake carries `Origin` and passes the same comparison. Non-browser clients pass the same fence via loopback, deployment-derived LAN IP literals, or a declared authority. When markers are present, an attached `Origin` must equal the Host authority, and an explicit `sec-fetch-site: cross-site` marker is refused. A `trustedHosts` entry that is not a bare, canonical `host[:port]` authority — one WHATWG parsing reads back exactly as written — fails the plugin load loudly: parsing would otherwise quietly authorize the hostname inside `harness.internal/path`, or broaden a dangling-colon or zero-padded port to an any-port grant. HTTP failures answer plain 403 before any RPC dispatch; upgrade failures reject the handshake before any event stream starts. Non-loopback compositions must trust their serving authorities explicitly: the Web runtime derives LAN IP literals from an all-interfaces server config, while `trustedHosts` in cordis.yml and the CLI's `--trusted-host` flag declare named authorities. `dsh web --host 0.0.0.0` is intentionally unsupported until remote access has an authentication layer. The fence is a reachability policy, not authentication; the Web carrier provides no authentication layer. Decision record: [the api browser-trust boundary Agent Note](../../../.agents/notes/implemented/architecture/2026-07-28-api-browser-trust-boundary.md).
+diff --git a/packages/client/connection/README.zh.md b/packages/client/connection/README.zh.md
+index b529eeb..83ca70a 100644
+--- a/packages/client/connection/README.zh.md
++++ b/packages/client/connection/README.zh.md
+@@ -4,6 +4,8 @@
+ 
+ 协议消费层：客户端插件的 apply 会挂载 `ctx.connection`（共享 API 客户端 + 当前页面的 loopback 状态 + 可观察且按 generation 生效的 `hostDescription` + 单消费方流循环启动器）；导出表层携带协议约定类型、`AbstractApiClient` 抽象，以及循环的 sink／配置类型。每次就绪握手成功后，都会在 `onConnected` 之前发布完整的 `host.describe` 值；generation 失效或显式 stop 会清空它，因此原生能力消费者不会保留已经断线的判断。浏览器载体以 HTTP POST 发送 unary／respond，并为 `events.mux` 与 `events.host` 各开一条只下行的 WebSocket；进程内载体满足同一双流抽象。Host half 持有唯一 `/api` route 及其 Fetch bridge；已注册的 Typert interceptor 会先认领自己的 Remote endpoint，未认领请求再回退 API Proxy。Loopback hostname 判定逻辑留在包内部：`/api` Host fence 与 WebSocket upgrade 会直接使用它，其他客户端插件则消费派生的 `ctx.connection.isLoopback` 状态。node 半侧的 `/api` 路由让特权方法集（`host.pickDirectory`、`host.openPath`，以及整个配置面——`settings.describe`/`openDocument`/`update`/`replace`/`mutate` 与 `credentials.describe`/`set`/`unset`；读取与原生操作也在内，因为 describe 会返回已暴露的配置、打开操作会作用于 Host 桌面，而探测任意引用会报出某条凭据来自何处——以及 agent（智能体） preset 的创作面 `agentPreset.read`/`copy`/`openDocument`/`remove`，因为组装指明了一个会话所运行的插件，读取它是侦察，而 copy/remove/openDocument 管理名单并驱动宿主桌面（创作只有复制一种写入，因此这些方法都不接收组装文本或路径）；`agentPreset.list` 与 `agentPreset.select` 不在其中——名单只携带 id 与信任级别，而选择一个 preset 并不比 `session.create` 自带的 `agentPreset` 多给任何能力，何况默认 preset 本就带着 bash）以空信任表过信任 fence，从而钉在回环——已声明的 `trustedHosts` 授权可达其余全部方法，而这些方法在真正的认证层出现之前仍只限回环本机。平台载体与 ConnectionController 循环属于包内部；apply 负责选择并驱动它们。下行边界见 [WebSocket 下行载体 Agent Note](../../../.agents/notes/implemented/architecture/2026-08-04-websocket-downlink-carrier.md)。
+ 
++`ctx.connection.settingsAccess` 有意与 `isLoopback` 分离。Loopback 页面取得 `host`，普通远程页面取得 `memory`；经过审查的认证控制面构建可以使用静态文档标记 `<meta name="dsh-settings-access" content="authenticated-control-plane" />` 选择 Host 持久设置。该标记本身不是认证，绝不能加入通用公网 Web 构建：提供页面的应用必须已经认证并授权每个 API 调用，并把请求路由到当前选中的 Host。路径选择与打开、凭据访问和其他仅 Loopback 方法仍依赖 `isLoopback`，不会被此标记解锁。
++
+ ## /api 浏览器信任栅栏
+ 
+ node 半侧在桥接或 upgrade 前守卫 `/api` 下的每个入口（`src/api-request-trust.ts`）。每个请求——无论是否带浏览器标记——`Host` 都必须是回环地址权威，或与某个 `trustedHosts` 条目匹配：带端口的 `host:port` 条目精确匹配，不带端口的条目匹配任意端口，两侧均经 WHATWG 归一化后比较（DNS rebinding 防御）。刻意不为无浏览器标记的 HTTP 请求开捷径：明文 HTTP 下浏览器的图片与导航读取既不带 `Origin` 也不带 Fetch-Metadata，因此无标记请求仍可能是被重绑页面发起的、响应可被读走的读取，而 Host 是重绑唯一伪造不了的请求头；WebSocket 浏览器握手会带 `Origin` 并通过同一道比较。非浏览器客户端经由回环地址、部署推导的 LAN IP 字面量或已声明的权威通过同一道栅栏。当标记存在时，如附带 `Origin`，则它必须与 Host 权威完全一致；显式的 `sec-fetch-site: cross-site` 标记一律拒绝。不是纯的、规范形 `host[:port]` 权威的 `trustedHosts` 条目——即 WHATWG 解析读回后与原文不完全一致的——会让插件加载明确报错：否则解析会悄悄授权 `harness.internal/path` 这类笔误里的 hostname，或把悬空冒号、补零端口放大成任意端口授权。HTTP 失败在任何 RPC 分发之前以纯 403 应答，upgrade 失败在启动任何事件流前拒绝握手。非回环组合必须显式信任其服务权威：Web 运行时从全接口服务器配置推导 LAN IP 字面量，cordis.yml 中的 `trustedHosts` 与 CLI（命令行界面）的 `--trusted-host` flag 则声明具名权威。`dsh web --host 0.0.0.0` 在远程访问具备认证层之前有意不受支持。这道栅栏是可达性策略，而不是认证；Web 载体不提供认证层。决策记录：[api 浏览器信任边界 Agent Note](../../../.agents/notes/implemented/architecture/2026-07-28-api-browser-trust-boundary.md)。
+diff --git a/packages/client/connection/src/client/hub-target.ts b/packages/client/connection/src/client/hub-target.ts
+new file mode 100644
+index 0000000..39a2650
+--- /dev/null
++++ b/packages/client/connection/src/client/hub-target.ts
+@@ -0,0 +1,20 @@
++/** Optional DSH Hub target carried by a tab's URL without affecting local Web deployments. */
++
++const TARGET_ID = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/
++
++/**
++ * Add the tab-local Hub target to an API or stream URL when both identifiers are present.
++ * @param input - target URL built by the ordinary Web carrier.
++ * @returns the same URL with Hub routing parameters, or unchanged outside Hub mode.
++ */
++export function withHubTarget(input: URL): URL {
++  const location = (globalThis as { location?: { search?: string } }).location
++  if (location?.search === undefined) return input
++  const source = new URLSearchParams(location.search)
++  const nodeId = source.get('nodeId')
++  const runtimeId = source.get('runtimeId')
++  if (nodeId === null || runtimeId === null || !TARGET_ID.test(nodeId) || !TARGET_ID.test(runtimeId)) return input
++  input.searchParams.set('nodeId', nodeId)
++  input.searchParams.set('runtimeId', runtimeId)
++  return input
++}
+diff --git a/packages/client/connection/src/client/index.ts b/packages/client/connection/src/client/index.ts
+index c4470b1..555cd5b 100644
+--- a/packages/client/connection/src/client/index.ts
++++ b/packages/client/connection/src/client/index.ts
+@@ -62,6 +62,13 @@ export interface ConnectionHandle {
+   readonly api: IApiClient
+   /** Whether the current page authority is loopback; non-browser contexts default to true. */
+   readonly isLoopback: boolean
++  /**
++   * Whether Host-backed Settings may cross this browser transport. An
++   * authenticated control-plane shell can opt in without impersonating
++   * loopback; native path opening and other local-only affordances continue
++   * to use `isLoopback`.
++   */
++  readonly settingsAccess?: 'host' | 'memory'
+   /** Generation-scoped Host facts, including native path-open capability. */
+   readonly hostDescription: HostDescriptionSource
+   /** Generic logical RPC channels over the same Connection transport. */
+@@ -83,6 +90,9 @@ export interface ConnectionHandle {
+  */
+ export function apply(ctx: Context): void {
+   const pageLocation = typeof location === 'undefined' ? undefined : location
++  const loopback = pageLocation === undefined || isLoopbackHostname(pageLocation.hostname)
++  const authenticatedSettings = typeof document !== 'undefined'
++    && document.querySelector('meta[name="dsh-settings-access"][content="authenticated-control-plane"]') !== null
+   const fixture = pageLocation !== undefined && new URLSearchParams(pageLocation.search).has('fixture')
+   const fixtureClient = fixture ? new FixtureApiClient() : undefined
+   const api: IApiClient = fixtureClient ?? new WebApiClient()
+@@ -103,7 +113,8 @@ export function apply(ctx: Context): void {
+   }
+   const handle: ConnectionHandle = {
+     api,
+-    isLoopback: pageLocation === undefined || isLoopbackHostname(pageLocation.hostname),
++    isLoopback: loopback,
++    settingsAccess: loopback || authenticatedSettings ? 'host' : 'memory',
+     hostDescription: {
+       getSnapshot: () => description,
+       subscribe: (listener) => {
+diff --git a/packages/client/connection/src/client/rpc.ts b/packages/client/connection/src/client/rpc.ts
+index f8bacb1..27b53a0 100644
+--- a/packages/client/connection/src/client/rpc.ts
++++ b/packages/client/connection/src/client/rpc.ts
+@@ -7,6 +7,7 @@ import {
+ } from '@deepseek-ai/dsh-host-apiproxy/api'
+ import type { ClientConnectionRpc } from '../rpc.ts'
+ import { randomUuid } from './random-uuid.ts'
++import { withHubTarget } from './hub-target.ts'
+ 
+ const INTERNAL_BASE = 'http://dsh.internal'
+ const CHANNEL_PATTERN = /^\/[A-Za-z0-9._~-]+$/
+@@ -28,7 +29,7 @@ export function createWebConnectionRpc(): ClientConnectionRpc {
+         payload,
+       }
+       const response = await globalThis.fetch(
+-        new URL(`${channel}/${endpoint}`, resolveBase()),
++        withHubTarget(new URL(`${channel}/${endpoint}`, resolveBase())),
+         {
+           method: 'POST',
+           headers: { 'content-type': 'application/json' },
+diff --git a/packages/client/connection/src/client/web-api-client.ts b/packages/client/connection/src/client/web-api-client.ts
+index a2c2d95..7873e26 100644
+--- a/packages/client/connection/src/client/web-api-client.ts
++++ b/packages/client/connection/src/client/web-api-client.ts
+@@ -5,6 +5,7 @@ import { AbstractApiClient } from './api.ts'
+ import { hostFrameSchema, muxFrameSchema } from '@deepseek-ai/dsh-host-apiproxy/api/events.schema'
+ import { serverRequestSchema } from '@deepseek-ai/dsh-host-apiproxy/api/rpc.schema'
+ import { HOST_EVENTS_PATH, MUX_EVENTS_PATH } from '../api-path.ts'
++import { withHubTarget } from './hub-target.ts'
+ 
+ type SocketItem<F> = { kind: 'frame'; envelope: RpcRequest<F> } | { kind: 'end' }
+ type Parser<F> = { parse(value: unknown): F }
+@@ -12,7 +13,7 @@ type Parser<F> = { parse(value: unknown): F }
+ /** Browser platform subclass: unary/respond use fetch; mux/host use downlink-only WebSockets. */
+ export class WebApiClient extends AbstractApiClient {
+   protected doFetch(input: URL, init?: RequestInit): Promise<Response> {
+-    return globalThis.fetch(input, init)
++    return globalThis.fetch(withHubTarget(input), init)
+   }
+ 
+   protected override openMux(
+@@ -37,7 +38,7 @@ export class WebApiClient extends AbstractApiClient {
+     frameSchema: Parser<F>,
+     onOpen?: () => void,
+   ): AsyncGenerator<RpcRequest<F>> {
+-    const url = new URL(path, this.resolveBase())
++    const url = withHubTarget(new URL(path, this.resolveBase()))
+     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+     const socket = new WebSocket(url)
+     const inbox: SocketItem<F>[] = []
+diff --git a/packages/client/connection/tests/client-apply.client.spec.ts b/packages/client/connection/tests/client-apply.client.spec.ts
+index b7f6ebe..a8bf153 100644
+--- a/packages/client/connection/tests/client-apply.client.spec.ts
++++ b/packages/client/connection/tests/client-apply.client.spec.ts
+@@ -12,9 +12,12 @@ import { WebApiClient } from '../src/client/web-api-client.ts'
+ 
+ type Win = { location?: { hostname: string; search: string; origin?: string } }
+ type WebSocketGlobal = { WebSocket?: typeof WebSocket }
++type DocumentGlobal = { document?: { querySelector(selector: string): unknown } }
+ 
+ const originalWebSocket = globalThis.WebSocket
++const originalDocument = (globalThis as DocumentGlobal).document
+ const sockets: FakeWebSocket[] = []
++let authenticatedSettingsMarker = false
+ 
+ class FakeWebSocket extends EventTarget {
+   static readonly CONNECTING = 0
+@@ -48,6 +51,9 @@ class FakeWebSocket extends EventTarget {
+ }
+ 
+ afterEach(() => {
++  authenticatedSettingsMarker = false
++  if (originalDocument === undefined) delete (globalThis as DocumentGlobal).document
++  else (globalThis as DocumentGlobal).document = originalDocument
+   delete (globalThis as Win).location
+   sockets.length = 0
+   if (originalWebSocket === undefined) delete (globalThis as WebSocketGlobal).WebSocket
+@@ -68,6 +74,7 @@ describe('connection client apply', () => {
+     const handle = await mount()
+     expect(handle.api).toBeInstanceOf(WebApiClient)
+     expect(handle.isLoopback).toBe(true)
++    expect(handle.settingsAccess).toBe('host')
+   })
+ 
+   it('selects the fixture client under ?fixture (and with no location at all stays real)', async () => {
+@@ -77,11 +84,25 @@ describe('connection client apply', () => {
+     const handle = await mount()
+     expect(handle.api).toBeInstanceOf(WebApiClient)
+     expect(handle.isLoopback).toBe(true)
++    expect(handle.settingsAccess).toBe('host')
+   })
+ 
+   it('reports non-loopback page authority through the connection handle', async () => {
+     ;(globalThis as Win).location = { hostname: '192.0.2.20', search: '' }
+-    expect((await mount()).isLoopback).toBe(false)
++    const handle = await mount()
++    expect(handle.isLoopback).toBe(false)
++    expect(handle.settingsAccess).toBe('memory')
++  })
++
++  it('allows an authenticated control-plane shell to expose Settings without claiming loopback', async () => {
++    ;(globalThis as Win).location = { hostname: 'agent.example.com', search: '' }
++    authenticatedSettingsMarker = true
++    ;(globalThis as DocumentGlobal).document = {
++      querySelector: () => authenticatedSettingsMarker ? {} : null,
++    }
++    const handle = await mount()
++    expect(handle.isLoopback).toBe(false)
++    expect(handle.settingsAccess).toBe('host')
+   })
+ 
+   it('start() hands out one loop, rejects a second consumer, and stop() aborts the streams', async () => {
+diff --git a/packages/client/connection/tests/hub-target.client.spec.ts b/packages/client/connection/tests/hub-target.client.spec.ts
+new file mode 100644
+index 0000000..9d07216
+--- /dev/null
++++ b/packages/client/connection/tests/hub-target.client.spec.ts
+@@ -0,0 +1,29 @@
++// @vitest-environment jsdom
++
++import { afterEach, describe, expect, it } from 'vitest'
++import { withHubTarget } from '../src/client/hub-target.ts'
++
++afterEach(() => { history.replaceState({}, '', '/') })
++
++describe('Hub tab target routing', () => {
++  it('adds both target ids while preserving endpoint query parameters', () => {
++    history.replaceState({}, '', '/?nodeId=nas-home&runtimeId=web.main')
++    const result = withHubTarget(new URL('https://hub.example/api/session.export?sessionId=session-1'))
++
++    expect(result.toString()).toBe(
++      'https://hub.example/api/session.export?sessionId=session-1&nodeId=nas-home&runtimeId=web.main',
++    )
++  })
++
++  it('leaves ordinary local Web URLs unchanged', () => {
++    const input = new URL('http://127.0.0.1:3080/api/host.describe')
++    expect(withHubTarget(input).toString()).toBe('http://127.0.0.1:3080/api/host.describe')
++  })
++
++  it('refuses partial or malformed targets', () => {
++    history.replaceState({}, '', '/?nodeId=nas-home')
++    expect(withHubTarget(new URL('https://hub.example/api/x')).search).toBe('')
++    history.replaceState({}, '', '/?nodeId=nas%2Fhome&runtimeId=web')
++    expect(withHubTarget(new URL('https://hub.example/api/x')).search).toBe('')
++  })
++})
+diff --git a/packages/client/connection/tsconfig.client.json b/packages/client/connection/tsconfig.client.json
+index 4d8621e..dcc0a2d 100644
+--- a/packages/client/connection/tsconfig.client.json
++++ b/packages/client/connection/tsconfig.client.json
+@@ -10,6 +10,7 @@
+     "src/client/api.ts",
+     "src/client/connection.ts",
+     "src/client/fixture.ts",
++    "src/client/hub-target.ts",
+     "src/client/index.ts",
+     "src/client/random-uuid.ts",
+     "src/client/rpc.ts",
+diff --git a/packages/client/runtime/src/client/contract/session.ts b/packages/client/runtime/src/client/contract/session.ts
+index c3ef72e..fcfcef5 100644
+--- a/packages/client/runtime/src/client/contract/session.ts
++++ b/packages/client/runtime/src/client/contract/session.ts
+@@ -72,6 +72,13 @@ export interface ISession {
+    * @returns completion; failures land in snapshot.openState/loadingOlder.
+    */
+   loadOlder(): Promise<void>
++  /**
++   * Rebuild this opened session from authoritative Host history.
++   * Feature plugins use this after an ambiguous carrier failure or a rejected
++   * compare-and-swap mutation so stale projected controls are not offered
++   * again. Cold sessions remain cold.
++   */
++  refresh(): Promise<void>
+   /**
+    * Execute one slash-command line against this session's agent — pure
+    * admission semantics (the host executor durably logs the lifecycle).
+diff --git a/packages/client/runtime/src/client/sessions/session.ts b/packages/client/runtime/src/client/sessions/session.ts
+index 3e5ec5a..850d6bf 100644
+--- a/packages/client/runtime/src/client/sessions/session.ts
++++ b/packages/client/runtime/src/client/sessions/session.ts
+@@ -437,6 +437,11 @@ export class Session implements SessionFace {
+     await this.open()
+   }
+ 
++  /** Outward, feature-safe spelling for an authoritative session rebuild. */
++  refresh(): Promise<void> {
++    return this.resync()
++  }
++
+   // ---- Subscription API (useSyncExternalStore direct wiring) ----
+ 
+   /**
+diff --git a/packages/client/runtime/tests/client-apply.client.spec.ts b/packages/client/runtime/tests/client-apply.client.spec.ts
+index 1026c55..427a1f9 100644
+--- a/packages/client/runtime/tests/client-apply.client.spec.ts
++++ b/packages/client/runtime/tests/client-apply.client.spec.ts
+@@ -31,6 +31,7 @@ async function mount(): Promise<Bench> {
+   const handle: ConnectionHandle = {
+     api,
+     isLoopback: true,
++    settingsAccess: 'host',
+     hostDescription: {
+       getSnapshot: () => undefined,
+       subscribe: () => () => {},
+diff --git a/packages/client/runtime/tests/wire-events.client.spec.ts b/packages/client/runtime/tests/wire-events.client.spec.ts
+index f6798bd..258f499 100644
+--- a/packages/client/runtime/tests/wire-events.client.spec.ts
++++ b/packages/client/runtime/tests/wire-events.client.spec.ts
+@@ -61,6 +61,7 @@ async function mount(): Promise<Bench> {
+   const handle: ConnectionHandle = {
+     api,
+     isLoopback: true,
++    settingsAccess: 'host',
+     hostDescription: {
+       getSnapshot: () => undefined,
+       subscribe: () => () => {},
+diff --git a/packages/client/ui-conversation/README.i18n.yaml b/packages/client/ui-conversation/README.i18n.yaml
+index 954ba5d..0ef25be 100644
+--- a/packages/client/ui-conversation/README.i18n.yaml
++++ b/packages/client/ui-conversation/README.i18n.yaml
+@@ -2,5 +2,5 @@
+ # side as of the last confirmed-consistent state. Both languages carry equal authority;
+ # after editing either side, bring the other along and re-record with:
+ #   pnpm run verify-translation-pairing --write packages/client/ui-conversation/README.md
+-README.md: ecf463da619662fe158511079e7773ee3c627ac8
+-README.zh.md: f8922b160cdc6feca94dea998163c25d803a5535
++README.md: f540c3745680683937224489707ea03e173e2cee
++README.zh.md: e71b29560237e18f273705e15d5525691b92c6f8
+diff --git a/packages/client/ui-conversation/README.md b/packages/client/ui-conversation/README.md
+index ecf463d..f540c37 100644
+--- a/packages/client/ui-conversation/README.md
++++ b/packages/client/ui-conversation/README.md
+@@ -6,7 +6,7 @@ Conversation domain: skeleton (header/tabs/composer/empty state), chat view (gro
+ 
+ Compaction renders as one collapsed row at the checkpoint's flow position without replacing the transcript above it. Automatic compaction uses the context-compacted title. Every completed marker with a loaded `compaction/summary` event shows the replaced-item and estimated-token counts and discloses the summary on click. Manual `/compact` starts as a running `compact` row; on successful settlement its explicit summary-event reference folds that command into the checkpoint row under the same React key. A completed checkpoint keeps the context-compaction icon at rest and replaces it with the collapsed or expanded disclosure only on hover or keyboard focus. Input rejection, no compactable history, cancellation, and failure retain the generic command row and its handler-authored text. Pairing never depends on adjacency because durable context may be injected while compaction is running. The framed checkpoint payload is model-facing and never renders; when the cited `compaction/summary` event is outside the loaded window, the checkpoint remains visible but non-expandable.
+ 
+-The resident conversation shell survives no-session and session transitions. Without a current session it locks message actions and presents the whole dashed composer card as a trigger for the root-scoped `conversation.hero.workspace` Workspace picker; the textarea remains read-only and keyboard-accessible. Selecting a Workspace connects or reuses its Host-owned blank session and opens that session without replacing the shell. The root always owns the same scrollport and Hero/composer subtree; separate strict-session header and body outlets fill their regions when the first Session arrives, so the Workspace picker, scroll body, composer seat, and textarea retain their React and DOM identity. Blank sessions render the same composer body as active sessions, while the InputHub carries drafts across Workspace switches and mirrors them into the session store. In the active phase the session header shows only the current session title and view tabs as ordinary column chrome; fork lineage remains session data and is not projected into the header. Beneath it the scrollport (`data-conversation-scroll`) holds the flowing views and the sticky composer stack (stats dock + input docks + bar). That scrollport reserves its scrollbar gutter unconditionally, and a view opting into a composer overlay leaves it a scroll container, so the input card keeps one horizontal position whether or not the transcript scrolls and whichever view tab is shown ([decision](../../../.agents/notes/implemented/bug-fix/2026-08-04-composer-tab-gutter-reservation.md)). Wheel over the textarea chains: the capped draft scrolls locally until its edge, then forwards to that host.
++The resident conversation shell survives no-session and session transitions. Without a current session it locks message actions and presents the whole dashed composer card as a trigger for the root-scoped `conversation.hero.workspace` Workspace picker; the textarea remains read-only and keyboard-accessible. An optional root-scoped `conversation.hero.runtime` seat appears immediately before it, allowing a multi-Runtime deployment to select where the next Workspace is discovered while leaving ordinary local Web unchanged. Changing that target asks the resident owner to clear the current blank-session selection before another folder is chosen. Selecting a Workspace connects or reuses its Host-owned blank session and opens that session without replacing the shell. The root always owns the same scrollport and Hero/composer subtree; separate strict-session header and body outlets fill their regions when the first Session arrives, so the Workspace picker, scroll body, composer seat, and textarea retain their React and DOM identity. Blank sessions render the same composer body as active sessions, while the InputHub carries drafts across Workspace switches and mirrors them into the session store. In the active phase the session header shows only the current session title and view tabs as ordinary column chrome; fork lineage remains session data and is not projected into the header. Beneath it the scrollport (`data-conversation-scroll`) holds the flowing views and the sticky composer stack (stats dock + input docks + bar). That scrollport reserves its scrollbar gutter unconditionally, and a view opting into a composer overlay leaves it a scroll container, so the input card keeps one horizontal position whether or not the transcript scrolls and whichever view tab is shown ([decision](../../../.agents/notes/implemented/bug-fix/2026-08-04-composer-tab-gutter-reservation.md)). Wheel over the textarea chains: the capped draft scrolls locally until its edge, then forwards to that host.
+ 
+ Another plugin can make one session's composer inert through `ctx.conversation.blocks`: it sets a block carrying its own localized reason, and the bar renders the same disabled textarea with that reason as the placeholder — the no-workspace posture, reused. The push direction is the constraint, not a preference: the plugins that know a session cannot send (ui-model-selection, when no adapter serves its route) already depend on this package, so this package cannot read them. The model seat is the one control a block leaves live — every block this contract has is cleared by choosing a model, so locking it too would leave the composer asking for the only thing it prevents. A block is an affordance only; the Host refuses a prompt it cannot route regardless of what any client disables. The no-workspace state wins when both hold, because picking a workspace is the earlier prerequisite.
+ 
+diff --git a/packages/client/ui-conversation/README.zh.md b/packages/client/ui-conversation/README.zh.md
+index f8922b1..e71b295 100644
+--- a/packages/client/ui-conversation/README.zh.md
++++ b/packages/client/ui-conversation/README.zh.md
+@@ -6,7 +6,7 @@
+ 
+ 压缩（compaction）在检查点自身的消息流位置渲染为一行折叠标记，不替换其上方的 transcript（文本记录）。自动压缩使用「上下文已压缩」标题。每个已加载对应 `compaction/summary` 事件的完成标记都会显示被替换条目数量和估算 token 数量，并可点击展开摘要。手动 `/compact` 开始时显示为运行中的 `compact` 行；成功结算后，其显式摘要事件引用会在保持同一 React key 的前提下把该命令折叠进检查点行。完成的检查点静止时保留上下文压缩（context compaction）图标，仅在悬停或键盘聚焦时将其替换为收起／展开指示图标。输入被拒绝、没有可压缩历史、取消和失败时仍使用通用命令行及处理器撰写的文本。配对绝不依赖相邻关系，因为压缩运行期间可能注入持久上下文。面向模型的带框检查点载荷绝不渲染；被引用的 `compaction/summary` 事件位于已加载窗口之外时，检查点仍然可见但不可展开。
+ 
+-常驻会话壳会跨无会话与会话状态切换而保留。没有当前会话时，它会锁定消息操作，并让整张虚线编辑器卡片成为根作用域 `conversation.hero.workspace` Workspace picker 的入口；textarea 保持只读且支持键盘操作。选择 Workspace 会连接或复用由 Host 拥有的空白会话，并在不替换会话壳的情况下打开该会话。根组件始终拥有同一个滚动容器与 Hero／编辑器子树；首个会话到达时，彼此独立的严格会话页头和主体 outlet 只填入各自区域，因此 Workspace picker、滚动主体、编辑器 seat 与 textarea 都保留原有 React 和 DOM identity。空白会话与活跃会话渲染相同的输入区主体；InputHub 则在 Workspace 切换间携带草稿，并将草稿镜像到会话 store。活跃阶段，会话标题栏作为普通列 chrome，仅显示当前会话标题和视图标签；fork 谱系仍保留为会话数据，不投影到标题栏。其下滚动容器（`data-conversation-scroll`）承载流动排版的各视图与 sticky 编辑器栈（统计 dock＋输入区 dock＋输入栏）。该滚动容器无条件预留自己的滚动条槽，选用编辑器 overlay 的视图也仍把它保留为滚动容器，因此无论对话记录是否滚动、无论展示哪个视图标签，输入卡片都保持同一个横向位置（[决策](../../../.agents/notes/implemented/bug-fix/2026-08-04-composer-tab-gutter-reservation.md)）。textarea 上的滚轮会链式处理：限高草稿先在本地滚动，到达边缘后再转交给该宿主。
++常驻会话壳会跨无会话与会话状态切换而保留。没有当前会话时，它会锁定消息操作，并让整张虚线编辑器卡片成为根作用域 `conversation.hero.workspace` Workspace picker 的入口；textarea 保持只读且支持键盘操作。它前面还有一个可选的根作用域 `conversation.hero.runtime` seat，多 Runtime 部署可在此选择下一次 Workspace 发现所在的目标，普通本地 Web 留空即可保持不变。切换目标时，该 seat 会要求常驻 owner 先清除当前空白会话选择，再让用户选择另一个文件夹。选择 Workspace 会连接或复用由 Host 拥有的空白会话，并在不替换会话壳的情况下打开该会话。根组件始终拥有同一个滚动容器与 Hero／编辑器子树；首个会话到达时，彼此独立的严格会话页头和主体 outlet 只填入各自区域，因此 Workspace picker、滚动主体、编辑器 seat 与 textarea 都保留原有 React 和 DOM identity。空白会话与活跃会话渲染相同的输入区主体；InputHub 则在 Workspace 切换间携带草稿，并将草稿镜像到会话 store。活跃阶段，会话标题栏作为普通列 chrome，仅显示当前会话标题和视图标签；fork 谱系仍保留为会话数据，不投影到标题栏。其下滚动容器（`data-conversation-scroll`）承载流动排版的各视图与 sticky 编辑器栈（统计 dock＋输入区 dock＋输入栏）。该滚动容器无条件预留自己的滚动条槽，选用编辑器 overlay 的视图也仍把它保留为滚动容器，因此无论对话记录是否滚动、无论展示哪个视图标签，输入卡片都保持同一个横向位置（[决策](../../../.agents/notes/implemented/bug-fix/2026-08-04-composer-tab-gutter-reservation.md)）。textarea 上的滚轮会链式处理：限高草稿先在本地滚动，到达边缘后再转交给该宿主。
+ 
+ 别的插件可以经 `ctx.conversation.blocks` 让某个会话的编辑器变为惰性：它设置一个携带自己本地化理由的 block，输入栏就渲染同一个禁用的 textarea，并把该理由作为 placeholder——复用无 Workspace 时的那套姿态。推送方向是约束而非偏好：知道某会话发不出消息的插件（ui-model-selection，在没有适配器服务其路由时）本就依赖本包，因此本包读不到它们。模型 seat 是 block 唯一保留可用的控件——这份约定里的每个 block 都靠选模型来解除，把它一起锁上会让编辑器索要它自己拦下的那件事。block 只是提示性设计；无论客户端禁用了什么，宿主都会拒绝一个它无法路由的提示词。两者同时成立时以无 Workspace 姿态为准，因为选 Workspace 是更靠前的前提。
+ 
+diff --git a/packages/client/ui-conversation/src/client/apply.ts b/packages/client/ui-conversation/src/client/apply.ts
+index f57caea..df1a0e2 100644
+--- a/packages/client/ui-conversation/src/client/apply.ts
++++ b/packages/client/ui-conversation/src/client/apply.ts
+@@ -206,11 +206,13 @@ export function apply(ctx: Context): void {
+       'conversation.composer.dock': { kind: 'list', scope: 'session' },
+       'conversation.input.left': { kind: 'list', scope: 'session' },
+       'conversation.input.right': { kind: 'list', scope: 'session' },
++      'conversation.hero.runtime': { kind: 'single', scope: 'root' },
+       'conversation.hero.workspace': { kind: 'single', scope: 'root' },
+       'conversation.hero.agentPreset': { kind: 'single', scope: 'root' },
+     },
+     inject: (sessionId: SessionId | undefined): ConversationInjected => ({
+       hooks: { composerBlock: sessionId === undefined ? ABSENT_BLOCK : composerBlocks.storeFor(sessionId) },
++      clearSession: () => { sessions.clear() },
+       selectWorkspace: async (workspaceId) => {
+         const nextId = await workspaces.connectWorkspace(workspaceId)
+         if (sessionId !== undefined && nextId !== sessionId) {
+diff --git a/packages/client/ui-conversation/src/client/contract/slots.ts b/packages/client/ui-conversation/src/client/contract/slots.ts
+index 2125914..d0b307d 100644
+--- a/packages/client/ui-conversation/src/client/contract/slots.ts
++++ b/packages/client/ui-conversation/src/client/contract/slots.ts
+@@ -130,6 +130,13 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
+      * zero owner changes.
+      */
+     'conversation.composer': { kind: 'chain'; scope: 'session'; owner: ComposerChainProps }
++    /**
++     * Optional deployment-target control shown before the Workspace picker on
++     * the new-session screen. A multi-Runtime shell can occupy this seat to
++     * choose where the next Workspace is discovered and connected; ordinary
++     * local Web deployments leave it empty.
++     */
++    'conversation.hero.runtime': { kind: 'single'; scope: 'root'; owner: HeroRuntimeOwnerProps }
+     /**
+      * The hero-phase Workspace picker hole: rendered by ConversationRoot
+      * while the session is blank (picking another workspace switches to that
+@@ -246,6 +253,14 @@ export interface HeroAgentPresetOwnerProps {
+   children?: never
+ }
+ 
++/** Owner share of an optional deployment-target control in the new-session hero. */
++export interface HeroRuntimeOwnerProps {
++  /** Workspace currently staged for or owning the blank session, when any. */
++  selectedWorkspaceId?: WorkspaceId | undefined
++  /** Reset the blank-session selection after the deployment target changes. */
++  onTargetChange: () => void
++}
++
+ /** Owner share of the strict session content seat. */
+ export interface ConversationSessionOwnerProps {
+   /**
+@@ -411,6 +426,8 @@ export type ChatStore = ReturnType<typeof createChatStore>
+ 
+ /** Business callbacks injected into the conversation slot. */
+ export interface ConversationInjected {
++  /** Clear the current blank-session selection before changing deployment target. */
++  clearSession: () => void
+   /**
+    * Connect the selected Workspace and open its reusable/new blank session.
+    * When a blank session is already current, carry its draft to the target.
+@@ -573,6 +590,7 @@ export type ConversationSlotProps =
+     | 'conversation.input.overlay'
+     | 'conversation.input.dock' | 'conversation.composer.dock'
+     | 'conversation.input.left' | 'conversation.input.right'
++    | 'conversation.hero.runtime'
+     | 'conversation.hero.workspace'
+     | 'conversation.hero.agentPreset'
+   >
+diff --git a/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.module.css b/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.module.css
+index 6146d42..4441c9b 100644
+--- a/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.module.css
++++ b/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.module.css
+@@ -363,3 +363,19 @@
+ .root[data-phase='settling'] .composerSeat {
+   visibility: hidden;
+ }
++
++@media (max-width: 560px) {
++  .root {
++    --dsh-composer-side-clearance: 8px;
++  }
++
++  .heroWorkspaceRow {
++    flex-wrap: wrap;
++    row-gap: 4px;
++    padding: 0 8px;
++  }
++
++  .composerHero {
++    padding-bottom: 16px;
++  }
++}
+diff --git a/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.tsx b/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.tsx
+index ef1221c..616bfd5 100644
+--- a/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.tsx
++++ b/packages/client/ui-conversation/src/client/skeleton/ConversationRoot.tsx
+@@ -14,7 +14,7 @@ export type ConversationRootProps = ConversationSlotProps
+ 
+ export function ConversationRoot({
+   sessionId, useSession, useSessions, useWorkspaces, useInput, useComposerBlock,
+-  renderSlot, renderSlotChain, selectWorkspace, t,
++  clearSession, renderSlot, renderSlotChain, selectWorkspace, t,
+ }: ConversationRootProps) {
+   const openState = useSession(s => s.openState)
+   const composerPhase = useSession(s => s.composerPhase)
+@@ -99,6 +99,14 @@ export function ConversationRoot({
+ 
+   const heroWorkspaceRow = (
+     <div className={css.heroWorkspaceRow}>
++      {renderSlot('conversation.hero.runtime', {
++        selectedWorkspaceId: pendingWorkspaceId ?? sessionWorkspace?.workspaceId,
++        onTargetChange: () => {
++          setPickerOpen(false)
++          setPendingWorkspaceId(undefined)
++          clearSession()
++        },
++      })}
+       <WorkspaceChip
+         buttonRef={pickerAnchor}
+         label={chipTitle}
+diff --git a/packages/client/ui-conversation/src/client/skeleton/HeroShell.module.css b/packages/client/ui-conversation/src/client/skeleton/HeroShell.module.css
+index 91dfb4a..a492bdf 100644
+--- a/packages/client/ui-conversation/src/client/skeleton/HeroShell.module.css
++++ b/packages/client/ui-conversation/src/client/skeleton/HeroShell.module.css
+@@ -96,6 +96,31 @@
+   }
+ }
+ 
++@media (max-width: 560px) {
++  .root {
++    padding: 0 8px;
++  }
++
++  .headline {
++    grid-template-columns: 28px auto auto;
++    column-gap: 7px;
++    font-size: 20px;
++    line-height: 26px;
++  }
++
++  .fish {
++    width: 28px;
++    height: auto;
++  }
++
++  .previewBadge {
++    margin-left: -2px;
++    padding: 0 6px;
++    font-size: 10px;
++    line-height: 16px;
++  }
++}
++
+ /* Workspace row sits 12px above the input card (figma y80 → y112). The blue
+    glow lives with the owner (ConversationRoot .heroGlow) so it can center on
+    the input card. */
+diff --git a/packages/client/ui-conversation/tests/apply-inject.client.spec.tsx b/packages/client/ui-conversation/tests/apply-inject.client.spec.tsx
+index 9cec017..39f08ac 100644
+--- a/packages/client/ui-conversation/tests/apply-inject.client.spec.tsx
++++ b/packages/client/ui-conversation/tests/apply-inject.client.spec.tsx
+@@ -243,6 +243,8 @@ describe('conversation slot inject API', () => {
+   it('routes workspace switching through the runtime owner, carrying the draft', async () => {
+     const b = await bench()
+     const resident = b.residentApi(ROOT)
++    resident.clearSession()
++    expect(b.runtime.sessions.calls).toContainEqual({ method: 'clear', args: [] })
+     // Same-session connect (the picked workspace resolves to this session):
+     // no draft movement, plain re-open.
+     b.runtime.workspaces.stub('connectWorkspace', () => Promise.resolve(ROOT))
+diff --git a/packages/client/ui-conversation/tests/chat-apply.client.spec.tsx b/packages/client/ui-conversation/tests/chat-apply.client.spec.tsx
+index c9f2ded..3690d46 100644
+--- a/packages/client/ui-conversation/tests/chat-apply.client.spec.tsx
++++ b/packages/client/ui-conversation/tests/chat-apply.client.spec.tsx
+@@ -89,8 +89,9 @@ describe('apply wiring', () => {
+     expect(details?.store).toBe(conversationSession?.store)
+     expect(chatView?.store).toBe(conversationSession?.store)
+     // The hero holes ride the conversation entry's children declaration (the
+-    // empty-state occupant is gone). Both are root-scoped: the new-session
++    // empty-state occupant is gone). All are root-scoped: the new-session
+     // screen precedes the session either would belong to.
++    expect(b.slots.spec('conversation.hero.runtime')).toEqual({ kind: 'single', scope: 'root' })
+     expect(b.slots.spec('conversation.hero.workspace')).toEqual({ kind: 'single', scope: 'root' })
+     expect(b.slots.spec('conversation.hero.agentPreset')).toEqual({ kind: 'single', scope: 'root' })
+     expect(b.slots.entries('settings.general.item').map(entry => entry.options.id)).toEqual(['composer-enter'])
+diff --git a/packages/client/ui-conversation/tests/skeleton.client.spec.tsx b/packages/client/ui-conversation/tests/skeleton.client.spec.tsx
+index acf618f..83518f6 100644
+--- a/packages/client/ui-conversation/tests/skeleton.client.spec.tsx
++++ b/packages/client/ui-conversation/tests/skeleton.client.spec.tsx
+@@ -25,7 +25,7 @@ import { HeroShell } from '../src/client/skeleton/EmptyHero.tsx'
+ import { InputBar } from '../src/client/skeleton/InputBar.tsx'
+ import type { InputBarProps } from '../src/client/skeleton/InputBar.tsx'
+ import type {
+-  ComposerBarOwnerProps,
++  ComposerBarOwnerProps, HeroRuntimeOwnerProps,
+ } from '../src/client/contract/slots.ts'
+ import type { ViewTab } from '../src/client/contract/views.ts'
+ 
+@@ -138,12 +138,14 @@ function mount(
+   /** Owner share handed to the two composer tool-row seats, per render. */
+   const seatOwners: { key: string; owner: unknown }[] = []
+   let pickerOwner: unknown
++  let runtimeOwner: HeroRuntimeOwnerProps | undefined
+   const renderSlot = ((key: string, owner: object, opts?: { only?: string }) => {
+     slotCalls.push(key)
+     if (key === 'conversation.input.model' || key === 'conversation.input.plan') {
+       seatOwners.push({ key, owner })
+     }
+     if (key === 'conversation.hero.workspace') { pickerOwner = owner; return null }
++    if (key === 'conversation.hero.runtime') { runtimeOwner = owner as HeroRuntimeOwnerProps; return null }
+     if (key === 'conversation.session.header') {
+       return (
+         <ConversationSessionHeader
+@@ -246,13 +248,16 @@ function mount(
+     inputActions,
+     renderSlot,
+     renderSlotChain,
++    clearSession: vi.fn(),
+     selectWorkspace: retargetWorkspace,
+     t,
+   }
+   const view = render(<ConversationRoot {...props} />)
+   return {
+     view, chat, sink, retargetWorkspace, session, slotCalls, seatOwners, open,
++    clearSession: props.clearSession,
+     pickerOwner: () => pickerOwner,
++    runtimeOwner: () => runtimeOwner,
+     rerender: () => { view.rerender(<ConversationRoot {...props} />) },
+   }
+ }
+@@ -483,11 +488,19 @@ describe('ConversationRoot resident composer', () => {
+     const chip = b.view.getByRole('button', { name: '选择工作区' })
+     expect((chip as HTMLButtonElement).disabled).toBe(false)
+     expect(b.slotCalls).toContain('conversation.hero.workspace')
++    expect(b.slotCalls).toContain('conversation.hero.runtime')
+     // The agent-preset chip sits in the same row, for the same reason: both
+     // choices are only open before the first message.
+     expect(b.slotCalls).toContain('conversation.hero.agentPreset')
+   })
+ 
++  it('clears the blank session before a contributed deployment-target control changes Runtime', () => {
++    const b = mount(conversationSnapshot({ composerPhase: 'blank', blank: true }))
++    act(() => { b.runtimeOwner()?.onTargetChange() })
++    expect(b.clearSession).toHaveBeenCalledOnce()
++    expect(b.runtimeOwner()?.selectedWorkspaceId).toBe(wid('one'))
++  })
++
+   it('prompt failure renders the promptError strip (ordinary failure, no transaction UI)', () => {
+     const b = mount(conversationSnapshot({
+       promptError: { op: 'send', error: { code: 'offline', message: 'Message send failed' } as never },
+diff --git a/packages/client/ui-goal/README.i18n.yaml b/packages/client/ui-goal/README.i18n.yaml
+index 0dab337..5bc486f 100644
+--- a/packages/client/ui-goal/README.i18n.yaml
++++ b/packages/client/ui-goal/README.i18n.yaml
+@@ -2,5 +2,5 @@
+ # side as of the last confirmed-consistent state. Both languages carry equal authority;
+ # after editing either side, bring the other along and re-record with:
+ #   pnpm run verify-translation-pairing --write packages/client/ui-goal/README.md
+-README.md: c79d6f5a68f1b4b40f4b57f5745feeed63a25fcd
+-README.zh.md: c2d000dd8141a989c67f2e8dc6786ed2b5067a6b
++README.md: a5270824a29501fae645e62010ae3df4dba2b472
++README.zh.md: 2b3be1f1dd8d3bf54139973b797b2b43864de58a
+diff --git a/packages/client/ui-goal/README.md b/packages/client/ui-goal/README.md
+index c79d6f5..a527082 100644
+--- a/packages/client/ui-goal/README.md
++++ b/packages/client/ui-goal/README.md
+@@ -2,7 +2,9 @@
+ 
+ English | [中文](README.zh.md)
+ 
+-Goal surface plugin, browser half: the `GoalBar` strip is the second standalone card in the `conversation.input.dock` composer-context stack (order 10, after Todo and before Queue). The live goal arrives through `useProjection('goal')` — the host-computed whole value seeded by the history tail page and updated by `session/projection` frames — so the plugin owns no domain store, refresh chain, or event listener. The slot inject face carries only the four mutation verbs (edit / pause / resume / clear through `ctx.remote.goals` — an active goal offers the pause action, a paused one resume); each reads the CAS ref from the session's current projected value at call time and surfaces the rejected Remote error inline. The strip single-flights mutations synchronously because React's pending render cannot fence same-frame clicks; after a successful clear it immediately suppresses that exact goal id while the authoritative null projection catches up. Goal creation stays on the `/goal` host command; loading, absent, completed, and successfully cleared goals render nothing.
++Goal surface plugin, browser half: the `GoalBar` strip is the second standalone card in the `conversation.input.dock` composer-context stack (order 10, after Todo and before Queue). The live goal arrives through `useProjection('goal')` — the host-computed whole value seeded by the history tail page and updated by `session/projection` frames — so the plugin owns no domain store, background refresh chain, or event listener. The slot inject face carries only the four mutation verbs (edit / pause / resume / clear through `ctx.remote.goals` — an active goal offers the pause action, a paused one resume); each reads the CAS ref from the session's current projected value at call time and surfaces the rejected Remote error inline. A rejected business result, missing projection, or thrown carrier failure schedules an authoritative session refresh, since a timed-out mutation may already have committed and a CAS rejection proves the browser is stale. Thrown failures always release pending UI state. A blocked goal shows its reason directly and keeps the objective as its tooltip.
++
++The strip single-flights mutations synchronously because React's pending render cannot fence same-frame clicks; after a successful clear it immediately suppresses that exact goal id while the authoritative null projection catches up. Goal creation stays on the `/goal` host command; loading, absent, completed, and successfully cleared goals render nothing.
+ 
+ The plugin separately projects each durable `/goal` `command/run` through its own Conversation Definition. It builds a `command-input` Chat Node before the generic command result Node and registers that Node's keyed renderer as a right-aligned 14px/22px monospace user-style bubble with the localized group name `Command input` / `命令输入` and no timestamp, copy, or branch actions. The visible non-command Node activates fresh Chat; reload reconstructs it from the run, while a history window containing only `command/done` keeps only the generic result row. This projection never creates `user/message` or a model turn.
+ 
+diff --git a/packages/client/ui-goal/README.zh.md b/packages/client/ui-goal/README.zh.md
+index c2d000d..2b3be1f 100644
+--- a/packages/client/ui-goal/README.zh.md
++++ b/packages/client/ui-goal/README.zh.md
+@@ -2,7 +2,9 @@
+ 
+ [English](README.md) | 中文
+ 
+-Goal 界面插件（浏览器端部分）：`GoalBar` 条带是 `conversation.input.dock` composer 上下文堆栈中的第二张独立卡片（order 10，位于 Todo 之后、Queue 之前）。活值经 `useProjection('goal')` 到达——host 计算的全量值由历史尾页播种、由 `session/projection` 帧更新——因此本插件不持有领域 store、不设刷新链、不挂事件监听。slot 注入面只携带四个变更动词（edit / pause / resume / clear，经 `ctx.remote.goals` 调用——active 的 goal 提供暂停动作，paused 的提供恢复）；每个动词在调用时从会话当前投影值读取 CAS ref，并将 Remote 调用的拒绝错误内联呈现。由于 React 的 pending 渲染无法拦住同一帧内的点击，横条会同步为变更建立 single-flight 防护；清除成功后，会立即抑制该 goal id 对应的目标显示，直到权威的 null 投影追上。goal 的创建仍归 `/goal` host 命令；加载中、无 goal、已完成和已成功清除的 goal 一律不渲染。
++Goal 界面插件（浏览器端部分）：`GoalBar` 条带是 `conversation.input.dock` composer 上下文堆栈中的第二张独立卡片（order 10，位于 Todo 之后、Queue 之前）。活值经 `useProjection('goal')` 到达——host 计算的全量值由历史尾页播种、由 `session/projection` 帧更新——因此本插件不持有领域 store、不设后台刷新链、不挂事件监听。slot 注入面只携带四个变更动词（edit / pause / resume / clear，经 `ctx.remote.goals` 调用——active 的 goal 提供暂停动作，paused 的提供恢复）；每个动词在调用时从会话当前投影值读取 CAS ref，并将 Remote 调用的拒绝错误内联呈现。业务拒绝、投影缺失或载体抛错都会调度一次权威会话刷新，因为超时变更可能已经提交，CAS 拒绝则证明浏览器已经陈旧。抛出的失败一定会解除 UI pending 状态。blocked goal 会直接显示阻塞原因，并把 objective 保留为提示。
++
++由于 React 的 pending 渲染无法拦住同一帧内的点击，横条会同步为变更建立 single-flight 防护；清除成功后，会立即抑制该 goal id 对应的目标显示，直到权威的 null 投影追上。goal 的创建仍归 `/goal` host 命令；加载中、无 goal、已完成和已成功清除的 goal 一律不渲染。
+ 
+ 该插件还会通过自有 Conversation Definition 投影每条持久 `/goal` `command/run`。它在通用命令结果 Node 之前构建一个 `command-input` Chat Node，并为该 Node 注册 keyed renderer；renderer 将其呈现为右对齐、使用 14px/22px 等宽字体的用户样式气泡，使用本地化分组名称 `Command input`／`命令输入`，且不含时间戳、复制或分支操作。可见的非命令 Node 会激活新 Chat；重新加载时会根据 run 重建该 Node，而仅包含 `command/done` 的历史窗口只保留通用结果行。该投影绝不会创建 `user/message` 或模型轮次。
+ 
+diff --git a/packages/client/ui-goal/src/client/GoalBar.tsx b/packages/client/ui-goal/src/client/GoalBar.tsx
+index f7a9050..55f023a 100644
+--- a/packages/client/ui-goal/src/client/GoalBar.tsx
++++ b/packages/client/ui-goal/src/client/GoalBar.tsx
+@@ -55,11 +55,21 @@ export function GoalBar({ goal, onEdit, onPause, onResume, onClear, t }: GoalBar
+     pendingRef.current = true
+     setPending(true)
+     setActionError(null)
+-    const result = await action()
+-    pendingRef.current = false
+-    setPending(false)
+-    if (!result.ok) setActionError(`${result.error.message} (${result.error.code})`)
+-    return result
++    try {
++      const result = await action()
++      if (!result.ok) setActionError(`${result.error.message} (${result.error.code})`)
++      return result
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error)
++      setActionError(`${message} (transport)`)
++      return {
++        ok: false,
++        error: { code: 'transport', message, details: {} },
++      }
++    } finally {
++      pendingRef.current = false
++      setPending(false)
++    }
+   }, [])
+ 
+   const handleEdit = useCallback(async () => {
+@@ -123,13 +133,13 @@ export function GoalBar({ goal, onEdit, onPause, onResume, onClear, t }: GoalBar
+     )
+   }
+ 
+-  const title = goal.phase === 'blocked' ? goal.blockedReason?.message : undefined
++  const blockedReason = goal.phase === 'blocked' ? goal.blockedReason?.message : undefined
+   return (
+     <div className={css.dock} data-goal-bar>
+-      <div className={css.bar} title={title}>
++      <div className={css.bar} title={blockedReason === undefined ? undefined : goal.objective}>
+         <span className={css.goalGlyph}><IconGoalOutline16 size={14} /></span>
+         <span className={css.label}>{t(PHASE_LABELS[goal.phase])}</span>
+-        <span className={css.objective}>{goal.objective}</span>
++        <span className={css.objective}>{blockedReason ?? goal.objective}</span>
+         {actionError !== null && <span className={css.error} role="alert">{actionError}</span>}
+         <div className={css.actions}>
+           {goal.phase === 'active' && (
+diff --git a/packages/client/ui-goal/src/client/index.ts b/packages/client/ui-goal/src/client/index.ts
+index bfa1a28..e5bd80f 100644
+--- a/packages/client/ui-goal/src/client/index.ts
++++ b/packages/client/ui-goal/src/client/index.ts
+@@ -69,6 +69,35 @@ export function apply(ctx: ClientContext): void {
+     error: { code: 'no-current-goal', message: 'no current goal to mutate', details: {} },
+   }
+ 
++  /**
++   * Re-read the authoritative history after a rejected mutation. A carrier
++   * failure may race a mutation that the Host already committed, while a CAS
++   * rejection proves this browser projected an obsolete revision. Either way,
++   * keeping that projection would offer the same invalid action again.
++   */
++  const reconcile = (sessionId: SessionId): void => {
++    const session = sessions.binding(sessionId)?.session
++    if (session === undefined) return
++    void session.refresh().catch((error: unknown) => {
++      console.error('[ui-goal] authoritative Goal refresh failed:', error)
++    })
++  }
++
++  /** Preserve the Remote result while scheduling convergence for every failed carrier or business outcome. */
++  const mutate = async (
++    sessionId: SessionId,
++    action: () => Promise<GoalActionResult>,
++  ): Promise<GoalActionResult> => {
++    try {
++      const result = await action()
++      if (!result.ok) reconcile(sessionId)
++      return result
++    } catch (error) {
++      reconcile(sessionId)
++      throw error
++    }
++  }
++
+   ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
+     name: 'conversation.input.dock',
+     id: 'goal',
+@@ -77,23 +106,35 @@ export function apply(ctx: ClientContext): void {
+     inject: (sessionId): GoalBarActions => ({
+       onEdit: async (objective) => {
+         const ref = refOf(sessionId)
+-        if (ref === undefined) return noCurrentGoal
+-        return await ctx.remote.goals.edit(sessionId, ref, { objective })
++        if (ref === undefined) {
++          reconcile(sessionId)
++          return noCurrentGoal
++        }
++        return await mutate(sessionId, () => ctx.remote.goals.edit(sessionId, ref, { objective }))
+       },
+       onPause: async () => {
+         const ref = refOf(sessionId)
+-        if (ref === undefined) return noCurrentGoal
+-        return await ctx.remote.goals.pause(sessionId, ref)
++        if (ref === undefined) {
++          reconcile(sessionId)
++          return noCurrentGoal
++        }
++        return await mutate(sessionId, () => ctx.remote.goals.pause(sessionId, ref))
+       },
+       onResume: async () => {
+         const ref = refOf(sessionId)
+-        if (ref === undefined) return noCurrentGoal
+-        return await ctx.remote.goals.resume(sessionId, ref)
++        if (ref === undefined) {
++          reconcile(sessionId)
++          return noCurrentGoal
++        }
++        return await mutate(sessionId, () => ctx.remote.goals.resume(sessionId, ref))
+       },
+       onClear: async () => {
+         const ref = refOf(sessionId)
+-        if (ref === undefined) return noCurrentGoal
+-        return await ctx.remote.goals.clear(sessionId, ref)
++        if (ref === undefined) {
++          reconcile(sessionId)
++          return noCurrentGoal
++        }
++        return await mutate(sessionId, () => ctx.remote.goals.clear(sessionId, ref))
+       },
+     }),
+   }, GoalDock))
+diff --git a/packages/client/ui-goal/tests/browser-plugin.client.spec.tsx b/packages/client/ui-goal/tests/browser-plugin.client.spec.tsx
+index 32b3ccd..191294d 100644
+--- a/packages/client/ui-goal/tests/browser-plugin.client.spec.tsx
++++ b/packages/client/ui-goal/tests/browser-plugin.client.spec.tsx
+@@ -88,13 +88,17 @@ async function bench(options: {
+     },
+   } as never, (() => null) as never)
+   ctx.provide('locale', new LocaleRuntime(ctx))
++  const refresh = vi.fn(() => Promise.resolve())
+   ctx.provide('sessions', {
+     binding: (id: SessionId) => ({
+       sessionId: id,
+-      session: { projections: { faceOf: (key: string) => ({
+-        getSnapshot: () => (key === 'goal' ? options.projection : undefined),
+-        subscribe: () => () => {},
+-      }) } },
++      session: {
++        refresh,
++        projections: { faceOf: (key: string) => ({
++          getSnapshot: () => (key === 'goal' ? options.projection : undefined),
++          subscribe: () => () => {},
++        }) },
++      },
+       ctx,
+     }),
+   })
+@@ -103,6 +107,7 @@ async function bench(options: {
+     ctx,
+     fiber,
+     calls,
++    refresh,
+     definitions: () => conversationEvents.entries(),
+     remountGoals: () => { activeGoals = goals('remounted-goals') },
+     unmountGoals: () => { activeGoals = undefined },
+@@ -184,14 +189,16 @@ describe('ui-goal browser plugin', () => {
+         expect(result).toEqual({ ok: false, error: { code: 'no-current-goal', message: 'no current goal to mutate', details: {} } })
+       }
+       expect(b.calls).toHaveLength(0)
++      expect(b.refresh).toHaveBeenCalledTimes(4)
+     }
+   })
+ 
+-  it('forwards a Remote failure to the strip verbatim', async () => {
++  it('forwards a Remote failure and schedules an authoritative Goal refresh', async () => {
+     const b = await bench({ projection: makeProjection(), failWith: { code: 'internal', message: 'stale revision', details: {} } })
+     await b.fiber.await()
+     const verbs = b.entry()!.inject!(sid('s1'))
+     expect(await verbs.onEdit('x')).toEqual({ ok: false, error: { code: 'internal', message: 'stale revision', details: {} } })
++    expect(b.refresh).toHaveBeenCalledTimes(1)
+   })
+ 
+   it('drops the dock entry when the plugin fiber unloads (HMR safety)', async () => {
+diff --git a/packages/client/ui-goal/tests/goalbar.client.spec.tsx b/packages/client/ui-goal/tests/goalbar.client.spec.tsx
+index a45387f..7fec8d9 100644
+--- a/packages/client/ui-goal/tests/goalbar.client.spec.tsx
++++ b/packages/client/ui-goal/tests/goalbar.client.spec.tsx
+@@ -161,12 +161,13 @@ describe('GoalBar', () => {
+     expect(screen.queryByText('进行中的目标')).toBeNull()
+   })
+ 
+-  it('blocked goal: "受阻的目标" with the block reason as the strip tooltip', () => {
++  it('blocked goal: shows the reason directly and retains the objective as a tooltip', () => {
+     const actions = makeActions()
+     const goal = makeGoal({ phase: 'blocked', blockedReason: { code: 'stalled', message: 'No progress in 3 rounds' } })
+     render(<GoalBar goal={goal} {...actions} t={t} />)
+     expect(screen.getByText('受阻的目标')).toBeTruthy()
+-    expect(screen.getByText('受阻的目标').closest('[title]')?.getAttribute('title')).toBe('No progress in 3 rounds')
++    expect(screen.getByText('No progress in 3 rounds')).toBeTruthy()
++    expect(screen.getByText('受阻的目标').closest('[title]')?.getAttribute('title')).toBe('Ship the redesign')
+   })
+ 
+   it('blocked goal without a reason carries no tooltip', () => {
+@@ -204,4 +205,16 @@ describe('GoalBar', () => {
+     fireEvent.click(screen.getByRole('button', { name: '清除目标' }))
+     await waitFor(() => { expect(actions.onClear).toHaveBeenCalledTimes(2) })
+   })
++
++  it('contains a thrown carrier failure and re-enables the action', async () => {
++    const actions = makeActions()
++    actions.onPause.mockRejectedValueOnce(new Error('socket closed'))
++    render(<GoalBar goal={makeGoal()} {...actions} t={t} />)
++    const pause = screen.getByRole<HTMLButtonElement>('button', { name: '暂停目标' })
++    fireEvent.click(pause)
++    expect((await screen.findByRole('alert')).textContent).toBe('socket closed (transport)')
++    expect(pause.disabled).toBe(false)
++    fireEvent.click(pause)
++    await waitFor(() => { expect(actions.onPause).toHaveBeenCalledTimes(2) })
++  })
+ })
+diff --git a/packages/client/ui-layout/src/client/AppFrame.module.css b/packages/client/ui-layout/src/client/AppFrame.module.css
+index ae56780..bd23a0d 100644
+--- a/packages/client/ui-layout/src/client/AppFrame.module.css
++++ b/packages/client/ui-layout/src/client/AppFrame.module.css
+@@ -117,3 +117,22 @@
+ .overlayLayer > * {
+   pointer-events: auto;
+ }
++
++@media (max-width: 640px) {
++  .mobileSidebarMask {
++    position: absolute;
++    inset: 0;
++    z-index: 9;
++    background: var(--dsw-alias-bg-mask-1);
++    backdrop-filter: var(--dsw-mask-blur);
++  }
++
++  .frame[data-mobile-sidebar-open] .sidebarCol {
++    position: absolute;
++    inset: 0 auto 0 0;
++    z-index: 10;
++    width: min(280px, calc(100vw - 32px));
++    border-right-color: var(--dsw-alias-border-l2);
++    box-shadow: var(--dsw-shadow-lv3);
++  }
++}
+diff --git a/packages/client/ui-layout/src/client/AppFrame.tsx b/packages/client/ui-layout/src/client/AppFrame.tsx
+index 2696dc9..60c6a36 100644
+--- a/packages/client/ui-layout/src/client/AppFrame.tsx
++++ b/packages/client/ui-layout/src/client/AppFrame.tsx
+@@ -13,7 +13,7 @@
+ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+ import type { ReactNode } from 'react'
+ import type { PropsRenderSlots, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
+-import { computeColumns, SIDEBAR_AUTO_COLLAPSE, SIDEBAR_DEFAULT } from './columns.ts'
++import { computeColumns, SIDEBAR_AUTO_COLLAPSE, SIDEBAR_COLLAPSED, SIDEBAR_DEFAULT } from './columns.ts'
+ import type { createLayoutStore } from './stores.ts'
+ import css from './AppFrame.module.css'
+ 
+@@ -134,12 +134,17 @@ export function AppFrame({
+   // (or the default when the wide preference is closed) and the center
+   // absorbs the squeeze.
+   const narrow = viewport < SIDEBAR_AUTO_COLLAPSE
++  const mobile = viewport <= 640
+   useEffect(() => { actions.setNarrow(narrow) }, [actions, narrow])
+   const sidebarCollapsed = narrow ? !panels.narrowExpanded : panels.sidebar === 0
+   const sidebarPreference = sidebarCollapsed
+     ? 0
+     : panels.sidebar === 0 ? SIDEBAR_DEFAULT : panels.sidebar
+   const cols = computeColumns(viewport, sidebarPreference, detailsSession === undefined ? 0 : panels.details)
++  // A phone keeps the compact rail in the grid. Expanding navigation paints
++  // the full sidebar over the conversation instead of reducing the composer
++  // and transcript to the remaining viewport sliver.
++  const frameSidebar = mobile ? SIDEBAR_COLLAPSED : cols.sidebar
+   const colsRef = useRef(cols)
+   colsRef.current = cols
+ 
+@@ -165,11 +170,19 @@ export function AppFrame({
+     <div
+       ref={frameRef}
+       className={css.frame}
+-      style={{ gridTemplateColumns: `${cols.sidebar}px minmax(0, 1fr) ${cols.details}px` }}
++      style={{ gridTemplateColumns: `${frameSidebar}px minmax(0, 1fr) ${cols.details}px` }}
+       data-sidebar-collapsed={sidebarCollapsed || undefined}
++      data-mobile-sidebar-open={mobile && !sidebarCollapsed || undefined}
+       data-details-collapsed={cols.details === 0 || undefined}
+       data-dragging={dragging || undefined}
+     >
++      {mobile && !sidebarCollapsed && (
++        <div
++          className={css.mobileSidebarMask}
++          aria-hidden="true"
++          onClick={() => { actions.toggleSidebar() }}
++        />
++      )}
+       <div className={css.sidebarCol}>
+         {/* Render-site slot call with live concession output: a closed
+             sidebar keeps the mounted slot at the compact-rail width, and the
+@@ -194,7 +207,7 @@ export function AppFrame({
+         {renderSlot('shell.overlay', {})}
+       </div>
+       {/* The collapsed rail is fixed-width: no resize handle while closed. */}
+-      {!sidebarCollapsed && <DragHandle side="sidebar" left={cols.sidebar} onStart={onSidebarStart} onDrag={onSidebarDrag} onEnd={onDragEnd} />}
++      {!mobile && !sidebarCollapsed && <DragHandle side="sidebar" left={cols.sidebar} onStart={onSidebarStart} onDrag={onSidebarDrag} onEnd={onDragEnd} />}
+       {cols.details > 0 && <DragHandle side="details" left={viewport - cols.details} onStart={onDetailsStart} onDrag={onDetailsDrag} onEnd={onDragEnd} />}
+     </div>
+   )
+diff --git a/packages/client/ui-layout/tests/app-frame.client.spec.tsx b/packages/client/ui-layout/tests/app-frame.client.spec.tsx
+index 65de5a6..c30d4b4 100644
+--- a/packages/client/ui-layout/tests/app-frame.client.spec.tsx
++++ b/packages/client/ui-layout/tests/app-frame.client.spec.tsx
+@@ -11,7 +11,7 @@
+  * resizes are driven through the ResizeObserver stub.
+  */
+ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+-import { act, cleanup, render } from '@testing-library/react'
++import { act, cleanup, fireEvent, render } from '@testing-library/react'
+ import { useSyncExternalStore } from 'react'
+ import { AppFrame } from '@deepseek-ai/dsh-client-ui-layout/src/client/AppFrame.tsx'
+ import type { AppFrameProps } from '@deepseek-ai/dsh-client-ui-layout/src/client/AppFrame.tsx'
+@@ -305,6 +305,22 @@ describe('AppFrame — narrow-viewport auto-collapse', () => {
+     expect(tracks(frame)).toEqual([SIDEBAR_COLLAPSED, 0])
+   })
+ 
++  it('opens phone navigation as an overlay while retaining the compact grid track', () => {
++    frameWidth = 390
++    const { frame, instance, slotCalls } = mountFrame()
++    expect(tracks(frame)).toEqual([SIDEBAR_COLLAPSED, 0])
++
++    act(() => { instance.actions.toggleSidebar() })
++
++    expect(tracks(frame)).toEqual([SIDEBAR_COLLAPSED, 0])
++    expect(frame.hasAttribute('data-mobile-sidebar-open')).toBe(true)
++    expect(slotCalls.filter(c => c.key === 'sidebar').at(-1)!.props).toEqual({ collapsed: false, width: 280 })
++    expect(frame.querySelectorAll('[class*="handle"]')).toHaveLength(0)
++
++    fireEvent.click(frame.querySelector('[class*="mobileSidebarMask"]')!)
++    expect(frame.hasAttribute('data-mobile-sidebar-open')).toBe(false)
++  })
++
+   it('a wide-closed preference re-expands at the contract default while narrow', () => {
+     frameWidth = 1920
+     const { frame, instance } = mountFrame()
+diff --git a/packages/client/ui-settings-general/src/client/SettingsRoot.module.css b/packages/client/ui-settings-general/src/client/SettingsRoot.module.css
+index 060e8d1..1959f86 100644
+--- a/packages/client/ui-settings-general/src/client/SettingsRoot.module.css
++++ b/packages/client/ui-settings-general/src/client/SettingsRoot.module.css
+@@ -224,3 +224,55 @@
+   clip: rect(0 0 0 0);
+   white-space: nowrap;
+ }
++
++@media (max-width: 640px) {
++  .overlay {
++    align-items: stretch;
++    justify-content: stretch;
++  }
++
++  .panel {
++    flex-direction: column;
++    width: 100vw;
++    height: 100dvh;
++    max-width: none;
++    border-radius: 0;
++  }
++
++  .nav {
++    width: 100%;
++    gap: 10px;
++    padding: max(16px, env(safe-area-inset-top)) 12px 8px;
++    border-bottom: 1px solid var(--dsw-alias-border-l2);
++  }
++
++  .navTitle {
++    padding: 0 4px;
++  }
++
++  .navList {
++    flex-direction: row;
++    gap: 6px;
++    overflow-x: auto;
++    scrollbar-width: none;
++  }
++
++  .navCell {
++    flex: none;
++    height: 36px;
++    padding: 7px 12px;
++  }
++
++  .content {
++    min-height: 0;
++  }
++
++  .header {
++    height: 44px;
++    padding: 8px 10px 6px 12px;
++  }
++
++  .options {
++    padding: 0 12px max(20px, env(safe-area-inset-bottom));
++  }
++}
+diff --git a/packages/client/ui-settings-models/src/client/index.ts b/packages/client/ui-settings-models/src/client/index.ts
+index dc7f32e..9584de8 100644
+--- a/packages/client/ui-settings-models/src/client/index.ts
++++ b/packages/client/ui-settings-models/src/client/index.ts
+@@ -87,7 +87,7 @@ export function apply(ctx: ClientContext): void {
+   })
+   const welcomeController = new WelcomeNoticeStore(
+     connection.api,
+-    connection.isLoopback ? 'host' : 'memory',
++    connection.settingsAccess ?? (connection.isLoopback ? 'host' : 'memory'),
+   )
+   const welcomeInjected = (): WelcomeNoticeInjected => ({
+     controller: welcomeController,
+diff --git a/packages/client/ui-settings/README.i18n.yaml b/packages/client/ui-settings/README.i18n.yaml
+index ec7c333..c90ecbb 100644
+--- a/packages/client/ui-settings/README.i18n.yaml
++++ b/packages/client/ui-settings/README.i18n.yaml
+@@ -2,5 +2,5 @@
+ # side as of the last confirmed-consistent state. Both languages carry equal authority;
+ # after editing either side, bring the other along and re-record with:
+ #   pnpm run verify-translation-pairing --write packages/client/ui-settings/README.md
+-README.md: 950585c4957cd59fe3a38dc37cdd4084f7c5541c
+-README.zh.md: dce8dbf5c8e0939142fed8a3df84c47acd7c8a1e
++README.md: 7c5d1c8997e38206f583aad4aba6c45320010d7e
++README.zh.md: 0ed621a39fe79ea6578bc4ccad78f7c576d1cc34
+diff --git a/packages/client/ui-settings/README.md b/packages/client/ui-settings/README.md
+index 950585c..7c5d1c8 100644
+--- a/packages/client/ui-settings/README.md
++++ b/packages/client/ui-settings/README.md
+@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
+ 
+ The settings domain's base layer, with two roles and no presentation of its own. It provides `ctx.settingsScope`, the Host transport every preference row binds its durable namespace section through, and it declares the settings slot types registrants fill: `settings.trigger` / `settings.header` / `settings.close` (chrome content), `settings.action` (ordered content-header actions), `settings.section` (one page per feature), `settings.plugins.tab` (feature-owned pages inside the Plugins section), and `settings.onboarding` (ordered feature-owned pages). It depends on no `ui-*` presentation package, so any feature that owns a preference can reach it; the settings SHELL — the `sidebar.settings` occupant, its navigation, and the chrome — lives in ui-settings-general, because a shell dependency on ui-sidebar would close a reference graph cycle through ui-layout and ui-theme. The shell's own contract types live beside the shell for the same reason.
+ 
+-The plugin injects nothing and waits for nothing: `ctx.settingsScope.bind(spec)` resolves the wire face through the CALLER's context at call time, so the bound scope's disposer belongs to the calling fiber, and the caller injects `connection` for the transport and `remote` for the invalidation. Listeners exist before the first background read starts, so a row's activation never blocks on the settings transport. A bound scope reloads on the forwarded `settings/document-updated` event for its own namespace and on `connection/reset`. Writes carry one field path and the last known namespace revision as `expectedRevision`; a rejected or failed write re-reads unless a newer write already superseded it, and a stale read never publishes over a newer one. Without a `decode` in the spec, a section that is not a plain object, fails its rehydrated schema, or carries a schema envelope this client cannot rehydrate publishes no value at all, so a row renders its own absent state instead of a half-decoded one.
++The plugin injects nothing and waits for nothing: `ctx.settingsScope.bind(spec)` resolves the wire face through the CALLER's context at call time, so the bound scope's disposer belongs to the calling fiber, and the caller injects `connection` for the transport and `remote` for the invalidation. Listeners exist before the first background read starts, so a row's activation never blocks on the settings transport. A bound scope reloads on the forwarded `settings/document-updated` event for its own namespace and on `connection/reset`; an authenticated multi-host embed can call `ctx.settingsScope.refreshAll()` after changing the request owner, which invalidates all live scopes and generation-fences late reads from the previous owner. Writes carry one field path and the last known namespace revision as `expectedRevision`; a rejected or failed write re-reads unless a newer write already superseded it, and a stale read never publishes over a newer one. Without a `decode` in the spec, a section that is not a plain object, fails its rehydrated schema, or carries a schema envelope this client cannot rehydrate publishes no value at all, so a row renders its own absent state instead of a half-decoded one.
+ 
+ ## Model Experience
+ 
+@@ -16,5 +16,5 @@ None; this package neither assembles nor sends a provider request.
+ 
+ ## Known Limitations and Deferred Work
+ 
+-- **Remote browsers get no durable settings** — the settings RPCs are loopback-only, so a scope bound in a non-loopback browser starts `unavailable` and never crosses the wire; every row it backs is inert there.
++- **Durable settings require an authenticated carrier decision** — ordinary remote browsers get memory-only Settings. A reviewed authenticated control-plane document may expose Host Settings by setting `connection.settingsAccess` to `host`; this does not grant loopback-only native desktop capabilities. The carrier and server, not this UI package, must enforce authentication, authorization, and request ownership.
+ - **One field per write** — `set` sends a single `set` op, so a row that must move two fields together has no transaction and publishes two revisions.
+diff --git a/packages/client/ui-settings/README.zh.md b/packages/client/ui-settings/README.zh.md
+index dce8dbf..0ed621a 100644
+--- a/packages/client/ui-settings/README.zh.md
++++ b/packages/client/ui-settings/README.zh.md
+@@ -4,7 +4,7 @@
+ 
+ 设置领域的底座，承担两项职责，本身不含任何呈现内容。它提供 `ctx.settingsScope`——每个偏好设置行绑定自己那份持久化命名空间分区所用的宿主传输层；并声明由注册方填充的设置 slot 类型：`settings.trigger`／`settings.header`／`settings.close`（界面框架内容）、`settings.action`（内容标题栏中的有序操作）、`settings.section`（每项功能一页）、`settings.plugins.tab`（“插件”分区内由各功能持有的页面）和 `settings.onboarding`（由各功能持有的有序页面）。它不依赖任何 `ui-*` 呈现包，因此任何持有偏好设置的功能都能够到它；设置**外壳**——`sidebar.settings` 占位方、它的导航与界面框架——位于 ui-settings-general，因为外壳一旦依赖 ui-sidebar，就会经 ui-layout 与 ui-theme 闭合出一条引用图环路。外壳自身的契约类型出于同一原因与外壳放在一起。
+ 
+-该插件不注入任何服务、也不等待任何服务：`ctx.settingsScope.bind(spec)` 在调用时经**调用方**的 context 解析线路面，因此绑定所得 scope 的 disposer 归调用方 fiber 所有，而由调用方注入 `connection` 取得传输层、注入 `remote` 取得失效通知。监听器在首次后台读取启动之前就已存在，因此某一行的激活绝不会阻塞在设置传输层上。已绑定的 scope 会在收到属于自己命名空间的转发 `settings/document-updated` 事件时、以及在 `connection/reset` 时重新读取。写入携带单一字段路径以及最近已知的命名空间 revision 作为 `expectedRevision`；被拒绝或失败的写入会重新读取，除非已有更新的写入取代了它，而过期的读取绝不会覆盖发布更新的结果。若 spec 未提供 `decode`，则分区不是普通对象、未通过其重建后的 schema 校验、或携带本客户端无法重建的 schema 信封时，一律不发布任何值，于是行渲染自己的缺失状态，而不是一份半解码的值。
++该插件不注入任何服务、也不等待任何服务：`ctx.settingsScope.bind(spec)` 在调用时经**调用方**的 context 解析线路面，因此绑定所得 scope 的 disposer 归调用方 fiber 所有，而由调用方注入 `connection` 取得传输层、注入 `remote` 取得失效通知。监听器在首次后台读取启动之前就已存在，因此某一行的激活绝不会阻塞在设置传输层上。已绑定的 scope 会在收到属于自己命名空间的转发 `settings/document-updated` 事件时、以及在 `connection/reset` 时重新读取；经过认证的多宿主嵌入在更换请求所有者后可以调用 `ctx.settingsScope.refreshAll()`，让全部活动 scope 失效，并通过代次隔离阻止旧所有者的延迟读取覆盖新值。写入携带单一字段路径以及最近已知的命名空间 revision 作为 `expectedRevision`；被拒绝或失败的写入会重新读取，除非已有更新的写入取代了它，而过期的读取绝不会覆盖发布更新的结果。若 spec 未提供 `decode`，则分区不是普通对象、未通过其重建后的 schema 校验、或携带本客户端无法重建的 schema 信封时，一律不发布任何值，于是行渲染自己的缺失状态，而不是一份半解码的值。
+ 
+ ## 模型体验
+ 
+@@ -16,5 +16,5 @@
+ 
+ ## 已知限制与暂缓事项
+ 
+-- **远程浏览器没有持久化设置**：设置 RPC 仅限 loopback，因此在非 loopback 浏览器中绑定的 scope 以 `unavailable` 起步且从不跨线路，它支撑的每一行在那里都是无效的。
++- **持久设置需要经过认证的载体决策**：普通远程浏览器只得到内存设置；经过审查的认证控制面文档可以把 `connection.settingsAccess` 设为 `host` 来开放 Host 设置，但这不会授予仅 Loopback 可用的桌面原生能力。认证、授权和请求归属必须由载体与服务端执行，而不是由本 UI 包承担。
+ - **每次写入仅一个字段**：`set` 只发送单个 `set` op，因此需要同时改动两个字段的行没有事务可用，会发布两个 revision。
+diff --git a/packages/client/ui-settings/src/client/settings-scope.ts b/packages/client/ui-settings/src/client/settings-scope.ts
+index 4668c49..af97def 100644
+--- a/packages/client/ui-settings/src/client/settings-scope.ts
++++ b/packages/client/ui-settings/src/client/settings-scope.ts
+@@ -225,6 +225,8 @@ declare module '@deepseek-ai/cordis' {
+  * (`packages/client/tsdown.client.ts`).
+  */
+ export class SettingsScopeBinder extends Service {
++  private readonly controllers = new Set<SettingsScopeController<unknown>>()
++
+   /**
+    * @param ctx - the providing plugin's context.
+    */
+@@ -248,8 +250,9 @@ export class SettingsScopeBinder extends Service {
+     const controller = new SettingsScopeController<T>(
+       connection.api,
+       spec,
+-      connection.isLoopback ? 'host' : 'memory',
++      connection.settingsAccess ?? (connection.isLoopback ? 'host' : 'memory'),
+     )
++    this.controllers.add(controller as SettingsScopeController<unknown>)
+     ctx.effect(() => {
+       const refresh = (namespace?: string): void => {
+         if (namespace !== undefined && namespace !== spec.namespace) return
+@@ -262,9 +265,20 @@ export class SettingsScopeBinder extends Service {
+       void controller.load()
+       return async () => {
+         for (const dispose of disposers) dispose()
++        this.controllers.delete(controller as SettingsScopeController<unknown>)
+         await controller.dispose()
+       }
+     }, `ui-settings: ${spec.namespace} settings scope`)
+     return controller
+   }
++
++  /**
++   * Invalidate every Host-backed namespace after an embedding changes the
++   * Runtime that owns otherwise ownerless settings requests. Each controller
++   * increments its generation immediately, so an older target's in-flight
++   * response cannot publish after this call.
++   */
++  refreshAll(): void {
++    for (const controller of this.controllers) void controller.load()
++  }
+ }
+diff --git a/packages/client/ui-settings/tests/settings-scope.client.spec.ts b/packages/client/ui-settings/tests/settings-scope.client.spec.ts
+index 4290020..35519e3 100644
+--- a/packages/client/ui-settings/tests/settings-scope.client.spec.ts
++++ b/packages/client/ui-settings/tests/settings-scope.client.spec.ts
+@@ -366,6 +366,35 @@ describe('SettingsScopeController', () => {
+   })
+ })
+ describe('SettingsScopeBinder.bind', () => {
++  it('refreshes every live Host-backed scope after an embedding changes Runtime ownership', async () => {
++    const describeCall = vi.fn().mockResolvedValue(described({ preference: 'dark' }, 1))
++    const ctx = new Context()
++    ctx.provide('connection', {
++      api: { settings: { describe: describeCall } },
++      isLoopback: true,
++    } as never)
++    new TestRemote(ctx)
++    await ctx.plugin(SettingsScopeBinder).await()
++    const first = ctx.plugin({
++      inject: ['connection', 'remote', 'settingsScope'],
++      apply: (plugin: Context) => { plugin.settingsScope.bind<UiTestSettings>({ namespace: 'ui-test' }) },
++    })
++    const second = ctx.plugin({
++      inject: ['connection', 'remote', 'settingsScope'],
++      apply: (plugin: Context) => { plugin.settingsScope.bind<UiTestSettings>({ namespace: 'ui-test' }) },
++    })
++    await Promise.all([first.await(), second.await()])
++    await vi.waitFor(() => { expect(describeCall).toHaveBeenCalledTimes(2) })
++
++    const binder = ctx.get('settingsScope') as SettingsScopeBinder
++    binder.refreshAll()
++    await vi.waitFor(() => { expect(describeCall).toHaveBeenCalledTimes(4) })
++    await first.dispose()
++    binder.refreshAll()
++    await vi.waitFor(() => { expect(describeCall).toHaveBeenCalledTimes(5) })
++    await second.dispose()
++  })
++
+   it('subscribes before the initial read and converges to the latest queued invalidation', async () => {
+     const initial = deferred<ReturnType<typeof described>>()
+     const describeCall = vi.fn()

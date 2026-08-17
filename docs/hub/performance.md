@@ -61,7 +61,7 @@ Adding nodes increases fan-out work for fleet discovery. It must not weaken rout
 
 ## Live two-node acceptance
 
-After a release is deployed, validate with the NAS Runtime and `wuyang-home` simultaneously online:
+After a release is deployed, validate with the NAS Runtime and `workstation-b` simultaneously online:
 
 1. Open the fleet page and confirm projects from both nodes are grouped by workspace folder with their node labels.
 2. Create one session on each node by choosing the node first and then a directory returned by that node; send messages to both without switching the fleet filter.

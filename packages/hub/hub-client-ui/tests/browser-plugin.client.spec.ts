@@ -1,43 +1,122 @@
 // @vitest-environment jsdom
 
-import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it, vi } from 'vitest'
-import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
-import { SlotRegistry } from '@deepseek-ai/dsh-client-runtime/client'
-import { resolveSlotLabel } from '@deepseek-ai/dsh-client-ui-slots'
-import { usePinnedBrowserLanguages } from '@deepseek-ai/dsh-client-test-runtime'
 import { apply, inject } from '../src/client/index.ts'
 import { HubNodesSection } from '../src/client/HubNodesSection.tsx'
 import { HubPluginsSection } from '../src/client/HubPluginsSection.tsx'
 import { HubRuntimePicker } from '../src/client/HubRuntimePicker.tsx'
 import { HubSettingsTarget } from '../src/client/HubSettingsTarget.tsx'
 
-usePinnedBrowserLanguages('zh-CN')
+interface RegisteredEntry {
+  options: { name: string; id?: string; label?: string | (() => string) }
+  component: unknown
+}
+
+class TestSlots {
+  private readonly declared = new Set<string>()
+  private readonly pending = new Map<string, Array<() => unknown>>()
+  private readonly records: RegisteredEntry[] = []
+  private readonly disposers: Array<() => void> = []
+
+  inject(name: string, contribution: () => unknown): void {
+    const list = this.pending.get(name) ?? []
+    list.push(contribution)
+    this.pending.set(name, list)
+    if (this.declared.has(name)) this.activate(contribution)
+  }
+
+  declare(...names: string[]): void {
+    for (const name of names) {
+      if (this.declared.has(name)) continue
+      this.declared.add(name)
+      for (const contribution of this.pending.get(name) ?? []) this.activate(contribution)
+    }
+  }
+
+  register(options: RegisteredEntry['options'], component: unknown): () => void {
+    const entry = { options, component }
+    this.records.push(entry)
+    return () => {
+      const index = this.records.indexOf(entry)
+      if (index >= 0) this.records.splice(index, 1)
+    }
+  }
+
+  entries(name: string): RegisteredEntry[] {
+    return this.records.filter(entry => entry.options.name === name)
+  }
+
+  dispose(): void {
+    for (const dispose of this.disposers.splice(0).reverse()) dispose()
+  }
+
+  private activate(contribution: () => unknown): void {
+    const value = contribution()
+    if (typeof value === 'function') {
+      this.disposers.push(value as () => void)
+      return
+    }
+    if (value !== null && typeof value === 'object' && Symbol.iterator in value) {
+      for (const dispose of value as Iterable<unknown>) {
+        if (typeof dispose === 'function') this.disposers.push(dispose as () => void)
+      }
+    }
+  }
+}
+
+class TestLocale {
+  private language: 'zh' | 'en' = 'zh'
+  private dictionaries: { zh: Record<string, string>; en: Record<string, string> } | undefined
+
+  register(_namespace: string, dictionaries: { zh: Record<string, string>; en: Record<string, string> }): () => void {
+    this.dictionaries = dictionaries
+    return () => { this.dictionaries = undefined }
+  }
+
+  bind(_namespace: string): (key: string) => string {
+    return key => this.dictionaries?.[this.language][key] ?? key
+  }
+
+  setLocale(language: 'zh' | 'en'): void {
+    this.language = language
+  }
+}
+
+function fixture() {
+  const slots = new TestSlots()
+  const locale = new TestLocale()
+  const effects: Array<() => void> = []
+  const ctx = {
+    slots,
+    locale,
+    settingsScope: { refreshAll: vi.fn() },
+    effect(activate: () => unknown) {
+      const dispose = activate()
+      if (typeof dispose === 'function') effects.push(dispose as () => void)
+    },
+    dispose() {
+      slots.dispose()
+      for (const dispose of effects.splice(0).reverse()) dispose()
+    },
+  }
+  return { ctx, slots, locale }
+}
+
+function labelOf(entry: RegisteredEntry): string | undefined {
+  return typeof entry.options.label === 'function' ? entry.options.label() : entry.options.label
+}
 
 describe('Hub official Settings registration', () => {
-  it('registers node and plugin management as ordinary localized sections', async () => {
+  it('registers node and plugin management as ordinary localized sections', () => {
     expect(inject).toEqual(['slots', 'locale', 'settingsScope'])
-    const ctx = new Context()
-    await ctx.plugin(SlotRegistry).await()
-    const locale = new LocaleRuntime(ctx)
-    ctx.provide('locale', locale)
-    ctx.provide('settingsScope', { refreshAll: vi.fn() } as never)
-    const slots = ctx.get('slots') as SlotRegistry
-    slots.register({
-      name: 'root',
-      children: {
-        'settings.section': { kind: 'list', scope: 'root' },
-        'settings.action': { kind: 'list', scope: 'root' },
-        'conversation.hero.runtime': { kind: 'single', scope: 'root' },
-      },
-    } as never, () => null)
+    const { ctx, slots, locale } = fixture()
+    slots.declare('settings.section', 'settings.action', 'conversation.hero.runtime')
+    apply(ctx as never)
 
-    const fiber = ctx.plugin({ inject: [...inject], apply })
-    await fiber.await()
     const entries = slots.entries('settings.section')
     expect(entries.map(entry => ({
       id: entry.options.id,
-      label: resolveSlotLabel(entry.options.label),
+      label: labelOf(entry),
       component: entry.component,
     }))).toEqual([
       { id: 'hub-nodes', label: 'Hub 节点', component: HubNodesSection },
@@ -49,28 +128,17 @@ describe('Hub official Settings registration', () => {
     }))).toEqual([{ id: 'hub-runtime-target', component: HubSettingsTarget }])
 
     locale.setLocale('en')
-    expect(entries.map(entry => resolveSlotLabel(entry.options.label))).toEqual(['Hub nodes', 'Node plugins'])
-    await fiber.dispose()
+    expect(entries.map(labelOf)).toEqual(['Hub nodes', 'Node plugins'])
+    ctx.dispose()
     expect(slots.entries('settings.section')).toHaveLength(0)
-    await ctx.fiber.dispose()
   })
 
-  it('recovers when the Settings declaration arrives after the plugin', async () => {
-    const ctx = new Context()
-    await ctx.plugin(SlotRegistry).await()
-    const locale = new LocaleRuntime(ctx)
-    ctx.provide('locale', locale)
-    ctx.provide('settingsScope', { refreshAll: vi.fn() } as never)
-    const slots = ctx.get('slots') as SlotRegistry
-    const fiber = ctx.plugin({ inject: [...inject], apply })
-    await fiber.await()
+  it('recovers when the Settings declaration arrives after the plugin', () => {
+    const { ctx, slots } = fixture()
+    apply(ctx as never)
     expect(slots.entries('settings.section')).toHaveLength(0)
-
-    slots.register({
-      name: 'root',
-      children: { 'settings.section': { kind: 'list', scope: 'root' } },
-    } as never, () => null)
-    await vi.waitFor(() => { expect(slots.entries('settings.section')).toHaveLength(2) })
-    await ctx.fiber.dispose()
+    slots.declare('settings.section')
+    expect(slots.entries('settings.section')).toHaveLength(2)
+    ctx.dispose()
   })
 })

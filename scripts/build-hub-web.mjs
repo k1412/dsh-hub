@@ -1,159 +1,118 @@
 #!/usr/bin/env node
 
-/** Compose the official DSH browser roster into a static Hub distribution. */
+/** Assemble the Hub UI from pinned official Web artifacts and Hub-owned code. */
 
 import { createHash } from 'node:crypto'
-import { cp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
-import { dirname, join, relative, resolve } from 'node:path'
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import yaml from 'js-yaml'
+import { build as esbuild } from 'esbuild'
 
 const repositoryRoot = resolve(import.meta.dirname, '..')
 const hubWebRoot = join(repositoryRoot, 'apps', 'hub-web')
 const outputRoot = join(hubWebRoot, 'dist')
-const jsType = new yaml.Type('tag:yaml.org,2002:js', {
-  kind: 'scalar',
-  construct: source => source,
-})
-const patchSchema = yaml.DEFAULT_SCHEMA.extend([jsType])
-
-/** Reviewed browser-only rows required by the Hub composition. */
-export const HUB_CLIENT_ROWS = Object.freeze([
-  // Hub does not run the official Host directory-picker auto-composer. The
-  // browser flow still calls the selected node through the official Web API.
-  { id: 'hub-directory-picker-browse', name: '@deepseek-ai/dsh-client-ui-directory-picker-browse' },
-  { id: 'hub-client-ui', name: '@k1412/dsh-hub-client-ui' },
-])
+const snapshotRoot = join(repositoryRoot, 'third_party', 'official-web')
 
 function shortHash(value) {
-  return createHash('sha1').update(value).digest('hex').slice(0, 12)
-}
-
-async function packageDirectories() {
-  const directories = []
-  for (const root of ['vendor', 'packages', 'apps']) {
-    const first = await readdir(join(repositoryRoot, root), { withFileTypes: true })
-    for (const entry of first) {
-      if (!entry.isDirectory()) continue
-      const directory = join(repositoryRoot, root, entry.name)
-      if (root === 'apps') {
-        directories.push(directory)
-        continue
-      }
-      const second = await readdir(directory, { withFileTypes: true })
-      for (const child of second) {
-        if (child.isDirectory()) directories.push(join(directory, child.name))
-      }
-    }
-  }
-  return directories
-}
-
-async function packageMap() {
-  const result = new Map()
-  for (const directory of await packageDirectories()) {
-    const path = join(directory, 'package.json')
-    let manifest
-    try {
-      manifest = JSON.parse(await readFile(path, 'utf8'))
-    } catch (error) {
-      if (error?.code === 'ENOENT') continue
-      throw error
-    }
-    if (typeof manifest.name === 'string') result.set(manifest.name, { directory, manifest })
-  }
-  return result
-}
-
-async function parsePatch(path) {
-  const source = await readFile(path, 'utf8')
-  const value = yaml.load(source, { schema: patchSchema })
-  if (!Array.isArray(value)) throw new Error(`${relative(repositoryRoot, path)} must contain a patch array`)
-  return value
-}
-
-/** Apply the subset of Cordis patch semantics needed to determine active package rows. */
-export function composeRows(patches) {
-  const rows = []
-  for (const patch of patches.flat()) {
-    if (typeof patch !== 'object' || patch === null) continue
-    if (Array.isArray(patch.insert)) {
-      for (const inserted of patch.insert) rows.push({ ...inserted })
-      continue
-    }
-    if (typeof patch.id !== 'string') continue
-    const index = rows.findIndex(row => row.id === patch.id)
-    if (index === -1) throw new Error(`Hub Web roster patch references unknown row ${patch.id}`)
-    rows[index] = { ...rows[index], ...patch }
-  }
-  return rows
+  return createHash('sha256').update(value).digest('hex').slice(0, 12)
 }
 
 function clientExport(manifest) {
   const value = manifest.exports?.['./client']
   if (typeof value === 'string') return value
-  if (typeof value === 'object' && value !== null && typeof value.default === 'string') return value.default
+  if (typeof value === 'object' && value !== null) {
+    if (typeof value.default === 'string') return value.default
+    if (typeof value.import === 'string') return value.import
+  }
   return undefined
 }
 
-/** Build the browser boot graph and copy every graph-owned bundle. */
+async function buildSetupPage() {
+  await esbuild({
+    entryPoints: [join(hubWebRoot, 'src', 'setup.ts')],
+    bundle: true,
+    format: 'esm',
+    minify: true,
+    outfile: join(outputRoot, 'setup.js'),
+    sourcemap: false,
+  })
+  const template = await readFile(join(hubWebRoot, 'setup.html'), 'utf8')
+  const html = template
+    .replace('<script type="module" src="/src/setup.ts"></script>', '<script type="module" src="/setup.js"></script>')
+    .replace('</head>', '<link rel="stylesheet" href="/setup.css" /></head>')
+  await writeFile(join(outputRoot, 'setup.html'), html)
+}
+
+/** Build the immutable browser boot graph and copy every pinned bundle. */
 export async function buildHubWeb() {
-  const packages = await packageMap()
-  const patches = await Promise.all([
-    parsePatch(join(repositoryRoot, 'packages', 'bundle', 'base', 'cordis.patch.yml')),
-    parsePatch(join(repositoryRoot, 'packages', 'bundle', 'web-app', 'cordis.patch.yml')),
-  ])
-  const rows = composeRows(patches)
-  rows.push(...HUB_CLIENT_ROWS)
+  const snapshot = JSON.parse(await readFile(join(snapshotRoot, 'snapshot.json'), 'utf8'))
+  if (snapshot.schemaVersion !== 1 || !Array.isArray(snapshot.entries) || snapshot.entries.length === 0) {
+    throw new Error('third_party/official-web/snapshot.json has an unsupported shape')
+  }
+  await rm(outputRoot, { recursive: true, force: true })
+  await cp(join(snapshotRoot, 'dist'), outputRoot, { recursive: true })
+
   const entries = []
-  for (const row of rows) {
-    if (row.disabled === true || typeof row.name !== 'string') continue
-    const pkg = packages.get(row.name)
-    if (pkg === undefined) continue
-    const declaration = pkg.manifest.dsh?.client
-    if (declaration?.platform !== 'web') continue
-    const exported = clientExport(pkg.manifest)
-    if (exported === undefined) throw new Error(`${row.name} declares dsh.client but has no ./client export`)
-    const source = resolve(pkg.directory, exported)
-    const bytes = await readFile(source).catch((error) => {
-      if (error?.code === 'ENOENT') {
-        throw new Error(`Hub Web client bundle is missing: ${relative(repositoryRoot, source)}; run the client library build first`)
-      }
-      throw error
-    })
+  for (const item of snapshot.entries) {
+    if (typeof item?.id !== 'string' || !item.id.startsWith('@deepseek-ai/')) {
+      throw new Error('official snapshot entries must be @deepseek-ai package descriptors')
+    }
+    const name = item.id
+    const source = join(snapshotRoot, 'dist', 'plugins', name, 'client.js')
+    const bytes = await readFile(source)
     const rev = shortHash(bytes)
-    const destination = join(outputRoot, 'plugins', row.name, 'client.js')
-    await mkdir(dirname(destination), { recursive: true })
-    await writeFile(destination, bytes)
-    await cp(`${source}.map`, `${destination}.map`).catch((error) => {
-      if (error?.code !== 'ENOENT') throw error
-    })
     entries.push({
-      id: row.name,
-      url: `/plugins/${row.name}/client.js?rev=${rev}`,
+      id: name,
+      url: `/plugins/${name}/client.js?rev=${rev}`,
       rev,
-      ...(Array.isArray(declaration.inject) ? { inject: declaration.inject } : {}),
-      ...(declaration.immediately === true ? { immediately: true } : {}),
+      ...(Array.isArray(item.inject) ? { inject: item.inject } : {}),
+      ...(item.immediately === true ? { immediately: true } : {}),
     })
   }
+
+  const hubPackageRoot = join(repositoryRoot, 'packages', 'hub', 'hub-client-ui')
+  const hubManifest = JSON.parse(await readFile(join(hubPackageRoot, 'package.json'), 'utf8'))
+  const hubExport = clientExport(hubManifest)
+  if (hubExport === undefined || hubManifest.dsh?.client?.platform !== 'web') {
+    throw new Error('@k1412/dsh-hub-client-ui is missing its DSH Web client declaration')
+  }
+  const hubSource = resolve(hubPackageRoot, hubExport)
+  const hubBytes = await readFile(hubSource)
+  const hubRev = shortHash(hubBytes)
+  const hubDestination = join(outputRoot, 'plugins', hubManifest.name, 'client.js')
+  await mkdir(dirname(hubDestination), { recursive: true })
+  await writeFile(hubDestination, hubBytes)
+  await cp(`${hubSource}.map`, `${hubDestination}.map`).catch((error) => {
+    if (error?.code !== 'ENOENT') throw error
+  })
+  entries.push({
+    id: hubManifest.name,
+    url: `/plugins/${hubManifest.name}/client.js?rev=${hubRev}`,
+    rev: hubRev,
+    inject: hubManifest.dsh.client.inject,
+  })
+
   const graph = { rev: shortHash(JSON.stringify(entries)), entries }
   await writeFile(join(outputRoot, 'boot.js'), renderBootScript(graph))
   const indexPath = join(outputRoot, 'index.html')
-  const html = await readFile(indexPath, 'utf8')
-  const bootScript = '<script src="/boot.js"></script>'
-  if (!html.includes('</head>')) throw new Error('Hub Web built index has no </head>')
-  await writeFile(indexPath, html.replace('</head>', `${bootScript}</head>`))
+  const officialHtml = await readFile(indexPath, 'utf8')
+  if (!officialHtml.includes('</head>')) throw new Error('official Web artifact has no </head>')
+  const additions = [
+    '<meta name="dsh-settings-access" content="authenticated-control-plane" />',
+    '<script src="/boot.js"></script>',
+  ].join('')
+  const html = officialHtml
+    .replace('<title>DeepSeek Harness</title>', '<title>DSH Hub</title>')
+    .replace('</head>', `${additions}</head>`)
+  await writeFile(indexPath, html)
+  await buildSetupPage()
+  await cp(join(hubWebRoot, 'src', 'setup.css'), join(outputRoot, 'setup.css'))
   await cp(join(repositoryRoot, 'LICENSE'), join(outputRoot, 'LICENSE.txt'))
   await cp(join(repositoryRoot, 'THIRD_PARTY_NOTICES.md'), join(outputRoot, 'THIRD_PARTY_NOTICES.md'))
-  process.stdout.write(`Hub Web: official shell + ${String(entries.length)} client plugins (${graph.rev})\n`)
+  process.stdout.write(`Hub Web: reviewed official snapshot + ${String(entries.length)} plugins (${graph.rev})\n`)
   return graph
 }
 
-/**
- * Render startup state that must exist before the deferred Web entry executes.
- * @param {unknown} graph - reviewed static client-plugin graph.
- * @returns {string} classic startup script content.
- */
 export function renderBootScript(graph) {
   const json = JSON.stringify(graph).replaceAll('<', '\\u003c')
   return 'globalThis.__zod_globalConfig = { ...globalThis.__zod_globalConfig, jitless: true };\n'
