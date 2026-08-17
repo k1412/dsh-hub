@@ -10,7 +10,6 @@ const api = vi.hoisted(() => ({
   createEnrollment: vi.fn(),
   cancelEnrollment: vi.fn(),
   revokeNode: vi.fn(),
-  switchRuntime: vi.fn(),
   invoke: vi.fn(),
 }))
 
@@ -164,7 +163,7 @@ describe('Hub management Settings pages', () => {
     expect(localStorage.getItem('dsh.hub.runtime-target')).toContain('mac-neo')
   })
 
-  it('keeps the node binding visible in Settings chrome and reloads when it changes', async () => {
+  it('keeps the node binding visible and refreshes settings in place when it changes', async () => {
     const secondRuntime: HubRuntime = { ...runtime, nodeId: 'mac-neo', runtimeId: 'desktop' }
     api.readFleet.mockResolvedValue({
       ...fleet,
@@ -174,20 +173,37 @@ describe('Hub management Settings pages', () => {
       }],
       runtimes: [runtime, secondRuntime],
     })
-    render(<HubSettingsTarget t={hubT} useSessions={unusedHook} useWorkspaces={unusedHook} />)
+    const refreshNodeSettings = vi.fn()
+    render(<HubSettingsTarget
+      t={hubT}
+      refreshNodeSettings={refreshNodeSettings}
+      useSessions={unusedHook}
+      useWorkspaces={unusedHook}
+    />)
     const target = await screen.findByRole('button', { name: '设置目标' })
     expect(target.textContent).toContain('Home NAS · web')
     fireEvent.click(target)
     fireEvent.click(screen.getByRole('menuitem', { name: 'Mac Neo · desktop' }))
-    expect(api.switchRuntime).toHaveBeenCalledWith(secondRuntime)
+    expect(target.textContent).toContain('Mac Neo · desktop')
+    expect(refreshNodeSettings).toHaveBeenCalledOnce()
+    expect(new URL(location.href).searchParams.get('nodeId')).toBe('mac-neo')
+    expect(new URL(location.href).searchParams.get('runtimeId')).toBe('desktop')
   })
 
   it('pins the first online Runtime when Settings opens without a saved target', async () => {
     history.replaceState({}, '', '/')
-    render(<HubSettingsTarget t={hubT} useSessions={unusedHook} useWorkspaces={unusedHook} />)
+    const refreshNodeSettings = vi.fn()
+    render(<HubSettingsTarget
+      t={hubT}
+      refreshNodeSettings={refreshNodeSettings}
+      useSessions={unusedHook}
+      useWorkspaces={unusedHook}
+    />)
     const target = await screen.findByRole('button', { name: '设置目标' })
     expect(target.textContent).toContain('Home NAS · web')
-    await waitFor(() => { expect(api.switchRuntime).toHaveBeenCalledWith(runtime) })
+    await waitFor(() => { expect(refreshNodeSettings).toHaveBeenCalledOnce() })
+    expect(new URL(location.href).searchParams.get('nodeId')).toBe('nas-home')
+    expect(new URL(location.href).searchParams.get('runtimeId')).toBe('web')
   })
 
   it('synchronizes the node selector to the owner of an aggregated Workspace', async () => {
@@ -214,8 +230,10 @@ describe('Hub management Settings pages', () => {
   })
 
   it('shows registration lifecycle, runtime switching, and diagnostic purpose without primary tool navigation', async () => {
+    const refreshNodeSettings = vi.fn()
     render(<HubNodesSection
       close={() => undefined}
+      refreshNodeSettings={refreshNodeSettings}
       useSessions={unusedHook}
       useWorkspaces={unusedHook}
     />)
@@ -271,9 +289,11 @@ describe('Hub management Settings pages', () => {
     }
     api.readFleet.mockResolvedValue({ ...fleet, runtimes: [runtime, secondRuntime] })
     vi.spyOn(globalThis, 'confirm').mockReturnValue(true)
+    const refreshNodeSettings = vi.fn()
 
     render(<HubNodesSection
       close={() => undefined}
+      refreshNodeSettings={refreshNodeSettings}
       useSessions={unusedHook}
       useWorkspaces={unusedHook}
     />)
@@ -283,7 +303,9 @@ describe('Hub management Settings pages', () => {
     await waitFor(() => { expect(api.cancelEnrollment).toHaveBeenCalledWith('mac-home') })
 
     fireEvent.click(screen.getByRole('button', { name: '设为默认' }))
-    expect(api.switchRuntime).toHaveBeenCalledWith(secondRuntime)
+    expect(refreshNodeSettings).toHaveBeenCalledOnce()
+    expect(new URL(location.href).searchParams.get('runtimeId')).toBe('desktop')
+    expect(screen.getByRole('button', { name: '默认' })).toHaveProperty('disabled', true)
 
     fireEvent.click(screen.getByRole('button', { name: '撤销节点身份' }))
     await waitFor(() => { expect(api.revokeNode).toHaveBeenCalledWith('nas-home') })

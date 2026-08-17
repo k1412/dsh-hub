@@ -1,7 +1,5 @@
 /** Same-origin operator API used only by Hub settings extensions. */
 
-import { navigateRuntimeTarget } from './runtime-target.ts'
-
 /** Operator-visible identity and live state for one enrolled physical node. */
 export interface HubNode {
   nodeId: string
@@ -194,12 +192,4 @@ export async function invoke<T>(runtime: HubRuntime, capability: string, operati
     await new Promise(resolve => globalThis.setTimeout(resolve, 250))
   }
   throw new Error('节点操作仍在执行，请稍后刷新')
-}
-
-/**
- * Switch the official Web UI to one runtime without changing local Web behavior.
- * @param runtime - target node and Runtime identity.
- */
-export function switchRuntime(runtime: Pick<HubRuntime, 'nodeId' | 'runtimeId'>): void {
-  navigateRuntimeTarget(runtime)
 }

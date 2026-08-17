@@ -3,16 +3,17 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import {
-  cancelEnrollment, createEnrollment, readFleet, revokeNode, switchRuntime,
+  cancelEnrollment, createEnrollment, readFleet, revokeNode,
   type EnrollmentGrant, type FleetSnapshot, type HubNode, type HubOutboxHealth, type HubRuntime,
 } from './api.ts'
 import { AdvancedDiagnostics } from './AdvancedDiagnostics.tsx'
 import { nodeInstallCommand, type NodeInstallPlatform } from './install-command.ts'
-import { readRuntimeTarget, runtimeKey, supportsOfficialWeb } from './runtime-target.ts'
+import { readRuntimeTarget, replaceRuntimeTarget, runtimeKey, supportsOfficialWeb } from './runtime-target.ts'
 import css from './HubSettings.module.css'
 
 /** Props supplied by the official Settings section outlet. */
 export type HubNodesSectionProps = PropsRuntime<'settings.section'>
+  & { refreshNodeSettings?: () => void }
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -52,7 +53,7 @@ function currentRuntimeKey(): string | undefined {
 }
 
 /** Render the complete node registration and lifecycle page. */
-export function HubNodesSection(_props: HubNodesSectionProps): ReactNode {
+export function HubNodesSection({ refreshNodeSettings = () => undefined }: HubNodesSectionProps): ReactNode {
   const [fleet, setFleet] = useState<FleetSnapshot>()
   const [grant, setGrant] = useState<EnrollmentGrant>()
   const [error, setError] = useState<string>()
@@ -62,7 +63,7 @@ export function HubNodesSection(_props: HubNodesSectionProps): ReactNode {
   const [nodeIdEdited, setNodeIdEdited] = useState(false)
   const [installPlatform, setInstallPlatform] = useState<NodeInstallPlatform>('unix')
   const [copied, setCopied] = useState(false)
-  const activeKey = currentRuntimeKey()
+  const [activeKey, setActiveKey] = useState<string | undefined>(() => currentRuntimeKey())
 
   const load = async (): Promise<void> => {
     setError(undefined)
@@ -98,6 +99,12 @@ export function HubNodesSection(_props: HubNodesSectionProps): ReactNode {
         .slice(0, 64)
       setNodeId(slug)
     }
+  }
+
+  const chooseRuntime = (runtime: HubRuntime): void => {
+    replaceRuntimeTarget(runtime)
+    setActiveKey(runtimeKey(runtime))
+    refreshNodeSettings()
   }
 
   const enroll = (event: FormEvent<HTMLFormElement>): void => {
@@ -274,7 +281,7 @@ export function HubNodesSection(_props: HubNodesSectionProps): ReactNode {
                           className={runtimeKey(runtime) === activeKey ? css.activeButton : css.secondaryButton}
                           type="button"
                           disabled={!runtime.online || !supportsOfficialWeb(runtime) || runtimeKey(runtime) === activeKey}
-                          onClick={() => { switchRuntime(runtime) }}
+                          onClick={() => { chooseRuntime(runtime) }}
                         >
                           {runtimeKey(runtime) === activeKey
                             ? '默认'
