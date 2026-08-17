@@ -292,11 +292,12 @@ export class HubServer {
     }
     if ((method === 'GET' || method === 'HEAD') && (url.pathname === '/' || url.pathname === '/setup.html')) {
       const target = this.firstOfficialRuntime()
-      if (url.pathname === '/' && target === undefined) {
+      const hasKnownRuntime = this.officialRuntimes(true).length > 0
+      if (url.pathname === '/' && target === undefined && !hasKnownRuntime) {
         this.redirect(response, '/setup.html')
         return
       }
-      if (url.pathname === '/setup.html' && target !== undefined) {
+      if (url.pathname === '/setup.html' && (target !== undefined || hasKnownRuntime)) {
         this.redirect(response, '/')
         return
       }
@@ -306,6 +307,7 @@ export class HubServer {
         nodes: this.options.storage.control.listNodes().map(node => ({
           ...node,
           online: this.agents.isOnline(node.nodeId),
+          transport: this.agents.transportHealth(node.nodeId),
         })),
         runtimes: this.options.storage.control.listRuntimes(),
       })
@@ -649,6 +651,60 @@ export class HubServer {
     return { ...result, body: JSON.stringify(encoded) }
   }
 
+  private offlineOfficialTargets(): FleetWebTarget[] {
+    const online = new Set(this.officialRuntimes().map(target => this.workspaceTargetKey(target)))
+    return this.officialRuntimes(true).filter(target => !online.has(this.workspaceTargetKey(target)))
+  }
+
+  private cachedOfflineSessions(): unknown[] {
+    const sessions = this.options.storage.control.listSessionIndex()
+    return this.offlineOfficialTargets().flatMap((target) => {
+      const offlineTarget = { ...target, displayName: `${target.displayName ?? target.nodeId}（离线）` }
+      return sessions.filter(session => session.nodeId === target.nodeId && session.runtimeId === target.runtimeId)
+        .map(session => encodeFleetPayload({
+          sessionId: session.sourceId,
+          updatedAt: session.updatedAt,
+          running: false,
+          blank: false,
+          cwd: session.workspacePath ?? '',
+          projections: {
+            asOfSeq: 0,
+            values: {
+              ...(session.title === undefined ? {} : { title: session.title }),
+              sessionListMetadata: { blank: false, lastPromptAt: session.updatedAt },
+            },
+          },
+        }, offlineTarget))
+    })
+  }
+
+  private cachedOfflineWorkspaces(): unknown[] {
+    const sessions = this.options.storage.control.listSessionIndex()
+    return this.offlineOfficialTargets().flatMap((target) => {
+      const offlineTarget = { ...target, displayName: `${target.displayName ?? target.nodeId}（离线）` }
+      const grouped = new Map<string, typeof sessions>()
+      for (const session of sessions) {
+        if (session.nodeId !== target.nodeId || session.runtimeId !== target.runtimeId
+          || session.workspacePath === undefined) continue
+        const rows = grouped.get(session.workspacePath) ?? []
+        rows.push(session)
+        grouped.set(session.workspacePath, rows)
+      }
+      return [...grouped].map(([path, rows]) => {
+        const updatedAt = Math.max(...rows.map(row => row.updatedAt))
+        const segments = path.split(/[\\/]/u).filter(Boolean)
+        return encodeFleetPayload({
+          workspaceId: `offline:${path}`,
+          path,
+          title: segments.at(-1) ?? path,
+          sessionIds: rows.map(row => row.sourceId),
+          createdAt: new Date(updatedAt).toISOString(),
+          updatedAt: new Date(updatedAt).toISOString(),
+        }, offlineTarget)
+      })
+    })
+  }
+
   private async aggregateOfficialRequest(
     rpcMethod: string,
     path: string,
@@ -656,7 +712,11 @@ export class HubServer {
     human: HubHumanPrincipal,
   ): Promise<OfficialWebResponse> {
     const targets = this.officialRuntimes()
-    if (targets.length === 0) throw new HttpProblem(503, 'no DSH Web Runtime is online')
+    const cachedSessions = rpcMethod === 'session.list' ? this.cachedOfflineSessions() : []
+    const cachedWorkspaces = rpcMethod === 'workspace.list' ? this.cachedOfflineWorkspaces() : []
+    if (targets.length === 0 && rpcMethod !== 'session.list' && rpcMethod !== 'workspace.list') {
+      throw new HttpProblem(503, 'no DSH Web Runtime is online')
+    }
     const settled = await Promise.allSettled(targets.map(async target => ({
       target,
       response: await this.invokeOfficialRequest(target, 'POST', path, body, human),
@@ -670,14 +730,17 @@ export class HubServer {
       const envelope = this.parseOfficialEnvelope(item.value.response)
       if (envelope?.result.ok === true) envelopes.push({ ...item.value, envelope })
     }
-    if (envelopes.length === 0) throw new HttpProblem(502, 'no node returned a usable Web response')
-    const rpcId = envelopes[0]?.envelope.rpcId as string
+    if (envelopes.length === 0 && cachedSessions.length === 0 && cachedWorkspaces.length === 0
+      && targets.length > 0) throw new HttpProblem(502, 'no node returned a usable Web response')
+    const request = this.officialRpcRequest(body)
+    const rpcId = envelopes[0]?.envelope.rpcId ?? request?.rpcId
+    if (rpcId === undefined) throw new HttpProblem(400, 'official Web request is invalid')
     let value: unknown
     if (rpcMethod === 'session.list') {
       const items = envelopes.flatMap(({ target, envelope }) => {
         const rows = (envelope.result.value as { items?: unknown } | undefined)?.items
         return Array.isArray(rows) ? rows.map(row => encodeFleetPayload(row, target)) : []
-      }).sort((left, right) => Number((right as { updatedAt?: unknown }).updatedAt ?? 0)
+      }).concat(cachedSessions).sort((left, right) => Number((right as { updatedAt?: unknown }).updatedAt ?? 0)
         - Number((left as { updatedAt?: unknown }).updatedAt ?? 0))
       value = { items }
     } else if (rpcMethod === 'workspace.list') {
@@ -688,7 +751,7 @@ export class HubServer {
         items: envelopes.flatMap(({ target, envelope }) => {
           const rows = (envelope.result.value as { items?: unknown } | undefined)?.items
           return Array.isArray(rows) ? rows.map(row => encodeFleetPayload(row, target)) : []
-        }),
+        }).concat(cachedWorkspaces),
         archivedSessionIds: envelopes.flatMap(({ target, envelope }) => {
           const rows = (envelope.result.value as { archivedSessionIds?: unknown } | undefined)?.archivedSessionIds
           return Array.isArray(rows)
@@ -759,6 +822,13 @@ export class HubServer {
   ): Promise<void> {
     if (this.officialRuntimes().length === 0) throw new Error('no DSH Web Runtime is online')
     const subscription = this.events.subscribe(undefined, (event) => {
+      if (event.type === 'stream.interrupted' && typeof event.data === 'object' && event.data !== null) {
+        const interrupted = event.data as { capability?: unknown; stream?: unknown }
+        if (interrupted.capability === 'dsh.web' && interrupted.stream === stream) {
+          socket.close(1012, 'node stream resynchronization required')
+        }
+        return
+      }
       if (event.type !== 'stream.frame' || typeof event.data !== 'object' || event.data === null) return
       const data = event.data as {
         nodeId?: unknown
@@ -952,12 +1022,13 @@ export class HubServer {
     return true
   }
 
-  private officialRuntimes(): FleetWebTarget[] {
+  private officialRuntimes(includeOffline = false): FleetWebTarget[] {
     const displayNames = new Map(
       this.options.storage.control.listNodes().map(node => [String(node.nodeId), node.displayName]),
     )
     return this.options.storage.control.listRuntimes().filter((runtime) => {
-      if (!runtime.online || !this.agents.isOnline(runtime.nodeId) || !Array.isArray(runtime.capabilities)) return false
+      if ((!includeOffline && (!runtime.online || !this.agents.isOnline(runtime.nodeId)))
+        || !Array.isArray(runtime.capabilities)) return false
       return runtime.capabilities.some((capability) => {
         if (typeof capability !== 'object' || capability === null
           || !('name' in capability) || capability.name !== 'dsh.web'

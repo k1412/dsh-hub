@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-  generateHubIdentity, HubNodeId, signHubEnvelope,
+  generateHubIdentity, HubMessageId, HubNodeId, signHubEnvelope,
   type HubEnvelopeBody,
 } from '@k1412/dsh-hub-protocol'
 import { ReliablePeer, SqliteReliableJournal } from '../src/index.ts'
@@ -162,6 +162,17 @@ describe('reliable Hub transport', () => {
     expect(hubJournal.recoverableInbound()).toEqual([])
   })
 
+  it('pages recoverable inbound work without repeating an unfinished earlier page', () => {
+    const { node, hub, hubJournal } = peerPair()
+    for (let index = 0; index < 3; index += 1) node.enqueue(hello, 4_100 + index)
+    for (const frame of node.renderPending(4_200)) expect(hub.receive(frame, 4_201).kind).toBe('accepted')
+
+    const first = hubJournal.recoverableInboundAfter(0, 2)
+    const second = hubJournal.recoverableInboundAfter(first.at(-1)?.sequence ?? 0, 2)
+    expect(first.map(record => record.sequence)).toEqual([1, 2])
+    expect(second.map(record => record.sequence)).toEqual([3])
+  })
+
   it('coalesces idle acknowledgement records and enforces an outbound byte quota', () => {
     const database = new DatabaseSync(':memory:')
     databases.push(database)
@@ -206,5 +217,34 @@ describe('reliable Hub transport', () => {
       body: { type: 'transport.ack' },
     }, nodeIdentity.privateKey)
     expect(hub.receive(reused, 6_003)).toMatchObject({ kind: 'rejected', reason: 'sequence-conflict' })
+  })
+
+  it('pages and signs an exactly full outbox beyond the first render window', () => {
+    const { node, nodeJournal } = peerPair()
+    for (let index = 1; index <= 10_000; index += 1) {
+      nodeJournal.enqueue(
+        { type: 'transport.ack' },
+        7_000 + index,
+        HubMessageId(`full-outbox-${String(index).padStart(8, '0')}`),
+      )
+    }
+    expect(nodeJournal.outboundUsage()).toMatchObject({
+      records: 10_000,
+      maxRecords: 10_000,
+      oldestCreatedAt: 7_001,
+    })
+    expect(() => nodeJournal.enqueue({ type: 'transport.ack' }, 18_000)).toThrow(/quota/)
+
+    const sequences: number[] = []
+    let cursor = 0
+    for (;;) {
+      const page = node.renderPendingAfter(cursor, 20_000, 257)
+      if (page.length === 0) break
+      sequences.push(...page.map(frame => frame.directionSequence))
+      cursor = page.at(-1)?.directionSequence ?? cursor
+    }
+    expect(sequences).toHaveLength(10_000)
+    expect(sequences[0]).toBe(1)
+    expect(sequences.at(-1)).toBe(10_000)
   })
 })

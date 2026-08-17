@@ -7,14 +7,14 @@ import {
   filesCapability, pluginsCapability, resolveHubOperation, snapshotsCapability, terminalsCapability,
 } from '@k1412/dsh-hub-capabilities'
 import { HubMessageId, signHubEnvelope, verifyHubEnvelope, type HubEnvelopeBody } from '@k1412/dsh-hub-protocol'
-import type { HubJson } from '@k1412/dsh-hub-protocol'
+import type { HubDroppedStream, HubJson, HubTransportStatusBody } from '@k1412/dsh-hub-protocol'
 import { ReliablePeer, type ReliableInboundRecord } from '@k1412/dsh-hub-transport'
 import { HubConnectorServer, type LocalRuntimeBaseline } from './ipc-server.ts'
 import type { HubNodeAgentState } from './state.ts'
 import { HubNodeSupervisor } from './supervisor.ts'
 
 /** Public Node Agent package version sent during enrollment. */
-export const HUB_NODE_AGENT_VERSION = '0.1.0-rc.9'
+export const HUB_NODE_AGENT_VERSION = '0.1.0-rc.10'
 
 /** Sanitized lifecycle notice for service logs. */
 export interface HubNodeAgentNotice {
@@ -37,7 +37,13 @@ interface ActiveHubConnection {
   messageChain: Promise<void>
   lastPongAt: number
   heartbeat: NodeJS.Timeout | undefined
+  statusTimer: NodeJS.Timeout | undefined
 }
+
+const STREAM_RECORD_RESERVE = 2_000
+const STREAM_BYTE_RESERVE = 16 * 1024 * 1024
+const TRANSPORT_STATUS_INTERVAL_MS = 15_000
+const DEFERRED_CONNECTOR_BODY_LIMIT = 2_048
 
 function flushWasRequested(connection: ActiveHubConnection): boolean {
   return connection.flushRequested
@@ -80,13 +86,19 @@ function receiveOne(socket: WebSocket, timeoutMs: number): Promise<unknown> {
       cleanup()
       reject(new Error('Hub closed during handshake'))
     }
+    const onError = () => {
+      cleanup()
+      reject(new Error('Hub connection failed during handshake'))
+    }
     const cleanup = () => {
       clearTimeout(timeout)
       socket.off('message', onMessage)
       socket.off('close', onClose)
+      socket.off('error', onError)
     }
     socket.once('message', onMessage)
     socket.once('close', onClose)
+    socket.once('error', onError)
   })
 }
 
@@ -145,6 +157,11 @@ export class HubNodeAgent {
   private readonly supervisors = new Map<string, HubNodeSupervisor>()
   private connection: ActiveHubConnection | undefined
   private readonly pendingCommands = new Map<string, number>()
+  private readonly pendingRuntimeStates = new Map<string, LocalRuntimeBaseline | 'offline'>()
+  private readonly deferredConnectorBodies: HubEnvelopeBody[] = []
+  private readonly droppedStreams = new Map<string, HubDroppedStream>()
+  private droppedStreamFramesTotal = 0
+  private reportedPressure: HubTransportStatusBody['pressure'] = 'normal'
 
   public constructor(private readonly options: HubNodeAgentOptions) {
     for (const profile of options.state.config.management?.profiles ?? []) {
@@ -221,95 +238,112 @@ export class HubNodeAgent {
       maxPayload: 256 * 1024 * 1024,
       perMessageDeflate: false,
     })
-    const challengePromise = receiveOne(socket, 10_000)
-    await waitForOpen(socket, signal)
-    const challengeInput = await challengePromise
-    const challengeVerification = verifyHubEnvelope(challengeInput, config.hubPublicKey)
-    if (!challengeVerification.ok) throw new Error('Hub challenge verification failed')
-    const challengeEnvelope = challengeVerification.envelope
-    const challengeBody = challengeEnvelope.body
-    if (challengeBody.type !== 'auth.challenge'
-      || challengeBody.audience !== 'node'
-      || challengeVerification.envelope.nodeId !== config.nodeId
-      || challengeVerification.envelope.connectionGeneration !== 0) {
-      throw new Error('Hub challenge verification failed')
-    }
-    const challenge = challengeBody.challenge
-    const now = Date.now()
-    const acceptedPromise = receiveOne(socket, 10_000)
-    await send(socket, signHubEnvelope({
-      protocolVersion: 1,
-      nodeId: config.nodeId,
-      bootId: this.bootId,
-      connectionGeneration: 0,
-      messageId: HubMessageId(randomBytes(18).toString('base64url')),
-      directionSequence: 1,
-      cumulativeAck: this.options.state.journal.inboundAcknowledgement(),
-      issuedAt: now,
-      expiresAt: now + 10_000,
-      body: {
-        type: 'auth.node-proof',
-        publicKey: this.options.state.identity.publicKey,
-        challenge,
-        ...(config.enrollmentCode === undefined ? {} : { enrollmentCode: config.enrollmentCode }),
-        agentVersion: HUB_NODE_AGENT_VERSION,
-        protocolMin: 1,
-        protocolMax: 1,
-      },
-    }, this.options.state.identity.privateKey))
-    const acceptedInput = await acceptedPromise
-    const acceptedVerification = verifyHubEnvelope(acceptedInput, config.hubPublicKey)
-    if (!acceptedVerification.ok) throw new Error('Hub acceptance verification failed')
-    const accepted = acceptedVerification.envelope
-    const acceptedBody = accepted.body
-    if (acceptedBody.type !== 'auth.accepted'
-      || accepted.nodeId !== config.nodeId
-      || acceptedVerification.envelope.bootId !== challengeEnvelope.bootId
-      || acceptedBody.challenge !== challenge
-      || acceptedBody.acceptedProtocol !== 1
-      || acceptedBody.hubPublicKey !== config.hubPublicKey
-      || accepted.connectionGeneration !== acceptedBody.connectionGeneration) {
-      throw new Error('Hub acceptance verification failed')
-    }
-    this.options.state.journal.acknowledgeOutbound(acceptedBody.hubAck)
-    await this.options.state.clearEnrollmentCode()
-    const connection: ActiveHubConnection = {
-      socket,
-      peer: new ReliablePeer({
+    let connection: ActiveHubConnection | undefined
+    try {
+      const challengePromise = receiveOne(socket, 10_000)
+      await waitForOpen(socket, signal)
+      const challengeInput = await challengePromise
+      const challengeVerification = verifyHubEnvelope(challengeInput, config.hubPublicKey)
+      if (!challengeVerification.ok) throw new Error('Hub challenge verification failed')
+      const challengeEnvelope = challengeVerification.envelope
+      const challengeBody = challengeEnvelope.body
+      if (challengeBody.type !== 'auth.challenge'
+        || challengeBody.audience !== 'node'
+        || challengeVerification.envelope.nodeId !== config.nodeId
+        || challengeVerification.envelope.connectionGeneration !== 0) {
+        throw new Error('Hub challenge verification failed')
+      }
+      const challenge = challengeBody.challenge
+      const now = Date.now()
+      const acceptedPromise = receiveOne(socket, 10_000)
+      await send(socket, signHubEnvelope({
+        protocolVersion: 1,
         nodeId: config.nodeId,
-        localBootId: this.bootId,
-        expectedRemoteBootId: accepted.bootId,
-        connectionGeneration: accepted.connectionGeneration,
-        localPrivateKey: this.options.state.identity.privateKey,
-        remotePublicKey: config.hubPublicKey,
-        journal: this.options.state.journal,
-      }),
-      sentSequence: 0,
-      flushPromise: undefined,
-      flushRequested: false,
-      messageChain: Promise.resolve(),
-      lastPongAt: Date.now(),
-      heartbeat: undefined,
+        bootId: this.bootId,
+        connectionGeneration: 0,
+        messageId: HubMessageId(randomBytes(18).toString('base64url')),
+        directionSequence: 1,
+        cumulativeAck: this.options.state.journal.inboundAcknowledgement(),
+        issuedAt: now,
+        expiresAt: now + 10_000,
+        body: {
+          type: 'auth.node-proof',
+          publicKey: this.options.state.identity.publicKey,
+          challenge,
+          ...(config.enrollmentCode === undefined ? {} : { enrollmentCode: config.enrollmentCode }),
+          agentVersion: HUB_NODE_AGENT_VERSION,
+          protocolMin: 1,
+          protocolMax: 1,
+        },
+      }, this.options.state.identity.privateKey))
+      const acceptedInput = await acceptedPromise
+      const acceptedVerification = verifyHubEnvelope(acceptedInput, config.hubPublicKey)
+      if (!acceptedVerification.ok) throw new Error('Hub acceptance verification failed')
+      const accepted = acceptedVerification.envelope
+      const acceptedBody = accepted.body
+      if (acceptedBody.type !== 'auth.accepted'
+        || accepted.nodeId !== config.nodeId
+        || acceptedVerification.envelope.bootId !== challengeEnvelope.bootId
+        || acceptedBody.challenge !== challenge
+        || acceptedBody.acceptedProtocol !== 1
+        || acceptedBody.hubPublicKey !== config.hubPublicKey
+        || accepted.connectionGeneration !== acceptedBody.connectionGeneration) {
+        throw new Error('Hub acceptance verification failed')
+      }
+      this.options.state.journal.acknowledgeOutbound(acceptedBody.hubAck)
+      await this.options.state.clearEnrollmentCode()
+      connection = {
+        socket,
+        peer: new ReliablePeer({
+          nodeId: config.nodeId,
+          localBootId: this.bootId,
+          expectedRemoteBootId: accepted.bootId,
+          connectionGeneration: accepted.connectionGeneration,
+          localPrivateKey: this.options.state.identity.privateKey,
+          remotePublicKey: config.hubPublicKey,
+          journal: this.options.state.journal,
+        }),
+        sentSequence: 0,
+        flushPromise: undefined,
+        flushRequested: false,
+        messageChain: Promise.resolve(),
+        lastPongAt: Date.now(),
+        heartbeat: undefined,
+        statusTimer: undefined,
+      }
+      this.connection = connection
+      this.installConnection(connection)
+      await this.flush(connection)
+      await this.recoverInbound(connection)
+      for (const baseline of this.connector.baselines()) {
+        this.pendingRuntimeStates.set(baseline.runtimeId, baseline)
+      }
+      this.drainPendingRuntimeStates()
+      this.enqueueTransportStatus()
+      await this.flush(connection)
+      this.notice('connected', `connected as node ${config.nodeId}`)
+      await new Promise<void>((resolve) => {
+        const onClose = () => { resolve() }
+        const onAbort = () => { socket.close(1001, 'Node Agent stopping') }
+        socket.once('close', onClose)
+        signal.addEventListener('abort', onAbort, { once: true })
+        socket.once('close', () => { signal.removeEventListener('abort', onAbort) })
+      })
+    } finally {
+      if (connection?.heartbeat !== undefined) clearInterval(connection.heartbeat)
+      if (connection?.statusTimer !== undefined) clearInterval(connection.statusTimer)
+      if (connection !== undefined && this.connection === connection) this.connection = undefined
+      if (socket.readyState === WebSocket.OPEN) socket.close(1001, 'Node Agent connection reset')
+      else if (socket.readyState === WebSocket.CONNECTING) {
+        socket.once('error', () => undefined)
+        socket.terminate()
+      }
     }
-    this.connection = connection
-    this.installConnection(connection)
-    await this.recoverInbound(connection)
-    for (const baseline of this.connector.baselines()) this.enqueueRuntimeHello(baseline)
-    await this.flush(connection)
-    this.notice('connected', `connected as node ${config.nodeId}`)
-    await new Promise<void>((resolve) => {
-      const onClose = () => { resolve() }
-      const onAbort = () => { socket.close(1001, 'Node Agent stopping') }
-      socket.once('close', onClose)
-      signal.addEventListener('abort', onAbort, { once: true })
-      socket.once('close', () => { signal.removeEventListener('abort', onAbort) })
-    })
-    if (this.connection === connection) this.connection = undefined
-    if (connection.heartbeat !== undefined) clearInterval(connection.heartbeat)
   }
 
   private installConnection(connection: ActiveHubConnection): void {
     connection.socket.on('pong', () => { connection.lastPongAt = Date.now() })
+    connection.socket.on('error', () => { connection.socket.close() })
     connection.socket.on('message', (data, binary) => {
       connection.messageChain = connection.messageChain
         .then(() => this.handleHubMessage(connection, data, binary))
@@ -320,6 +354,11 @@ export class HubNodeAgent {
       else if (connection.socket.readyState === WebSocket.OPEN) connection.socket.ping()
     }, 30_000)
     connection.heartbeat.unref()
+    connection.statusTimer = setInterval(() => {
+      this.enqueueTransportStatus()
+      this.requestFlush()
+    }, TRANSPORT_STATUS_INTERVAL_MS)
+    connection.statusTimer.unref()
   }
 
   private async handleHubMessage(connection: ActiveHubConnection, data: WebSocket.RawData, binary: boolean): Promise<void> {
@@ -327,6 +366,11 @@ export class HubNodeAgent {
     if (binary) throw new Error('Hub protocol accepts JSON frames only')
     const received = connection.peer.receive(JSON.parse(webSocketText(data)) as unknown)
     if (received.kind === 'rejected') throw new Error(`Hub frame rejected: ${received.reason}`)
+    this.drainDeferredConnectorBodies()
+    this.drainPendingRuntimeStates()
+    if (this.droppedStreams.size > 0) this.enqueueTransportStatus()
+    this.updatePressureNotice()
+    this.requestFlush()
     if (received.kind === 'duplicate') return
     const claimed = this.options.state.journal.claimInbound(received.record.sequence)
     if (claimed === undefined) throw new Error('accepted Hub frame was not claimable')
@@ -409,11 +453,17 @@ export class HubNodeAgent {
   }
 
   private async recoverInbound(connection: ActiveHubConnection): Promise<void> {
-    for (const pending of this.options.state.journal.recoverableInbound()) {
-      const claimed = this.options.state.journal.claimInbound(pending.sequence)
-      if (claimed === undefined) continue
-      if (await this.processHubInbound(claimed)) {
-        this.options.state.journal.completeInbound(claimed.sequence)
+    let cursor = 0
+    for (;;) {
+      const page = this.options.state.journal.recoverableInboundAfter(cursor)
+      if (page.length === 0) break
+      for (const pending of page) {
+        cursor = pending.sequence
+        const claimed = this.options.state.journal.claimInbound(pending.sequence)
+        if (claimed === undefined) continue
+        if (await this.processHubInbound(claimed)) {
+          this.options.state.journal.completeInbound(claimed.sequence)
+        }
       }
     }
     this.options.state.journal.pruneProcessed()
@@ -421,16 +471,41 @@ export class HubNodeAgent {
   }
 
   private connectorConnected(baseline: LocalRuntimeBaseline): void {
-    this.enqueueRuntimeHello(baseline)
-    void this.flushCurrent()
+    this.pendingRuntimeStates.set(baseline.runtimeId, baseline)
+    this.drainPendingRuntimeStates()
+    this.requestFlush()
   }
 
   private connectorDisconnected(runtimeId: string): void {
-    this.options.state.journal.enqueue({ type: 'runtime.goodbye', runtimeId, reason: 'connector-stopped' })
-    void this.flushCurrent()
+    this.pendingRuntimeStates.set(runtimeId, 'offline')
+    this.drainPendingRuntimeStates()
+    this.requestFlush()
   }
 
   private connectorBody(body: HubEnvelopeBody): void {
+    if (body.type === 'stream.frame' && this.shouldSuppressStream()) {
+      this.recordDroppedStream(body)
+      return
+    }
+    try {
+      this.acceptConnectorBody(body)
+    } catch (error) {
+      if (error instanceof Error && error.message === 'reliable outbox quota exceeded') {
+        if (this.deferredConnectorBodies.length < DEFERRED_CONNECTOR_BODY_LIMIT) {
+          this.deferredConnectorBodies.push(body)
+        } else {
+          this.notice('error', 'reliable control backlog exhausted its emergency memory reserve')
+        }
+        this.enqueueTransportStatus()
+        return
+      }
+      this.notice('error', error instanceof Error ? error.message : 'Connector body was rejected')
+      return
+    }
+    this.requestFlush()
+  }
+
+  private acceptConnectorBody(body: HubEnvelopeBody): void {
     if (body.type === 'capability.result') {
       const sequence = this.pendingCommands.get(body.commandId)
       if (sequence === undefined) {
@@ -446,7 +521,116 @@ export class HubNodeAgent {
     } else {
       this.options.state.journal.enqueue(body)
     }
-    void this.flushCurrent()
+  }
+
+  private drainDeferredConnectorBodies(): void {
+    for (;;) {
+      const body = this.deferredConnectorBodies[0]
+      if (body === undefined) return
+      try {
+        this.acceptConnectorBody(body)
+        this.deferredConnectorBodies.shift()
+      } catch (error) {
+        if (error instanceof Error && error.message === 'reliable outbox quota exceeded') return
+        this.deferredConnectorBodies.shift()
+        this.notice('error', error instanceof Error ? error.message : 'Deferred Connector body was rejected')
+      }
+    }
+  }
+
+  private drainPendingRuntimeStates(): void {
+    for (const [runtimeId, state] of this.pendingRuntimeStates) {
+      try {
+        if (state === 'offline') {
+          this.options.state.journal.enqueue({ type: 'runtime.goodbye', runtimeId, reason: 'connector-stopped' })
+        } else {
+          this.enqueueRuntimeHello(state)
+        }
+        this.pendingRuntimeStates.delete(runtimeId)
+      } catch (error) {
+        if (error instanceof Error && error.message === 'reliable outbox quota exceeded') return
+        this.pendingRuntimeStates.delete(runtimeId)
+        this.notice('error', error instanceof Error ? error.message : 'Runtime state was rejected')
+      }
+    }
+  }
+
+  private shouldSuppressStream(): boolean {
+    const usage = this.options.state.journal.outboundUsage()
+    const recordThreshold = usage.maxRecords - Math.min(STREAM_RECORD_RESERVE, Math.ceil(usage.maxRecords * 0.2))
+    const byteThreshold = usage.maxBytes - Math.min(STREAM_BYTE_RESERVE, Math.ceil(usage.maxBytes * 0.25))
+    return usage.records >= recordThreshold || usage.bytes >= byteThreshold
+  }
+
+  private recordDroppedStream(body: Extract<HubEnvelopeBody, { type: 'stream.frame' }>): void {
+    const key = `${body.runtimeId}\u0000${body.capability}\u0000${body.stream}`
+    const current = this.droppedStreams.get(key)
+    if (current !== undefined) {
+      this.droppedStreams.set(key, { ...current, frames: current.frames + 1 })
+    } else if (this.droppedStreams.size < 128) {
+      this.droppedStreams.set(key, {
+        runtimeId: body.runtimeId,
+        capability: body.capability,
+        stream: body.stream,
+        frames: 1,
+      })
+    }
+    this.droppedStreamFramesTotal += 1
+    this.updatePressureNotice()
+  }
+
+  private enqueueTransportStatus(): void {
+    const usage = this.options.state.journal.outboundUsage()
+    const pressure = this.transportPressure(usage.records, usage.maxRecords, usage.bytes, usage.maxBytes)
+    const droppedStreams = [...this.droppedStreams.values()]
+    try {
+      this.options.state.journal.enqueue({
+        type: 'transport.status',
+        observedAt: Date.now(),
+        pressure,
+        outboxRecords: usage.records,
+        outboxBytes: usage.bytes,
+        maxOutboxRecords: usage.maxRecords,
+        maxOutboxBytes: usage.maxBytes,
+        ...(usage.oldestCreatedAt === 0 ? {} : { oldestPendingAt: usage.oldestCreatedAt }),
+        droppedStreamFramesTotal: this.droppedStreamFramesTotal,
+        droppedStreams,
+      })
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== 'reliable outbox quota exceeded') {
+        this.notice('error', error instanceof Error ? error.message : 'Transport status was rejected')
+      }
+      this.updatePressureNotice()
+      return
+    }
+    this.droppedStreams.clear()
+    for (const runtimeId of new Set(droppedStreams.map(stream => stream.runtimeId))) {
+      void this.connector.send(runtimeId, {
+        type: 'runtime.resync-required', runtimeId, reason: 'retention-exceeded',
+      }).catch((error: unknown) => {
+        this.notice('error', error instanceof Error ? error.message : 'Runtime resynchronization failed')
+      })
+    }
+    this.updatePressureNotice()
+  }
+
+  private transportPressure(records: number, maxRecords: number, bytes: number, maxBytes: number): HubTransportStatusBody['pressure'] {
+    const ratio = Math.max(records / maxRecords, bytes / maxBytes)
+    if (ratio >= 0.95 || this.deferredConnectorBodies.length > 0) return 'critical'
+    if (ratio >= 0.75 || this.droppedStreams.size > 0) return 'warning'
+    return 'normal'
+  }
+
+  private updatePressureNotice(): void {
+    const usage = this.options.state.journal.outboundUsage()
+    const pressure = this.transportPressure(usage.records, usage.maxRecords, usage.bytes, usage.maxBytes)
+    if (pressure === this.reportedPressure) return
+    this.reportedPressure = pressure
+    if (pressure === 'normal') {
+      this.notice('connected', 'reliable transport queue pressure recovered')
+    } else {
+      this.notice('error', `reliable transport queue pressure is ${pressure} (${String(usage.records)}/${String(usage.maxRecords)} records)`)
+    }
   }
 
   private enqueueRuntimeHello(baseline: LocalRuntimeBaseline): void {
@@ -482,6 +666,13 @@ export class HubNodeAgent {
     return this.connection === undefined ? Promise.resolve() : this.flush(this.connection)
   }
 
+  private requestFlush(): void {
+    void this.flushCurrent().catch((error: unknown) => {
+      this.notice('error', error instanceof Error ? error.message : 'Hub flush failed')
+      this.connection?.socket.close(1011, 'Hub flush failed')
+    })
+  }
+
   private flush(connection: ActiveHubConnection): Promise<void> {
     if (connection.flushPromise !== undefined) {
       connection.flushRequested = true
@@ -493,11 +684,18 @@ export class HubNodeAgent {
         connection.flushRequested = false
         let refreshAcknowledgement = true
         for (;;) {
-          const frames = connection.peer.renderPending().filter(candidate =>
-            candidate.directionSequence > connection.sentSequence
-            || (refreshAcknowledgement && candidate.body.type === 'transport.ack'))
+          const frames = connection.peer.renderPendingAfter(connection.sentSequence)
+          if (frames.length === 0) {
+            const acknowledgement = refreshAcknowledgement
+              ? connection.peer.renderPendingAcknowledgement()
+              : undefined
+            refreshAcknowledgement = false
+            if (acknowledgement === undefined || acknowledgement.directionSequence > connection.sentSequence) break
+            if (this.connection !== connection || connection.socket.readyState !== WebSocket.OPEN) return
+            await send(connection.socket, acknowledgement)
+            break
+          }
           refreshAcknowledgement = false
-          if (frames.length === 0) break
           for (const frame of frames) {
             if (this.connection !== connection || connection.socket.readyState !== WebSocket.OPEN) return
             await send(connection.socket, frame)

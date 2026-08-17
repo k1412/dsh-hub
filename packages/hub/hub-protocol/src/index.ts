@@ -267,6 +267,28 @@ export interface HubAckBody {
   type: 'transport.ack'
 }
 
+/** One stream class suppressed locally while reliable control delivery is under pressure. */
+export interface HubDroppedStream {
+  runtimeId: string
+  capability: string
+  stream: string
+  frames: number
+}
+
+/** Node-side reliable queue health reported to the authenticated Hub operator. */
+export interface HubTransportStatusBody {
+  type: 'transport.status'
+  observedAt: number
+  pressure: 'normal' | 'warning' | 'critical'
+  outboxRecords: number
+  outboxBytes: number
+  maxOutboxRecords: number
+  maxOutboxBytes: number
+  oldestPendingAt?: number
+  droppedStreamFramesTotal: number
+  droppedStreams: HubDroppedStream[]
+}
+
 /** Business payloads admitted by protocol version 1. */
 export type HubEnvelopeBody =
   | HubChallengeBody
@@ -278,6 +300,7 @@ export type HubEnvelopeBody =
   | HubResultBody
   | HubStreamFrameBody
   | HubResyncBody
+  | HubTransportStatusBody
   | HubAckBody
 
 const challengeSchema = z.string().regex(PROTOCOL_ID)
@@ -357,6 +380,23 @@ export const hubEnvelopeBodySchema: z.ZodType<HubEnvelopeBody> = z.discriminated
     type: z.literal('runtime.resync-required'),
     runtimeId: hubRuntimeIdSchema.optional(),
     reason: z.enum(['sequence-gap', 'baseline-changed', 'retention-exceeded', 'operator-request']),
+  }),
+  z.strictObject({
+    type: z.literal('transport.status'),
+    observedAt: z.number().int().nonnegative(),
+    pressure: z.enum(['normal', 'warning', 'critical']),
+    outboxRecords: z.number().int().nonnegative(),
+    outboxBytes: z.number().int().nonnegative(),
+    maxOutboxRecords: z.number().int().positive(),
+    maxOutboxBytes: z.number().int().positive(),
+    oldestPendingAt: z.number().int().positive().optional(),
+    droppedStreamFramesTotal: z.number().int().nonnegative(),
+    droppedStreams: z.array(z.strictObject({
+      runtimeId: hubRuntimeIdSchema,
+      capability: capabilityNameSchema,
+      stream: memberNameSchema,
+      frames: z.number().int().positive(),
+    })).max(128),
   }),
   z.strictObject({ type: z.literal('transport.ack') }),
 ]).superRefine((body, context) => {

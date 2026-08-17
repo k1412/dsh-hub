@@ -7,7 +7,7 @@ English | [中文](README.zh.md)
 ## Pages
 
 - **New session target** lists online Runtimes that advertise `dsh.web.fetch` beside the official Workspace picker. The last choice is preselected, changing it clears only the current blank-session selection, and choosing an aggregated existing Workspace automatically synchronizes the selector to that Workspace's owner.
-- **Hub nodes** creates one-time enrollment grants, lists and cancels pending enrollment, shows node and runtime state, chooses the default runtime for ownerless operations without filtering the fleet session page, and revokes a node identity.
+- **Hub nodes** creates one-time enrollment grants, lists and cancels pending enrollment, shows node and runtime state, monitors reliable queues in both directions and stream interruptions, chooses the default runtime for ownerless operations without filtering the fleet session page, and revokes a node identity. Health data refreshes every 15 seconds.
 - **Node plugins** shows the actually installed version, enabled state, and health; checks npm updates; relies on the Node Agent to preserve dependency and Cordis state before every update; shows every update outcome; and offers one-click rollback.
 - **Advanced diagnostics** is collapsed by default inside Hub nodes. Terminal is an emergency shell with the Node Agent account's authority. Files starts only from an operator-entered absolute path, and writes and deletes use content hashes to reject concurrent replacement. Neither is a normal chat or project-file navigation entry.
 - **Whole-profile snapshots** is collapsed by default inside Node plugins and is separate from automatic plugin rollback. It exists only for explicit configuration, dependency, or approved-data recovery points.

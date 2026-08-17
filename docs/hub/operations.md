@@ -66,4 +66,10 @@ Restore checks the snapshot artifact hash and configured roots. Supply an expect
 
 Check Cloudflare Access policy and Service Token status, public DNS and TLS, the private proxy-to-origin path, proxy WebSocket forwarding, Node Agent logs, and Hub audit records in that order. Never print Service Token secrets, enrollment codes, private keys, or Connector secrets while collecting diagnostics.
 
+**Settings → Hub nodes** displays reliable-queue health in both directions every 15 seconds. Node-to-Hub values come from the Node Agent report; Hub-to-node values come directly from Hub's journal. On a healthy connection both record counts return close to zero and the oldest-record time disappears. `warning` means usage has reached 75%; `critical` means it has reached 95% or control records have entered the emergency in-memory queue. An offline node may lack a fresh node-side report, while its Hub queue, last heartbeat, and cached session index remain visible.
+
+When a queue is full, keep the Node Agent service running and restore the Hub WSS path first. Node Agent pages through the existing journal before publishing runtime baselines and reserves capacity for control records. Do not delete the node database, private key, or Connector secret, and do not re-enroll merely to bypass sequence state. If the page reports an interrupted stream, wait for the runtime baseline resynchronization and reopen transient streams such as terminals; indexed sessions remain visible by working directory with an offline label meanwhile.
+
+Confirm recovery with all four signals: the Node Agent process is not restart-looping, both queue record counts continue to fall, the runtime returns online, and an existing session remains usable from local Web or desktop and Hub. Pressure recovery writes a `transport.pressure` audit record, while the cumulative suppressed-frame count remains available for diagnosis.
+
 A sequence gap requests a runtime resynchronization. An `outcome-unknown` command requires inspection of node-authoritative state before another mutation. Do not convert it to success or retry solely from the Hub command record.

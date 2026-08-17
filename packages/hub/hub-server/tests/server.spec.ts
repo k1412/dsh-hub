@@ -170,6 +170,68 @@ describe('Hub HTTP server', () => {
     }] })
   })
 
+  it('keeps cached project groups and sessions visible while their node is offline', async () => {
+    const { base, storage } = await fixture()
+    const grant = storage.control.createEnrollment(HubNodeId('offline-node'), 'Home Mac', Date.now() + 60_000)
+    const node = storage.control.consumeEnrollment(grant.code, 'offline-public-key', 'offline-service')
+    const runtimeId = HubRuntimeId('default')
+    storage.control.upsertRuntime({
+      nodeId: node.nodeId,
+      runtimeId,
+      bootId: 'offline-runtime-boot',
+      dshVersion: '0.1.0-rc.9',
+      connectorVersion: '0.1.0-rc.9',
+      capabilities: [webCapability.descriptor] as never,
+      online: false,
+      lastSeenAt: 1_000,
+    })
+    storage.control.upsertSessionIndex({
+      hubSessionId: 'offline-hub-session',
+      nodeId: node.nodeId,
+      runtimeId,
+      sourceId: 'offline-source-session',
+      title: 'Preserved session',
+      workspacePath: '/Users/wuyang/Code/project',
+      updatedAt: 2_000,
+      running: true,
+      stale: true,
+    })
+
+    const sessionResponse = await fetch(`${base}/api/session.list`, {
+      method: 'POST',
+      headers: requestHeaders('human', true),
+      body: JSON.stringify({
+        type: 'client-request', rpcId: 'offline-sessions', method: 'session.list', payload: {},
+      }),
+    })
+    expect(sessionResponse.status).toBe(200)
+    const sessionBody = await sessionResponse.json() as {
+      result: { value: { items: Array<{ sessionId: string; running: boolean; projections: unknown }> } }
+    }
+    expect(sessionBody.result.value.items).toMatchObject([{
+      running: false,
+      projections: { values: { title: 'Preserved session' } },
+    }])
+    expect(decodeFleetId(sessionBody.result.value.items[0]?.sessionId ?? '')).toMatchObject({
+      nodeId: 'offline-node', runtimeId: 'default', sourceId: 'offline-source-session',
+    })
+
+    const workspaceResponse = await fetch(`${base}/api/workspace.list`, {
+      method: 'POST',
+      headers: requestHeaders('human', true),
+      body: JSON.stringify({
+        type: 'client-request', rpcId: 'offline-workspaces', method: 'workspace.list', payload: {},
+      }),
+    })
+    expect(workspaceResponse.status).toBe(200)
+    await expect(workspaceResponse.json()).resolves.toMatchObject({
+      result: { value: { items: [{
+        path: '/Users/wuyang/Code/project',
+        title: 'project · Home Mac（离线）',
+      }] } },
+    })
+  })
+
   it('aggregates official sessions across Runtimes and routes a selected session back to its owner', async () => {
     const { base, storage } = await fixture()
     const targets = [

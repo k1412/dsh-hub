@@ -2,7 +2,8 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { generateHubIdentity } from '@k1412/dsh-hub-protocol'
+import { generateHubIdentity, HubMessageId } from '@k1412/dsh-hub-protocol'
+import { HubNodeAgent } from '../src/agent.ts'
 import { HubNodeAgentState, loadHubNodeAgentConfig } from '../src/state.ts'
 
 const roots: string[] = []
@@ -88,5 +89,63 @@ describe('Node Agent private state', () => {
       management: { profiles: [profiles[0], { ...profiles[1], profileDirectory: profiles[0]?.profileDirectory }] },
     })}\n`, { mode: 0o600 })
     await expect(loadHubNodeAgentConfig(configPath)).rejects.toThrow(/profile directories must be unique/)
+  })
+
+  it('contains Connector callbacks at an exactly full durable outbox and retries runtime state after acknowledgement', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-hub-node-pressure-'))
+    roots.push(root)
+    const configPath = join(root, 'node-agent.json')
+    const stateDirectory = join(root, 'state')
+    await writeFile(configPath, `${JSON.stringify({
+      hubUrl: 'https://hub.example.com',
+      nodeId: 'node-pressure',
+      accessClientId: 'node-token.access',
+      accessClientSecret: 'service-token-secret-with-at-least-32-characters',
+      hubPublicKey: generateHubIdentity().publicKey,
+      stateDirectory,
+      ipcEndpoint: join(stateDirectory, 'connector.sock'),
+    })}\n`, { mode: 0o600 })
+    const state = await HubNodeAgentState.open(configPath)
+    for (let index = 1; index <= 10_000; index += 1) {
+      state.journal.enqueue(
+        { type: 'transport.ack' },
+        1_000 + index,
+        HubMessageId(`node-pressure-${String(index).padStart(8, '0')}`),
+      )
+    }
+    const agent = new HubNodeAgent({ state })
+    const internal = agent as unknown as {
+      connectorBody(body: {
+        type: 'stream.frame'
+        runtimeId: string
+        streamId: string
+        capability: string
+        stream: string
+        frameSequence: number
+        payload: Record<string, never>
+      }): void
+      connectorDisconnected(runtimeId: string): void
+      drainPendingRuntimeStates(): void
+    }
+    expect(() => {
+      internal.connectorBody({
+        type: 'stream.frame',
+        runtimeId: 'default',
+        streamId: 'pressure-stream-0001',
+        capability: 'dsh.sessions',
+        stream: 'events',
+        frameSequence: 1,
+        payload: {},
+      })
+    }).not.toThrow()
+    expect(() => { internal.connectorDisconnected('default') }).not.toThrow()
+    expect(state.journal.outboundUsage().records).toBe(10_000)
+
+    state.journal.acknowledgeOutbound(1)
+    internal.drainPendingRuntimeStates()
+    expect(state.journal.pendingOutbound(10_000).at(-1)?.body).toEqual({
+      type: 'runtime.goodbye', runtimeId: 'default', reason: 'connector-stopped',
+    })
+    state.close()
   })
 })

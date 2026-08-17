@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 're
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import {
   cancelEnrollment, createEnrollment, readFleet, revokeNode, switchRuntime,
-  type EnrollmentGrant, type FleetSnapshot, type HubNode, type HubRuntime,
+  type EnrollmentGrant, type FleetSnapshot, type HubNode, type HubOutboxHealth, type HubRuntime,
 } from './api.ts'
 import { AdvancedDiagnostics } from './AdvancedDiagnostics.tsx'
 import { nodeInstallCommand, type NodeInstallPlatform } from './install-command.ts'
@@ -26,6 +26,24 @@ function nodeState(node: HubNode): { label: string; tone: string } {
   if (node.status === 'revoked') return { label: '已撤销', tone: 'danger' }
   if (node.online) return { label: '在线', tone: 'success' }
   return { label: '离线', tone: 'muted' }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${String(bytes)} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`
+}
+
+function queueSummary(queue: HubOutboxHealth): string {
+  const capacity = `${String(queue.records)} / ${String(queue.maxRecords)} 条 · ${formatBytes(queue.bytes)} / ${formatBytes(queue.maxBytes)}`
+  return queue.oldestPendingAt === undefined ? capacity : `${capacity} · 最早 ${formatTime(queue.oldestPendingAt)}`
+}
+
+function pressureState(pressure: NonNullable<HubNode['transport']>['pressure']): { label: string; tone: string } {
+  if (pressure === 'critical') return { label: '队列严重积压', tone: 'danger' }
+  if (pressure === 'warning') return { label: '队列有压力', tone: 'warning' }
+  if (pressure === 'normal') return { label: '传输正常', tone: 'success' }
+  return { label: '等待监控数据', tone: 'muted' }
 }
 
 function currentRuntimeKey(): string | undefined {
@@ -55,7 +73,11 @@ export function HubNodesSection(_props: HubNodesSectionProps): ReactNode {
     }
   }
 
-  useEffect(() => { void load() }, [])
+  useEffect(() => {
+    void load()
+    const timer = globalThis.setInterval(() => { void load() }, 15_000)
+    return () => { globalThis.clearInterval(timer) }
+  }, [])
 
   const runtimesByNode = useMemo(() => {
     const result = new Map<string, HubRuntime[]>()
@@ -203,6 +225,13 @@ export function HubNodesSection(_props: HubNodesSectionProps): ReactNode {
         <div className={css.cardList}>
           {fleet?.nodes.map((node) => {
             const status = nodeState(node)
+            const health = node.transport ?? {
+              pressure: 'unknown' as const,
+              hubOutbox: { records: 0, bytes: 0, maxRecords: 10_000, maxBytes: 64 * 1024 * 1024 },
+              droppedStreamFramesTotal: 0,
+              droppedStreams: [],
+            }
+            const transport = pressureState(health.pressure)
             const runtimes = runtimesByNode.get(node.nodeId) ?? []
             return (
               <article className={css.card} key={node.nodeId}>
@@ -214,6 +243,17 @@ export function HubNodesSection(_props: HubNodesSectionProps): ReactNode {
                   <div><dt>最近连接</dt><dd>{formatTime(node.lastSeenAt)}</dd></div>
                   <div><dt>Runtime</dt><dd>{runtimes.length}</dd></div>
                 </dl>
+                <div className={css.transport} data-tone={transport.tone}>
+                  <div className={css.transportHeader}>
+                    <strong>{transport.label}</strong>
+                    <small>{health.reportedAt === undefined ? '尚未收到节点报告' : `更新于 ${formatTime(health.reportedAt)}`}</small>
+                  </div>
+                  <dl className={css.transportQueues}>
+                    <div><dt>节点 → Hub</dt><dd>{health.nodeOutbox === undefined ? '等待节点上线' : queueSummary(health.nodeOutbox)}</dd></div>
+                    <div><dt>Hub → 节点</dt><dd>{queueSummary(health.hubOutbox)}</dd></div>
+                    <div><dt>已抑制流量</dt><dd>{String(health.droppedStreamFramesTotal)} 帧</dd></div>
+                  </dl>
+                </div>
                 {runtimes.length === 0 ? <p className={css.empty}>尚未上报 DSH Runtime。</p> : (
                   <ul className={css.runtimeList}>
                     {runtimes.map(runtime => (

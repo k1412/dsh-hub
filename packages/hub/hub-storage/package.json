@@ -1,7 +1,7 @@
 {
   "name": "@k1412/dsh-hub-storage",
   "description": "SQLite control-plane storage for DSH Hub",
-  "version": "0.1.0-rc.9",
+  "version": "0.1.0-rc.10",
   "publishConfig": {
     "access": "public"
   },

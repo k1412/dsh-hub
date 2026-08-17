@@ -87,6 +87,51 @@ export class ReliablePeer {
   }
 
   /**
+   * Render pending bodies after a connection-local send cursor.
+   * @param sequence - exclusive lower directional-sequence bound.
+   * @param now - signature clock in Unix milliseconds.
+   * @param limit - maximum number of pending bodies to render.
+   * @returns freshly signed envelopes after the supplied sequence.
+   */
+  public renderPendingAfter(sequence: number, now = Date.now(), limit = 1_000): HubSignedEnvelope[] {
+    const acknowledgement = this.options.journal.inboundAcknowledgement()
+    return this.options.journal.pendingOutboundAfter(sequence, limit).map(record => signHubEnvelope({
+      protocolVersion: 1,
+      nodeId: this.options.nodeId,
+      bootId: this.options.localBootId,
+      connectionGeneration: this.options.connectionGeneration,
+      messageId: record.messageId,
+      directionSequence: record.sequence,
+      cumulativeAck: acknowledgement,
+      issuedAt: now,
+      expiresAt: now + this.envelopeTtlMs,
+      body: record.body,
+    }, this.options.localPrivateKey))
+  }
+
+  /**
+   * Re-sign the coalesced acknowledgement record with the latest inbound cursor.
+   * @param now - signature clock in Unix milliseconds.
+   * @returns a refreshed acknowledgement envelope when one remains pending.
+   */
+  public renderPendingAcknowledgement(now = Date.now()): HubSignedEnvelope | undefined {
+    const record = this.options.journal.pendingAcknowledgement()
+    if (record === undefined) return undefined
+    return signHubEnvelope({
+      protocolVersion: 1,
+      nodeId: this.options.nodeId,
+      bootId: this.options.localBootId,
+      connectionGeneration: this.options.connectionGeneration,
+      messageId: record.messageId,
+      directionSequence: record.sequence,
+      cumulativeAck: this.options.journal.inboundAcknowledgement(),
+      issuedAt: now,
+      expiresAt: now + this.envelopeTtlMs,
+      body: record.body,
+    }, this.options.localPrivateKey)
+  }
+
+  /**
    * Authenticate and durably journal one frame before the caller dispatches it.
    * @param input - untrusted decoded WebSocket frame.
    * @param now - verification clock in Unix milliseconds.

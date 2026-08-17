@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   canonicalHubJson, defineHubCapability, generateHubIdentity, hubCapabilityDescriptorSchema,
-  hubSignedEnvelopeSchema, HubMessageId, HubNodeId, negotiateHubCapabilities,
+  hubEnvelopeBodySchema, hubSignedEnvelopeSchema, HubMessageId, HubNodeId, negotiateHubCapabilities,
   signHubEnvelope, verifyHubCapability, verifyHubEnvelope,
 } from '../src/index.ts'
 
@@ -65,6 +65,28 @@ describe('signed envelopes', () => {
   it('strictly rejects unknown wire fields', () => {
     const { envelope } = signed()
     expect(hubSignedEnvelopeSchema.safeParse({ ...envelope, unexpected: true }).success).toBe(false)
+  })
+
+  it('bounds authenticated transport-pressure reports and dropped stream classes', () => {
+    const status = {
+      type: 'transport.status' as const,
+      observedAt: NOW,
+      pressure: 'warning' as const,
+      outboxRecords: 8_000,
+      outboxBytes: 5_000_000,
+      maxOutboxRecords: 10_000,
+      maxOutboxBytes: 64 * 1024 * 1024,
+      oldestPendingAt: NOW - 30_000,
+      droppedStreamFramesTotal: 42,
+      droppedStreams: [{
+        runtimeId: 'default', capability: 'dsh.sessions', stream: 'events', frames: 42,
+      }],
+    }
+    expect(hubEnvelopeBodySchema.parse(status)).toEqual(status)
+    expect(hubEnvelopeBodySchema.safeParse({
+      ...status,
+      droppedStreams: Array.from({ length: 129 }, () => status.droppedStreams[0]),
+    }).success).toBe(false)
   })
 })
 

@@ -12,6 +12,8 @@
 
 `directionSequence` 在一条认证方向中单调递增，`cumulativeAck` 确认对端的连续前缀。Sequence 验证和持久回放属于传输实现；本包只提供 Wire Field，不持有可变连接状态。
 
+Node Agent 使用 `transport.status` 控制正文报告可靠发件箱容量、当前使用量、压力级别和被抑制的 Stream 类别。该记录只描述传输健康，不改变确认位置，也不把被丢弃的瞬时 Frame 声明为已交付。
+
 ## Capability contract
 
 `defineHubCapability()` 验证声明的能力并计算其 Canonical Descriptor Hash。每个 Operation 声明一种重试姿态：

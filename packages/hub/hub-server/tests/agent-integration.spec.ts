@@ -167,6 +167,33 @@ describe('Hub Agent WebSocket integration', () => {
     await Promise.all(peer.renderPending().map(frame => send(socket, frame)))
 
     peer.enqueue({
+      type: 'transport.status',
+      observedAt: 2_500,
+      pressure: 'warning',
+      outboxRecords: 8_100,
+      outboxBytes: 5_000_000,
+      maxOutboxRecords: 10_000,
+      maxOutboxBytes: 64 * 1024 * 1024,
+      oldestPendingAt: 2_000,
+      droppedStreamFramesTotal: 12,
+      droppedStreams: [{
+        runtimeId, capability: 'dsh.sessions', stream: 'events', frames: 12,
+      }],
+    })
+    await Promise.all(peer.renderPending().map(frame => send(socket, frame)))
+    await vi.waitFor(() => {
+      expect(server.agents.transportHealth(nodeId)).toMatchObject({
+        reportedAt: 2_500,
+        pressure: 'warning',
+        nodeOutbox: { records: 8_100, maxRecords: 10_000 },
+        droppedStreamFramesTotal: 12,
+      })
+    })
+    expect(storage.control.listAudit(100, nodeId)).toContainEqual(expect.objectContaining({
+      action: 'transport.pressure', outcome: 'warning',
+    }))
+
+    peer.enqueue({
       type: 'stream.frame',
       runtimeId,
       capability: 'dsh.sessions',
