@@ -55,11 +55,21 @@ export function GoalBar({ goal, onEdit, onPause, onResume, onClear, t }: GoalBar
     pendingRef.current = true
     setPending(true)
     setActionError(null)
-    const result = await action()
-    pendingRef.current = false
-    setPending(false)
-    if (!result.ok) setActionError(`${result.error.message} (${result.error.code})`)
-    return result
+    try {
+      const result = await action()
+      if (!result.ok) setActionError(`${result.error.message} (${result.error.code})`)
+      return result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setActionError(`${message} (transport)`)
+      return {
+        ok: false,
+        error: { code: 'transport', message, details: {} },
+      }
+    } finally {
+      pendingRef.current = false
+      setPending(false)
+    }
   }, [])
 
   const handleEdit = useCallback(async () => {
@@ -123,13 +133,13 @@ export function GoalBar({ goal, onEdit, onPause, onResume, onClear, t }: GoalBar
     )
   }
 
-  const title = goal.phase === 'blocked' ? goal.blockedReason?.message : undefined
+  const blockedReason = goal.phase === 'blocked' ? goal.blockedReason?.message : undefined
   return (
     <div className={css.dock} data-goal-bar>
-      <div className={css.bar} title={title}>
+      <div className={css.bar} title={blockedReason === undefined ? undefined : goal.objective}>
         <span className={css.goalGlyph}><IconGoalOutline16 size={14} /></span>
         <span className={css.label}>{t(PHASE_LABELS[goal.phase])}</span>
-        <span className={css.objective}>{goal.objective}</span>
+        <span className={css.objective}>{blockedReason ?? goal.objective}</span>
         {actionError !== null && <span className={css.error} role="alert">{actionError}</span>}
         <div className={css.actions}>
           {goal.phase === 'active' && (

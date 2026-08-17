@@ -14,6 +14,8 @@ Connector 会从启动 Runtime 的 CLI 软件包中检测 DSH 版本。仅当嵌
 
 Node Agent 请求权威重新同步时，Connector 只替换仅所有者可访问的 IPC 与 Host 事件订阅；DSH 进程、实时 Agent、目标和工具执行均不受影响。新的 ApiProxy Mux 会使用稳定 Request ID 重放仍处于等待状态的提问或审批，使 Hub 能在断线后重新构建交互式 Composer。
 
+能力调用使用有界且相互独立的调度通道。Goal 变更、回答、Prompt、取消、队列编辑、会话变更，以及设置读取和写入等交互控制，可以越过被大体积 `session.history` 等批量读取阻塞的任务；两条通道都不会无限增长。结果还会绑定到接收命令时的 IPC 代次，因此旧本地连接上延迟完成的工作不能写进替代它的新代次。
+
 ## 模型体验
 
 无，因为 Connector 只桥接操作员控制平面调用，不注册面向模型的 Prompt、工具、Skill 或 Context。
@@ -26,3 +28,4 @@ Node Agent 请求权威重新同步时，Connector 只替换仅所有者可访�
 
 - Connector 必须运行在提供兼容 Host `apiProxy` 与 Typert Gateway 的 DSH Context 中。标准 Profile 会提供这些 Service；其他组合必须显式组合它们及其前置依赖。Connector 不能附加到不相关的 DSH 进程，也不会推断两个进程共享实时状态。
 - Node Agent 必须使用能够读取仅所有者可访问 IPC 密钥并连接已配置本地端点的操作系统账户运行。
+- 调度器只保护单个 Runtime 内的控制延迟，不会取消一个仍然有效的批量读取。Hub 会单独报告浏览器等待超时，而持久命令仍可在稍后完成并参与对账。

@@ -161,12 +161,13 @@ describe('GoalBar', () => {
     expect(screen.queryByText('进行中的目标')).toBeNull()
   })
 
-  it('blocked goal: "受阻的目标" with the block reason as the strip tooltip', () => {
+  it('blocked goal: shows the reason directly and retains the objective as a tooltip', () => {
     const actions = makeActions()
     const goal = makeGoal({ phase: 'blocked', blockedReason: { code: 'stalled', message: 'No progress in 3 rounds' } })
     render(<GoalBar goal={goal} {...actions} t={t} />)
     expect(screen.getByText('受阻的目标')).toBeTruthy()
-    expect(screen.getByText('受阻的目标').closest('[title]')?.getAttribute('title')).toBe('No progress in 3 rounds')
+    expect(screen.getByText('No progress in 3 rounds')).toBeTruthy()
+    expect(screen.getByText('受阻的目标').closest('[title]')?.getAttribute('title')).toBe('Ship the redesign')
   })
 
   it('blocked goal without a reason carries no tooltip', () => {
@@ -203,5 +204,17 @@ describe('GoalBar', () => {
     expect(screen.getByText('Ship the redesign')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '清除目标' }))
     await waitFor(() => { expect(actions.onClear).toHaveBeenCalledTimes(2) })
+  })
+
+  it('contains a thrown carrier failure and re-enables the action', async () => {
+    const actions = makeActions()
+    actions.onPause.mockRejectedValueOnce(new Error('socket closed'))
+    render(<GoalBar goal={makeGoal()} {...actions} t={t} />)
+    const pause = screen.getByRole<HTMLButtonElement>('button', { name: '暂停目标' })
+    fireEvent.click(pause)
+    expect((await screen.findByRole('alert')).textContent).toBe('socket closed (transport)')
+    expect(pause.disabled).toBe(false)
+    fireEvent.click(pause)
+    await waitFor(() => { expect(actions.onPause).toHaveBeenCalledTimes(2) })
   })
 })

@@ -3,4 +3,4 @@
 /apps/hub-web/ @k1412
 /deploy/hub/ @k1412
 /docs/hub/ @k1412
-/.github/workflows/hub-*.yml @k1412
+/.github/workflows/ @k1412

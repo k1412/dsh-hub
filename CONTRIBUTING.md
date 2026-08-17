@@ -44,11 +44,15 @@ pnpm run doc-sync
 
 Protocol, authentication, storage, plugin transaction, snapshot, terminal, or recovery changes require tests for malformed input and failure behavior in addition to the successful path. Connector changes require a real Cordis Loader composition test and must preserve local Web and desktop coexistence. Deployment changes require a Linux AMD64 container build and an origin-isolation smoke test.
 
+Fleet routing or transport scheduling changes also require a simultaneous multi-node integration test. It must use distinct signed node identities and journals, exercise concurrent owner-directed Web and control requests, prove that one stalled or disconnected node cannot block or receive another node's result, and verify owner-only backlog recovery after reconnect.
+
 ## Pull request and review
 
 Complete the pull request template with the issue, user-visible outcome, validation evidence, security impact, compatibility impact, and documentation changes. Keep the diff reviewable, preserve repository formatting and package boundaries, and respond to review with new commits until approval.
 
 The `Hub CI` checks must pass on Linux and macOS, Windows type-check, official Web regression, documentation, and Linux AMD64 container jobs. CODEOWNERS review is required for Hub protocol, authentication, node authority, deployment, and release workflow paths. Merge by squash after approval so `master` retains one reviewed change per pull request.
+
+This fork keeps inherited upstream Harness CI, DSH/Vendor publication, real-API E2E, documentation deployment, Sandbox, and Landlock workflows manual-only. Do not restore their PR, push, or schedule triggers merely to add checks: add a bounded Hub-owned gate to `hub-ci.yml`, or document why the fork is deliberately taking ownership of an upstream release family.
 
 ## Releases
 

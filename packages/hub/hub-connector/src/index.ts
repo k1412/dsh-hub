@@ -25,7 +25,7 @@ import { clientRequestSchema, serverResponseSchema } from '@deepseek-ai/dsh-host
 import { SessionId } from '@deepseek-ai/dsh-session/types'
 
 /** Connector release sent in the authenticated local baseline. */
-export const HUB_CONNECTOR_VERSION = '0.1.0-rc.10'
+export const HUB_CONNECTOR_VERSION = '0.1.0'
 
 /** Connector configuration stored in the DSH profile. */
 export interface Config {
@@ -104,6 +104,7 @@ interface ActiveIpc {
   streams: AbortController
   heartbeat: NodeJS.Timeout
   indexTimer: NodeJS.Timeout | undefined
+  invocations: InvocationScheduler
 }
 
 interface SessionView {
@@ -113,6 +114,75 @@ interface SessionView {
   updatedAt: number
   running: boolean
   eventSequence: number
+}
+
+/**
+ * Bounded, two-lane execution for commands delivered over the ordered IPC
+ * carrier. Bulk history/index reads may be large or slow, so they cannot own
+ * every local execution slot while a human response or Goal mutation waits.
+ */
+class InvocationScheduler {
+  private readonly interactive: Array<() => Promise<void>> = []
+  private readonly bulk: Array<() => Promise<void>> = []
+  private interactiveRunning = 0
+  private bulkRunning = 0
+
+  public constructor(private readonly failed: (error: unknown) => void) {}
+
+  schedule(priority: 'interactive' | 'bulk', task: () => Promise<void>): void {
+    ;(priority === 'interactive' ? this.interactive : this.bulk).push(task)
+    this.pump(priority)
+  }
+
+  private pump(priority: 'interactive' | 'bulk'): void {
+    const queue = priority === 'interactive' ? this.interactive : this.bulk
+    const limit = priority === 'interactive' ? 2 : 4
+    const running = priority === 'interactive' ? this.interactiveRunning : this.bulkRunning
+    for (let count = running; count < limit && queue.length > 0; count += 1) {
+      const task = queue.shift()
+      if (task === undefined) return
+      if (priority === 'interactive') this.interactiveRunning += 1
+      else this.bulkRunning += 1
+      void task().catch(this.failed).finally(() => {
+        if (priority === 'interactive') this.interactiveRunning -= 1
+        else this.bulkRunning -= 1
+        this.pump(priority)
+      })
+    }
+  }
+}
+
+const BULK_WEB_ENDPOINTS = new Set([
+  'session.list', 'session.search', 'session.history', 'session.models',
+  'subagent.list', 'subagent.history', 'host.listDirectory', 'workspace.list',
+  'skill.list', 'agentPreset.list', 'agentPreset.read',
+  'llm.providers', 'llm.models', 'llm.discoverModels',
+])
+
+/** Human-in-the-loop and mutation commands use capacity reserved from bulk reads. */
+function invocationPriority(body: Extract<HubEnvelopeBody, { type: 'capability.invoke' }>): 'interactive' | 'bulk' {
+  if (body.capability === 'dsh.sessions') {
+    return body.operation === 'list' || body.operation === 'read' ? 'bulk' : 'interactive'
+  }
+  if (body.capability === 'dsh.settings') return 'interactive'
+  if (body.capability !== 'dsh.web' || body.operation !== 'fetch'
+    || typeof body.payload !== 'object' || body.payload === null || Array.isArray(body.payload)) return 'bulk'
+  const path = (body.payload as Record<string, unknown>).path
+  const method = (body.payload as Record<string, unknown>).method
+  if (typeof path !== 'string' || method !== 'POST') return 'bulk'
+  let pathname: string
+  try {
+    pathname = new URL(path, 'http://dsh.internal').pathname
+  } catch {
+    return 'bulk'
+  }
+  if (pathname === '/api/respond') return 'interactive'
+  const endpoint = pathname.slice('/api/'.length)
+  if (endpoint.startsWith('goals/')
+    || endpoint.startsWith('settings/')
+    || endpoint.startsWith('credentials/')) return 'interactive'
+  if (endpoint.includes('/')) return 'bulk'
+  return BULK_WEB_ENDPOINTS.has(endpoint) ? 'bulk' : 'interactive'
 }
 
 function rpcId(value?: string): ReturnType<typeof RpcId> {
@@ -284,7 +354,13 @@ export class HubConnector {
       }
     }, 30_000)
     heartbeat.unref()
-    this.active = { socket, writes: Promise.resolve(), streams, heartbeat, indexTimer: undefined }
+    const invocations = new InvocationScheduler((error) => {
+      socket.destroy(error instanceof Error ? error : new Error(String(error)))
+    })
+    const active: ActiveIpc = {
+      socket, writes: Promise.resolve(), streams, heartbeat, indexTimer: undefined, invocations,
+    }
+    this.active = active
     socket.on('data', (chunk) => {
       chain = chain.then(async () => {
         for (const frame of decoder.push(chunk)) {
@@ -319,7 +395,13 @@ export class HubConnector {
             })
             await this.publishIndex()
           } else if (frame.type === 'ipc.hub-body') {
-            await this.handleBody(frame.body)
+            if (frame.body.type === 'capability.invoke') {
+              invocations.schedule(invocationPriority(frame.body), async () => {
+                await this.handleBody(active, frame.body)
+              })
+            } else {
+              await this.handleBody(active, frame.body)
+            }
           } else if (frame.type !== 'ipc.heartbeat') {
             throw new Error(`unexpected Node Agent frame ${frame.type}`)
           }
@@ -347,8 +429,8 @@ export class HubConnector {
     }
   }
 
-  private async send(frame: HubIpcFrame): Promise<void> {
-    const active = this.active
+  private async send(frame: HubIpcFrame, expectedActive: ActiveIpc | undefined = this.active): Promise<void> {
+    const active = expectedActive
     if (active === undefined || active.socket.destroyed) throw new Error('Connector IPC is offline')
     const operation = active.writes.then(() => new Promise<void>((resolve, reject) => {
       if (this.active !== active || active.socket.destroyed) {
@@ -364,7 +446,7 @@ export class HubConnector {
     return operation
   }
 
-  private async handleBody(body: HubEnvelopeBody): Promise<void> {
+  private async handleBody(active: ActiveIpc, body: HubEnvelopeBody): Promise<void> {
     if (body.type === 'runtime.resync-required') {
       if (body.runtimeId !== undefined && body.runtimeId !== this.config.runtimeId) {
         throw new Error('Connector received resynchronization for another runtime')
@@ -387,7 +469,7 @@ export class HubConnector {
       const value = operation.response.parse(await this.invoke(body.capability, body.operation, request, body.commandId))
       await this.send({ type: 'ipc.hub-body', body: {
         type: 'capability.result', commandId: body.commandId, status: 'ok', value: value as HubJson,
-      } })
+      } }, active)
     } catch (error) {
       await this.send({ type: 'ipc.hub-body', body: {
         type: 'capability.result',
@@ -398,7 +480,7 @@ export class HubConnector {
           message: error instanceof Error ? error.message : 'Connector operation failed',
           retryable: false,
         },
-      } })
+      } }, active)
     }
   }
 

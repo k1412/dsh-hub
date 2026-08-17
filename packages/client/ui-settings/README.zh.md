@@ -4,7 +4,7 @@
 
 设置领域的底座，承担两项职责，本身不含任何呈现内容。它提供 `ctx.settingsScope`——每个偏好设置行绑定自己那份持久化命名空间分区所用的宿主传输层；并声明由注册方填充的设置 slot 类型：`settings.trigger`／`settings.header`／`settings.close`（界面框架内容）、`settings.action`（内容标题栏中的有序操作）、`settings.section`（每项功能一页）、`settings.plugins.tab`（“插件”分区内由各功能持有的页面）和 `settings.onboarding`（由各功能持有的有序页面）。它不依赖任何 `ui-*` 呈现包，因此任何持有偏好设置的功能都能够到它；设置**外壳**——`sidebar.settings` 占位方、它的导航与界面框架——位于 ui-settings-general，因为外壳一旦依赖 ui-sidebar，就会经 ui-layout 与 ui-theme 闭合出一条引用图环路。外壳自身的契约类型出于同一原因与外壳放在一起。
 
-该插件不注入任何服务、也不等待任何服务：`ctx.settingsScope.bind(spec)` 在调用时经**调用方**的 context 解析线路面，因此绑定所得 scope 的 disposer 归调用方 fiber 所有，而由调用方注入 `connection` 取得传输层、注入 `remote` 取得失效通知。监听器在首次后台读取启动之前就已存在，因此某一行的激活绝不会阻塞在设置传输层上。已绑定的 scope 会在收到属于自己命名空间的转发 `settings/document-updated` 事件时、以及在 `connection/reset` 时重新读取。写入携带单一字段路径以及最近已知的命名空间 revision 作为 `expectedRevision`；被拒绝或失败的写入会重新读取，除非已有更新的写入取代了它，而过期的读取绝不会覆盖发布更新的结果。若 spec 未提供 `decode`，则分区不是普通对象、未通过其重建后的 schema 校验、或携带本客户端无法重建的 schema 信封时，一律不发布任何值，于是行渲染自己的缺失状态，而不是一份半解码的值。
+该插件不注入任何服务、也不等待任何服务：`ctx.settingsScope.bind(spec)` 在调用时经**调用方**的 context 解析线路面，因此绑定所得 scope 的 disposer 归调用方 fiber 所有，而由调用方注入 `connection` 取得传输层、注入 `remote` 取得失效通知。监听器在首次后台读取启动之前就已存在，因此某一行的激活绝不会阻塞在设置传输层上。已绑定的 scope 会在收到属于自己命名空间的转发 `settings/document-updated` 事件时、以及在 `connection/reset` 时重新读取；经过认证的多宿主嵌入在更换请求所有者后可以调用 `ctx.settingsScope.refreshAll()`，让全部活动 scope 失效，并通过代次隔离阻止旧所有者的延迟读取覆盖新值。写入携带单一字段路径以及最近已知的命名空间 revision 作为 `expectedRevision`；被拒绝或失败的写入会重新读取，除非已有更新的写入取代了它，而过期的读取绝不会覆盖发布更新的结果。若 spec 未提供 `decode`，则分区不是普通对象、未通过其重建后的 schema 校验、或携带本客户端无法重建的 schema 信封时，一律不发布任何值，于是行渲染自己的缺失状态，而不是一份半解码的值。
 
 ## 模型体验
 
@@ -16,5 +16,5 @@
 
 ## 已知限制与暂缓事项
 
-- **远程浏览器没有持久化设置**：设置 RPC 仅限 loopback，因此在非 loopback 浏览器中绑定的 scope 以 `unavailable` 起步且从不跨线路，它支撑的每一行在那里都是无效的。
+- **持久设置需要经过认证的载体决策**：普通远程浏览器只得到内存设置；经过审查的认证控制面文档可以把 `connection.settingsAccess` 设为 `host` 来开放 Host 设置，但这不会授予仅 Loopback 可用的桌面原生能力。认证、授权和请求归属必须由载体与服务端执行，而不是由本 UI 包承担。
 - **每次写入仅一个字段**：`set` 只发送单个 `set` op，因此需要同时改动两个字段的行没有事务可用，会发布两个 revision。

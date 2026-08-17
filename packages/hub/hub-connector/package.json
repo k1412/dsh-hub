@@ -1,7 +1,7 @@
 {
   "name": "@k1412/dsh-hub-connector",
   "description": "Transport-independent DSH Hub Connector for an existing DSH runtime",
-  "version": "0.1.0-rc.10",
+  "version": "0.1.0",
   "publishConfig": { "access": "public" },
   "repository": {
     "type": "git",

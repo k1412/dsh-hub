@@ -14,6 +14,7 @@ DSH Hub provides one authenticated browser workspace for multiple DeepSeek Harne
 ## References
 
 - [Architecture](architecture.md) defines component ownership, transports, persistence, command delivery, and local-client coexistence.
+- [Performance and concurrency](performance.md) defines multi-node release gates, observable indicators, deployment SLOs, and live acceptance.
 - [Security](security.md) defines the trust boundaries, Cloudflare Access requirements, node authority, secret handling, and deployment hardening.
 
 ## Supported topology

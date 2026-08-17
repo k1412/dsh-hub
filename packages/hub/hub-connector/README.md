@@ -14,6 +14,8 @@ Connector detects the DSH version from the CLI package that launched the runtime
 
 When Node Agent requests authoritative resynchronization, Connector replaces only its owner-only IPC and Host event subscriptions. The DSH process, live Agent, goal, and tool execution continue unchanged. Opening a fresh ApiProxy mux replays any still-pending question or approval with its stable request ID, allowing Hub to rebuild the interactive composer after a dropped connection.
 
+Capability invocations use bounded, independent scheduler lanes. Interactive controls such as Goal changes, responses, prompts, cancellation, queue edits, session mutations, and Settings reads and writes can pass stalled bulk reads such as a large `session.history`; neither lane is unbounded. Results are fenced to the IPC generation that accepted the command, so work finishing from an obsolete local connection cannot be written into a replacement generation.
+
 ## Model Experience
 
 None, as the Connector bridges operator control-plane calls and registers no model-facing prompt, tool, skill, or context.
@@ -26,3 +28,4 @@ None; Connector transport records do not enter model requests.
 
 - Connector must run in a DSH Context that provides compatible Host `apiProxy` and Typert Gateway services. A standard profile provides them; another composition must compose those services and prerequisites explicitly. Connector cannot attach to an unrelated DSH process or infer that two processes share live state.
 - Node Agent must run under an operating-system account that can read the owner-only IPC secret and reach the configured local endpoint.
+- The scheduler protects control latency inside one Runtime, but it does not cancel a valid bulk read. Hub reports timed-out browser waits separately, while the durable command remains available for late completion and reconciliation.

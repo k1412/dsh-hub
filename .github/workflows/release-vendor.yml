@@ -2,15 +2,11 @@
 # packages under vendor/, each on its own version line. This sequence releases
 # independently of dsh and of the native packages.
 #
-# Pack runs without credentials on every pull request and master push.
-# Publication is a manual dispatch from a vendor-* tag; a vendor release can
-# carry several versions, so each package has its own tag.
+# The Hub fork keeps this inherited vendor-family workflow manual. Hub PRs do
+# not republish the upstream Cordis family; Hub Release owns Hub artifacts.
 name: Release (vendor)
 
 on:
-  pull_request:
-  push:
-    branches: [master]
   workflow_dispatch:
     inputs:
       publish:
@@ -23,8 +19,7 @@ permissions:
   contents: read
 
 concurrency:
-  # Pack runs per ref so concurrent pull requests never displace each
-  # other; the publish job below serializes the shared dist-tag state.
+  # Manual dry runs stay per-ref; publication still serializes shared dist-tags.
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 

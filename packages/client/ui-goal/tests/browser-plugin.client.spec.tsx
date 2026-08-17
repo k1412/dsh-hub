@@ -88,13 +88,17 @@ async function bench(options: {
     },
   } as never, (() => null) as never)
   ctx.provide('locale', new LocaleRuntime(ctx))
+  const refresh = vi.fn(() => Promise.resolve())
   ctx.provide('sessions', {
     binding: (id: SessionId) => ({
       sessionId: id,
-      session: { projections: { faceOf: (key: string) => ({
-        getSnapshot: () => (key === 'goal' ? options.projection : undefined),
-        subscribe: () => () => {},
-      }) } },
+      session: {
+        refresh,
+        projections: { faceOf: (key: string) => ({
+          getSnapshot: () => (key === 'goal' ? options.projection : undefined),
+          subscribe: () => () => {},
+        }) },
+      },
       ctx,
     }),
   })
@@ -103,6 +107,7 @@ async function bench(options: {
     ctx,
     fiber,
     calls,
+    refresh,
     definitions: () => conversationEvents.entries(),
     remountGoals: () => { activeGoals = goals('remounted-goals') },
     unmountGoals: () => { activeGoals = undefined },
@@ -184,14 +189,16 @@ describe('ui-goal browser plugin', () => {
         expect(result).toEqual({ ok: false, error: { code: 'no-current-goal', message: 'no current goal to mutate', details: {} } })
       }
       expect(b.calls).toHaveLength(0)
+      expect(b.refresh).toHaveBeenCalledTimes(4)
     }
   })
 
-  it('forwards a Remote failure to the strip verbatim', async () => {
+  it('forwards a Remote failure and schedules an authoritative Goal refresh', async () => {
     const b = await bench({ projection: makeProjection(), failWith: { code: 'internal', message: 'stale revision', details: {} } })
     await b.fiber.await()
     const verbs = b.entry()!.inject!(sid('s1'))
     expect(await verbs.onEdit('x')).toEqual({ ok: false, error: { code: 'internal', message: 'stale revision', details: {} } })
+    expect(b.refresh).toHaveBeenCalledTimes(1)
   })
 
   it('drops the dock entry when the plugin fiber unloads (HMR safety)', async () => {

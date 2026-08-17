@@ -20,11 +20,13 @@ Open **Settings → Hub nodes**.
 1. Enter a recognizable display name. Node ID is generated automatically and can be edited before submission.
 2. Select **Generate enrollment code**. The code appears once and expires after 15 minutes.
 3. Create a distinct Cloudflare Access Service Token for that node.
-4. Expand **How to connect the node**, install and initialize Node Agent on the target machine, and register it as a system service.
+4. Copy the displayed one-command installer and run it on the target machine. Paste only the Service Token Client ID value, not the `CF-Access-Client-Id:` header label; the Client Secret uses a hidden prompt and does not enter shell history.
 5. **Waiting to connect** lists unbound grants and allows cancellation before expiry. **Enrolled nodes** shows online, offline, and revoked states plus every DSH runtime.
 6. Select **Set as default** only as the fallback for another ownerless Host operation. New sessions can choose their node directly on the main page. Revoking a node identity disconnects it immediately but does not delete sessions or files on the node.
 
 One physical machine needs one Node Agent and may connect multiple DSH profiles with distinct runtime IDs. Every node requires a distinct Service Token.
+
+If enrollment reports that a non-JSON page was returned before reaching Hub, the request was normally intercepted by Cloudflare Access or another edge layer. Verify the Client ID and Secret values, that the Access application has a Service Auth policy accepting that token, and that the token can reach `/hub/v1/bootstrap`; do not keep retrying with a new enrollment code until those checks pass.
 
 ## Plugin state, update, and rollback
 

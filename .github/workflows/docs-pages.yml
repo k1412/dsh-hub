@@ -1,17 +1,9 @@
 name: Deploy documentation
 
+# Hub CI validates the complete bilingual documentation tree. This inherited
+# upstream Pages deployment remains manual because the fork has no upstream
+# Pages environment and publishes Hub through its own deployment path.
 on:
-  push:
-    branches: [master]
-    paths:
-      - '.github/workflows/docs-pages.yml'
-      - 'docs/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - 'scripts/project-doc-site.ts'
-      - 'scripts/project-doc-site.spec.ts'
-      - 'website/**'
   workflow_dispatch:
 
 concurrency:

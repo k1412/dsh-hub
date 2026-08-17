@@ -7,6 +7,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { HubNodesSection } from './HubNodesSection.tsx'
 import { HubPluginsSection } from './HubPluginsSection.tsx'
 import { HubRuntimePicker } from './HubRuntimePicker.tsx'
+import { HubSettingsTarget } from './HubSettingsTarget.tsx'
 import { en, zh, type HubSettingsLocaleKey } from './locales.ts'
 
 export type { HubSettingsLocaleKey } from './locales.ts'
@@ -22,7 +23,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 const NS = 'hub.settings'
 
 /** Services required by the Hub hero and Settings contributions. */
-export const inject = ['slots', 'locale']
+export const inject = ['slots', 'locale', 'settingsScope']
 
 /** Register node enrollment and plugin recovery as ordinary official Settings pages. */
 export function apply(ctx: ClientContext): void {
@@ -31,7 +32,14 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('conversation.hero.runtime', () => ctx.slots.register({
     name: 'conversation.hero.runtime',
     locale: NS,
+    inject: () => ({ refreshNodeSettings: () => { ctx.settingsScope.refreshAll() } }),
   }, HubRuntimePicker))
+  ctx.slots.inject('settings.action', () => ctx.slots.register({
+    name: 'settings.action',
+    id: 'hub-runtime-target',
+    order: -100,
+    locale: NS,
+  }, HubSettingsTarget))
   ctx.slots.inject('settings.section', function* () {
     yield ctx.slots.register({
       name: 'settings.section',

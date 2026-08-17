@@ -366,6 +366,35 @@ describe('SettingsScopeController', () => {
   })
 })
 describe('SettingsScopeBinder.bind', () => {
+  it('refreshes every live Host-backed scope after an embedding changes Runtime ownership', async () => {
+    const describeCall = vi.fn().mockResolvedValue(described({ preference: 'dark' }, 1))
+    const ctx = new Context()
+    ctx.provide('connection', {
+      api: { settings: { describe: describeCall } },
+      isLoopback: true,
+    } as never)
+    new TestRemote(ctx)
+    await ctx.plugin(SettingsScopeBinder).await()
+    const first = ctx.plugin({
+      inject: ['connection', 'remote', 'settingsScope'],
+      apply: (plugin: Context) => { plugin.settingsScope.bind<UiTestSettings>({ namespace: 'ui-test' }) },
+    })
+    const second = ctx.plugin({
+      inject: ['connection', 'remote', 'settingsScope'],
+      apply: (plugin: Context) => { plugin.settingsScope.bind<UiTestSettings>({ namespace: 'ui-test' }) },
+    })
+    await Promise.all([first.await(), second.await()])
+    await vi.waitFor(() => { expect(describeCall).toHaveBeenCalledTimes(2) })
+
+    const binder = ctx.get('settingsScope') as SettingsScopeBinder
+    binder.refreshAll()
+    await vi.waitFor(() => { expect(describeCall).toHaveBeenCalledTimes(4) })
+    await first.dispose()
+    binder.refreshAll()
+    await vi.waitFor(() => { expect(describeCall).toHaveBeenCalledTimes(5) })
+    await second.dispose()
+  })
+
   it('subscribes before the initial read and converges to the latest queued invalidation', async () => {
     const initial = deferred<ReturnType<typeof described>>()
     const describeCall = vi.fn()

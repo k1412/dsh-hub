@@ -230,6 +230,7 @@ export function HubNodesSection(_props: HubNodesSectionProps): ReactNode {
               hubOutbox: { records: 0, bytes: 0, maxRecords: 10_000, maxBytes: 64 * 1024 * 1024 },
               droppedStreamFramesTotal: 0,
               droppedStreams: [],
+              controlRequests: { pending: 0, timeoutsLast24Hours: 0 },
             }
             const transport = pressureState(health.pressure)
             const runtimes = runtimesByNode.get(node.nodeId) ?? []
@@ -252,7 +253,14 @@ export function HubNodesSection(_props: HubNodesSectionProps): ReactNode {
                     <div><dt>节点 → Hub</dt><dd>{health.nodeOutbox === undefined ? '等待节点上线' : queueSummary(health.nodeOutbox)}</dd></div>
                     <div><dt>Hub → 节点</dt><dd>{queueSummary(health.hubOutbox)}</dd></div>
                     <div><dt>已抑制流量</dt><dd>{String(health.droppedStreamFramesTotal)} 帧</dd></div>
+                    <div><dt>控制请求</dt><dd>{health.controlRequests.pending === 0
+                      ? '无排队'
+                      : `${String(health.controlRequests.pending)} 个排队 · 最早 ${formatTime(health.controlRequests.oldestPendingAt)}`}</dd></div>
+                    <div><dt>24 小时超时</dt><dd>{String(health.controlRequests.timeoutsLast24Hours)} 次</dd></div>
                   </dl>
+                  {health.controlRequests.lastTimeoutAt === undefined ? null : (
+                    <small>最近超时：{health.controlRequests.lastTimeoutOperation ?? '未知操作'} · {formatTime(health.controlRequests.lastTimeoutAt)}</small>
+                  )}
                 </div>
                 {runtimes.length === 0 ? <p className={css.empty}>尚未上报 DSH Runtime。</p> : (
                   <ul className={css.runtimeList}>

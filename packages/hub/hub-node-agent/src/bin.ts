@@ -7,6 +7,7 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { HubNodeAgent } from './agent.ts'
+import { readHubBootstrap } from './bootstrap.ts'
 import { HubNodeAgentState } from './state.ts'
 
 function option(args: readonly string[], name: string): string | undefined {
@@ -59,17 +60,7 @@ async function initialize(args: readonly string[]): Promise<void> {
       'CF-Access-Client-Secret': accessClientSecret,
     },
   })
-  if (!bootstrapResponse.ok) throw new Error(`Hub bootstrap failed with HTTP ${String(bootstrapResponse.status)}`)
-  const bootstrap = await bootstrapResponse.json() as {
-    protocolVersion?: unknown
-    hubPublicKey?: unknown
-    serviceIdentity?: unknown
-  }
-  if (bootstrap.protocolVersion !== 1
-    || typeof bootstrap.hubPublicKey !== 'string'
-    || bootstrap.serviceIdentity !== accessClientId) {
-    throw new Error('Hub bootstrap identity is invalid')
-  }
+  const bootstrap = await readHubBootstrap(bootstrapResponse, accessClientId)
   const stateDirectory = resolve(option(args, '--state-directory') ?? defaultStateDirectory())
   const configPath = resolve(option(args, '--config') ?? join(stateDirectory, 'node-agent.json'))
   const profileDirectory = option(args, '--profile-directory')

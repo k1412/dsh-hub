@@ -14,7 +14,7 @@ import type { HubNodeAgentState } from './state.ts'
 import { HubNodeSupervisor } from './supervisor.ts'
 
 /** Public Node Agent package version sent during enrollment. */
-export const HUB_NODE_AGENT_VERSION = '0.1.0-rc.10'
+export const HUB_NODE_AGENT_VERSION = '0.1.0'
 
 /** Sanitized lifecycle notice for service logs. */
 export interface HubNodeAgentNotice {
@@ -53,14 +53,21 @@ const INTERACTION_STREAM_METHODS = new Set([
   'question/resolved',
 ])
 
-/** Human interaction frames are control messages: dropping one can strand or hide a live wait. */
-function isInteractionStream(body: Extract<HubEnvelopeBody, { type: 'stream.frame' }>): boolean {
+/**
+ * Return whether a reconstructible Web frame still belongs to the interactive
+ * control plane. Pending human interactions and the Goal projection must not
+ * sit behind lossy transcript traffic: dropping either can leave the browser
+ * offering an action against an obsolete CAS revision.
+ */
+function isControlStream(body: Extract<HubEnvelopeBody, { type: 'stream.frame' }>): boolean {
   if (body.capability !== 'dsh.web' || body.stream !== 'mux'
     || typeof body.payload !== 'object' || body.payload === null || Array.isArray(body.payload)) return false
   const envelope = body.payload as Record<string, unknown>
-  return envelope.type === 'server-request'
-    && typeof envelope.method === 'string'
-    && INTERACTION_STREAM_METHODS.has(envelope.method)
+  if (envelope.type !== 'server-request' || typeof envelope.method !== 'string') return false
+  if (INTERACTION_STREAM_METHODS.has(envelope.method)) return true
+  if (envelope.method !== 'session/projection'
+    || typeof envelope.payload !== 'object' || envelope.payload === null || Array.isArray(envelope.payload)) return false
+  return (envelope.payload as Record<string, unknown>).key === 'goal'
 }
 
 function flushWasRequested(connection: ActiveHubConnection): boolean {
@@ -516,7 +523,7 @@ export class HubNodeAgent {
   }
 
   private connectorBody(body: HubEnvelopeBody): void {
-    if (body.type === 'stream.frame' && !isInteractionStream(body) && this.shouldSuppressStream()) {
+    if (body.type === 'stream.frame' && !isControlStream(body) && this.shouldSuppressStream()) {
       this.recordDroppedStream(body)
       return
     }

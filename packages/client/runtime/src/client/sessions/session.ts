@@ -437,6 +437,11 @@ export class Session implements SessionFace {
     await this.open()
   }
 
+  /** Outward, feature-safe spelling for an authoritative session rebuild. */
+  refresh(): Promise<void> {
+    return this.resync()
+  }
+
   // ---- Subscription API (useSyncExternalStore direct wiring) ----
 
   /**

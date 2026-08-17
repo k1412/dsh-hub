@@ -1,9 +1,9 @@
 name: CI
 
+# Fork policy: Hub changes use hub-ci.yml. Keep the upstream harness suite
+# available for an intentional compatibility audit without allocating its
+# private-runner matrix on every Hub PR or master push.
 on:
-  push:
-    branches: [master]
-  pull_request:
   workflow_dispatch:
     inputs:
       suite:
