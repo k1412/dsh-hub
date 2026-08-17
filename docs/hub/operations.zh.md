@@ -68,7 +68,7 @@ Node Agent 离线时，本地客户端仍可继续工作。Connector 重启期�
 
 注册期间来自 Access 的 HTTP 或 HTML 页面不是 Hub JSON 响应。当前安装器会把它报告为“请求在抵达 Hub 前返回非 JSON 页面”，并明确列出 Client ID／Secret、Service Auth Policy 与 `/hub/v1/bootstrap` 检查项，但不会回显响应正文。只粘贴 Client ID 值，绝不要带 `CF-Access-Client-Id:` 标签。成功的 Bootstrap 必须返回 JSON，且其中 `serviceIdentity` 与该 Client ID 精确相等，Node Agent 才会写入固定的 Hub 身份。
 
-“设置 → Hub 节点”每 15 秒显示一次双向可靠队列健康度。节点到 Hub 来自 Node Agent 报告；Hub 到节点直接来自 Hub Journal。正常连接中两侧记录数会回落到接近零，最旧记录时间会消失。`warning` 表示使用量达到 75%，`critical` 表示达到 95% 或控制记录已进入内存应急队列。离线节点可能缺少新的节点侧报告，但 Hub 侧队列、最后心跳和已缓存会话索引仍然可见。
+“设置 → Hub 节点”每 15 秒显示一次双向可靠队列健康度。节点到 Hub 来自 Node Agent 报告；Hub 到节点直接来自 Hub Journal。正常连接中两侧记录数会回落到接近零，最旧记录时间会消失。`warning` 表示总使用量达到 75%、排队的可重建 Stream Frame 达到 500 条或 4 MiB，或已经抑制过 Frame；`critical` 表示总使用量达到 95% 或控制记录已进入内存应急队列。Agent 服务日志会同时显示记录数和字节数。离线节点可能缺少新的节点侧报告，但 Hub 侧队列、最后心跳和已缓存会话索引仍然可见。
 
 Queue 满载时先保持 Node Agent 服务运行并恢复 Hub WSS 路径。Node Agent 会在重连后先分页重放已有 Journal，并为控制记录保留容量；提问和审批请求使用该控制预留空间，不会被主动抑制。不要删除节点数据库、私钥或 Connector Secret，也不要通过重新注册来跳过序列状态。若页面报告 Stream 中断，Connector 会在不重启 DSH 的情况下替换事件订阅；待处理交互会重放到 Composer，终端等瞬时 Stream 则需要重新打开。已索引会话在此期间仍会按工作目录显示为离线。
 

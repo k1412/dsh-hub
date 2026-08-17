@@ -39,7 +39,7 @@ pnpm run hub:web:verify-csp
 
 Node health exposes command count waiting for a result, age of the oldest pending command, timeout count in the last 24 hours, and the most recent timed-out operation. A browser wait exceeding 30 seconds returns HTTP 504 and creates a payload-free timeout audit record, but the durable command remains pending for late completion and reconciliation. The 30-second bound is a failure-containment limit, not a performance target.
 
-Treat delivery-journal utilization at 75% as a warning and 95% as critical. Investigate repeated timeouts, a growing oldest-pending age, reconnect churn, or sustained journal pressure before increasing limits: these signals commonly indicate an unhealthy Runtime, an unreachable node, oversized reads, or insufficient node resources.
+Treat delivery-journal utilization at 75% as a warning and 95% as critical. A separate early warning applies when queued reconstructible stream frames reach 500 records or 4 MiB; large command results such as session history remain visible in total bytes but do not by themselves trigger stream suppression. Investigate repeated timeouts, a growing oldest-pending age, reconnect churn, or sustained journal pressure before increasing limits: these signals commonly indicate an unhealthy Runtime, an unreachable node, oversized reads, or insufficient node resources. Browser event and rescue-terminal WebSockets receive a Ping every 20 seconds, so reconnect churn at a reverse proxy's idle timeout is a deployment fault rather than expected polling.
 
 ## Recommended deployment SLOs
 

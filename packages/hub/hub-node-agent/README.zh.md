@@ -10,7 +10,7 @@ Node Agent 不适合并入 Connector 插件的生命周期。DSH Profile 重启�
 
 服务在注册前和每次握手时校验固定的 Hub 应用密钥。Cloudflare Service Token 提供边缘机器身份，Ed25519 Challenge 证明已注册节点身份。重连使用指数 Full-jitter Backoff、新 Boot 身份、Hub 分配的连接代次隔离、签名序列重放、累计确认、Heartbeat 终止和严格 Payload 限额。
 
-Node Agent 在重连后先按 Sequence 分页发送已有发件箱，再发布 Runtime 基线。发件箱达到流量高水位时，它会为命令结果、Runtime 上下线、确认、待回答提问或审批请求，以及 CAS Goal 控制所依赖的 `goal` 会话投影等控制记录预留容量。可重建的高流量 Stream Frame 会被抑制，人工交互的请求与结算 Frame 和 Goal 投影变更则进入控制预留空间或有界延迟队列。压力恢复后，Node Agent 会要求对应 Runtime 建立新的权威 Stream 代次。连接回调和 Queue 满载只会触发退避与诊断，不会让长期运行进程退出。
+Node Agent 在重连后先按 Sequence 分页发送已有发件箱，再发布 Runtime 基线。发件箱达到流量高水位时，它会为命令结果、Runtime 上下线、确认、待回答提问或审批请求，以及 CAS Goal 控制所依赖的 `goal` 会话投影等控制记录预留容量。可重建的高流量 Stream Frame 会被抑制，人工交互的请求与结算 Frame 和 Goal 投影变更则进入控制预留空间或有界延迟队列。Stream 提前高水位只统计排队的 `stream.frame` 记录和字节，不把 `session.history` 等大型命令结果误算成 Stream 积压；总记录数与总字节数仍执行可靠 Journal 的硬配额。压力恢复后，Node Agent 会要求对应 Runtime 建立新的权威 Stream 代次。连接回调和 Queue 满载只会触发退避与诊断，不会让长期运行进程退出。
 
 Node Agent 每 15 秒向 Hub 报告发件箱记录数、字节数、最旧记录时间、容量、压力等级和累计丢弃的 Stream Frame。报告本身使用同一可靠通道；通道完全占满时，Hub 会先从自身的反向发件箱和连接状态显示可观测信息，节点报告在确认释放容量后补发。
 

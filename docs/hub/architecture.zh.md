@@ -42,7 +42,7 @@ Hub Web 应用直接构建官方 DSH Web 前端，并只增加固定编译进制
 
 Hub 客户端会占用 Workspace picker 前面的可选官方 `conversation.hero.runtime` seat。它只列出在线且声明 `dsh.web.fetch` 的 Runtime，恢复上次仍可用的选择，并在不重新挂载 Web 的情况下更新后续无所有者目录与 Workspace 操作使用的目标。切换 Runtime 会先清除当前空白会话选择，再选择另一个文件夹；选择已有 Fleet Workspace 时则会同步到其编码的所有者。官方设置标题栏始终显示其所属节点与 Runtime；切换所有者时会重新挂载或失效全部 Host 持久设置 Scope，并通过代次隔离阻止旧节点的延迟读取发布。两处选择都不会过滤 Fleet 项目／会话页面。Hub 将官方 HTTP 与事件流量转换为 `dsh.web` 能力，Connector 调用同一 Runtime 的 Host API，而不是代理节点上的 Web Server。
 
-Hub 设置使用同源 REST，控制面事件接口可用 SSE；官方可重建事件通道和 Host 通道使用同源 WebSocket。经过认证的 Hub 文档会显式允许远程使用 Host 持久设置，但不会把公网 Origin 判定为 Loopback，桌面原生动作仍只限回环。浏览器重连后会重新加载节点权威基线。专用同源 WebSocket 承载交互式应急终端输入和输出。
+Hub 设置使用同源 REST，控制面事件接口可用 SSE；官方可重建事件通道和 Host 通道使用同源 WebSocket。Hub 每 20 秒向浏览器事件与应急终端 Socket 发送协议 Ping，使空闲连接能够穿过有界的反向代理超时；不再响应的对端会被终止并重连。经过认证的 Hub 文档会显式允许远程使用 Host 持久设置，但不会把公网 Origin 判定为 Loopback，桌面原生动作仍只限回环。浏览器重连后会重新加载节点权威基线。专用同源 WebSocket 承载交互式应急终端输入和输出。
 
 ## 节点传输
 
@@ -52,7 +52,7 @@ Hub 设置使用同源 REST，控制面事件接口可用 SSE；官方可重建�
 
 读取操作可以重放。幂等变更携带稳定的 Mutation ID。对账操作在重复前检查权威状态。禁止重试的操作在分派中断后产生 `outcome-unknown` 结果。只有目标 Runtime 曾声明完全匹配的合约时，Hub 才能为离线但仍处于活动状态的节点排队命令；持久 Journal 会在节点重连后发送命令。
 
-Node Agent 会先为命令结果、生命周期变化、待处理提问与审批，以及 CAS 变更依赖的 Goal 投影保留 Journal 容量，之后才会抑制可重建的高流量 Stream Frame。Connector 随后通过两个有界通道调度本地工作：两个交互槽用于回答、Goal、会话变更和设置，四个批量槽用于历史、索引和其他大体积读取。结果会绑定到接收它的本地 IPC 代次，因此旧 Connector 连接不能把结果写进替代连接。
+Node Agent 会先为命令结果、生命周期变化、待处理提问与审批，以及 CAS 变更依赖的 Goal 投影保留 Journal 容量，之后才会抑制可重建的高流量 Stream Frame。Stream 提前阈值只统计排队的 `stream.frame` 记录与字节，硬配额仍覆盖完整 Journal；因此大型历史结果会继续可靠投递，但不会迫使无关实时流进入重同步。Connector 随后通过两个有界通道调度本地工作：两个交互槽用于回答、Goal、会话变更和设置，四个批量槽用于历史、索引和其他大体积读取。结果会绑定到接收它的本地 IPC 代次，因此旧 Connector 连接不能把结果写进替代连接。
 
 ## 存储
 

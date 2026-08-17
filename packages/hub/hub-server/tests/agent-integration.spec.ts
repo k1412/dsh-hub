@@ -87,6 +87,7 @@ describe('Hub Agent WebSocket integration', () => {
       hubIdentity,
       publicOrigin: 'https://hub.example.com',
       reportError: error => serverErrors.push(error),
+      browserWebSocketHeartbeatMs: 20,
     })
     servers.push(server)
     const address = await server.listen('127.0.0.1', 0)
@@ -316,12 +317,20 @@ describe('Hub Agent WebSocket integration', () => {
       `ws://127.0.0.1:${String(address.port)}/api/events.mux?nodeId=node-a&runtimeId=default-runtime`,
       { origin: 'https://hub.example.com' },
     )
+    const officialHeartbeat = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => { reject(new Error('official Web heartbeat was not delivered')) }, 500)
+      officialSocket.once('ping', () => {
+        clearTimeout(timeout)
+        resolve()
+      })
+    })
     sockets.push(officialSocket)
     const nextOfficial = socketQueue(officialSocket)
     await new Promise<void>((resolve, reject) => {
       officialSocket.once('open', resolve)
       officialSocket.once('error', reject)
     })
+    await officialHeartbeat
     const officialFrame = {
       type: 'server-request',
       rpcId: 'stream-rpc-1',
@@ -482,12 +491,20 @@ describe('Hub Agent WebSocket integration', () => {
       `ws://127.0.0.1:${String(address.port)}/hub/v1/terminal?nodeId=node-a&runtimeId=default-runtime&columns=100&rows=30`,
       { origin: 'https://hub.example.com' },
     )
+    const terminalHeartbeat = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => { reject(new Error('terminal heartbeat was not delivered')) }, 500)
+      terminalSocket.once('ping', () => {
+        clearTimeout(timeout)
+        resolve()
+      })
+    })
     sockets.push(terminalSocket)
     const nextTerminal = socketQueue(terminalSocket)
     await new Promise<void>((resolve, reject) => {
       terminalSocket.once('open', resolve)
       terminalSocket.once('error', reject)
     })
+    await terminalHeartbeat
     const open = await nextAgentCommand('open')
     expect(open.payload).toMatchObject({ columns: 100, rows: 30 })
     peer.enqueue({
