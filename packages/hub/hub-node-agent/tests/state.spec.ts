@@ -92,6 +92,7 @@ describe('Node Agent private state', () => {
   })
 
   it('contains Connector callbacks at an exactly full durable outbox and retries runtime state after acknowledgement', async () => {
+    const outboxLimit = 64
     const root = await mkdtemp(join(tmpdir(), 'dsh-hub-node-pressure-'))
     roots.push(root)
     const configPath = join(root, 'node-agent.json')
@@ -105,8 +106,10 @@ describe('Node Agent private state', () => {
       stateDirectory,
       ipcEndpoint: join(stateDirectory, 'connector.sock'),
     })}\n`, { mode: 0o600 })
-    const state = await HubNodeAgentState.open(configPath)
-    for (let index = 1; index <= 10_000; index += 1) {
+    const state = await HubNodeAgentState.open(configPath, {
+      journalLimits: { maxOutboundRecords: outboxLimit },
+    })
+    for (let index = 1; index <= outboxLimit; index += 1) {
       state.journal.enqueue(
         { type: 'transport.ack' },
         1_000 + index,
@@ -151,18 +154,18 @@ describe('Node Agent private state', () => {
       })
     }).not.toThrow()
     expect(() => { internal.connectorDisconnected('default') }).not.toThrow()
-    expect(state.journal.outboundUsage().records).toBe(10_000)
+    expect(state.journal.outboundUsage()).toMatchObject({ records: outboxLimit, maxRecords: outboxLimit })
 
     state.journal.acknowledgeOutbound(1)
     internal.drainDeferredConnectorBodies()
-    expect(state.journal.pendingOutbound(10_000).at(-1)?.body).toMatchObject({
+    expect(state.journal.pendingOutbound(outboxLimit).at(-1)?.body).toMatchObject({
       type: 'stream.frame', capability: 'dsh.web', stream: 'mux',
       payload: { method: 'question/requested' },
     })
 
     state.journal.acknowledgeOutbound(2)
     internal.drainPendingRuntimeStates()
-    expect(state.journal.pendingOutbound(10_000).at(-1)?.body).toEqual({
+    expect(state.journal.pendingOutbound(outboxLimit).at(-1)?.body).toEqual({
       type: 'runtime.goodbye', runtimeId: 'default', reason: 'connector-stopped',
     })
     state.close()

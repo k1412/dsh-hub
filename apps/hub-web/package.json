@@ -1,6 +1,6 @@
 {
   "name": "@k1412/dsh-hub-web",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "private": true,
   "type": "module",
   "dependencies": {
