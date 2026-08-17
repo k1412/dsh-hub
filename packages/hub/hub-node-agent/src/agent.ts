@@ -42,6 +42,7 @@ interface ActiveHubConnection {
 
 const STREAM_RECORD_RESERVE = 2_000
 const STREAM_BYTE_RESERVE = 16 * 1024 * 1024
+const HANDSHAKE_TIMEOUT_MS = 30_000
 const TRANSPORT_STATUS_INTERVAL_MS = 15_000
 const DEFERRED_CONNECTOR_BODY_LIMIT = 2_048
 const INTERACTION_STREAM_METHODS = new Set([
@@ -256,9 +257,14 @@ export class HubNodeAgent {
     })
     let connection: ActiveHubConnection | undefined
     try {
-      const challengePromise = receiveOne(socket, 10_000)
-      await waitForOpen(socket, signal)
-      const challengeInput = await challengePromise
+      const challengePromise = receiveOne(socket, HANDSHAKE_TIMEOUT_MS)
+      // Observe both operations immediately. If the challenge timeout wins
+      // while the WebSocket is still opening, a sequential await would leave
+      // its rejection temporarily unhandled and Node may terminate the Agent.
+      const [, challengeInput] = await Promise.all([
+        waitForOpen(socket, signal),
+        challengePromise,
+      ])
       const challengeVerification = verifyHubEnvelope(challengeInput, config.hubPublicKey)
       if (!challengeVerification.ok) throw new Error('Hub challenge verification failed')
       const challengeEnvelope = challengeVerification.envelope
@@ -271,8 +277,8 @@ export class HubNodeAgent {
       }
       const challenge = challengeBody.challenge
       const now = Date.now()
-      const acceptedPromise = receiveOne(socket, 10_000)
-      await send(socket, signHubEnvelope({
+      const acceptedPromise = receiveOne(socket, HANDSHAKE_TIMEOUT_MS)
+      const proof = signHubEnvelope({
         protocolVersion: 1,
         nodeId: config.nodeId,
         bootId: this.bootId,
@@ -291,8 +297,11 @@ export class HubNodeAgent {
           protocolMin: 1,
           protocolMax: 1,
         },
-      }, this.options.state.identity.privateKey))
-      const acceptedInput = await acceptedPromise
+      }, this.options.state.identity.privateKey)
+      const [, acceptedInput] = await Promise.all([
+        send(socket, proof),
+        acceptedPromise,
+      ])
       const acceptedVerification = verifyHubEnvelope(acceptedInput, config.hubPublicKey)
       if (!acceptedVerification.ok) throw new Error('Hub acceptance verification failed')
       const accepted = acceptedVerification.envelope
