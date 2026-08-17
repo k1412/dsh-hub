@@ -19,12 +19,12 @@ const rootFiles = new Set([
   'tsconfig.base.client.json', 'tsconfig.base.json', 'tsconfig.json', 'vitest.config.ts',
 ])
 const scripts = new Set([
-  'build-hub-release.mjs', 'build-hub-server.mjs', 'build-hub-web.mjs',
+  'benchmark-hub.mts', 'build-hub-release.mjs', 'build-hub-server.mjs', 'build-hub-web.mjs',
   'capture-hub-readme.mjs', 'clean.mjs', 'client-bundle.ts', 'run-hub-typecheck.mjs',
   'verify-docs.mjs', 'verify-hub-release.mjs', 'verify-hub-server.mjs',
   'verify-hub-web-csp.mjs', 'verify-repository-boundary.mjs',
 ])
-const workflows = new Set(['hub-ci.yml', 'hub-release.yml', 'issue-lifecycle.yml', 'issue-policy.yml'])
+const workflows = new Set(['hub-ci.yml', 'hub-release.yml'])
 
 function allowed(path) {
   if (!path.includes('/')) return rootFiles.has(path)
@@ -37,7 +37,7 @@ function allowed(path) {
   if (path === 'docs/upstream.md' || path === 'docs/upstream.en.md') return true
   if (path.startsWith('scripts/')) return scripts.has(path.slice('scripts/'.length))
   if (path.startsWith('.github/workflows/')) return workflows.has(path.slice('.github/workflows/'.length))
-  if (path.startsWith('.github/ISSUE_TEMPLATE/') || path.startsWith('.github/issue-management/')) return true
+  if (path.startsWith('.github/ISSUE_TEMPLATE/')) return true
   return new Set([
     '.github/CODEOWNERS', '.github/dependabot.yml', '.github/pull_request_template.md',
   ]).has(path)

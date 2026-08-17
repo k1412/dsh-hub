@@ -495,6 +495,42 @@ describe('Hub Connector coexistence', () => {
       result: { ok: true, value: { manifests: ['dynamic-cordis-runner'] } },
     })
 
+    gatewayDispatch.mockRejectedValueOnce(Object.assign(new Error('goal revision is stale'), { name: 'conflict' }))
+    await server.send('default', {
+      type: 'capability.invoke',
+      commandId: 'command-web-goal-clear-0001',
+      runtimeId: 'default',
+      capability: 'dsh.web',
+      capabilityVersion: '1.0.0',
+      operation: 'fetch',
+      idempotencyKey: 'web-goal-clear-mutation-0001',
+      payload: {
+        clientMutationId: 'web-goal-clear-0001',
+        method: 'POST',
+        path: '/api/goals/clear',
+        headers: [['content-type', 'application/json']],
+        body: JSON.stringify({
+          type: 'client-request',
+          rpcId: 'web-goal-clear-rpc-0001',
+          method: 'goals/clear',
+          payload: { args: { agentId: 'shared-session', ref: { id: 'goal-1', revision: 1 } } },
+        }),
+      },
+    })
+    await vi.waitFor(() => { expect(bodies).toContainEqual(expect.objectContaining({
+      type: 'capability.result', commandId: 'command-web-goal-clear-0001', status: 'ok',
+    })) })
+    const clearResult = bodies.find(body => body.type === 'capability.result'
+      && body.commandId === 'command-web-goal-clear-0001')
+    if (clearResult?.type !== 'capability.result' || clearResult.status !== 'ok'
+      || typeof clearResult.value !== 'object' || clearResult.value === null) {
+      throw new Error('Goal clear Web result missing')
+    }
+    expect(JSON.parse(String((clearResult.value as { body?: unknown }).body))).toMatchObject({
+      rpcId: 'web-goal-clear-rpc-0001',
+      result: { ok: false, error: { code: 'internal', message: 'goal revision is stale' } },
+    })
+
     await server.send('default', {
       type: 'capability.invoke',
       commandId: 'command-hub-000001',

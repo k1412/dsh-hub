@@ -34,7 +34,7 @@ const runtime: HubRuntime = {
   lastSeenAt: 1_000,
   capabilities: [
     { name: 'dsh.web', version: '1.0.0', operations: [{ name: 'fetch' }] },
-    { name: 'dsh.plugins', version: '2.0.0', operations: [
+    { name: 'dsh.plugins', version: '3.0.0', operations: [
       { name: 'inventory' }, { name: 'check-updates' }, { name: 'history' },
       { name: 'apply' }, { name: 'rollback' },
     ] },
@@ -179,7 +179,7 @@ describe('Hub management Settings pages', () => {
       useSessions={unusedHook}
       useWorkspaces={unusedHook}
     />)
-    const target = await screen.findByRole('button', { name: '设置目标' })
+    const target = await screen.findByRole('button', { name: '当前 Runtime' })
     expect(target.textContent).toContain('Home NAS · web')
     fireEvent.click(target)
     fireEvent.click(screen.getByRole('menuitem', { name: 'Mac Neo · desktop' }))
@@ -198,7 +198,7 @@ describe('Hub management Settings pages', () => {
       useSessions={unusedHook}
       useWorkspaces={unusedHook}
     />)
-    const target = await screen.findByRole('button', { name: '设置目标' })
+    const target = await screen.findByRole('button', { name: '当前 Runtime' })
     expect(target.textContent).toContain('Home NAS · web')
     await waitFor(() => { expect(refreshNodeSettings).toHaveBeenCalledOnce() })
     expect(new URL(location.href).searchParams.get('nodeId')).toBe('nas-home')
@@ -275,8 +275,8 @@ describe('Hub management Settings pages', () => {
 
     expect(unix).toContain("--node 'mac-'\"'\"'neo'")
     expect(windows).toContain("$env:DSH_HUB_NODE_ID='mac-''neo'")
-    expect(unix).toContain('/releases/download/hub-v0.2.0/install-node.sh')
-    expect(windows).toContain('/releases/download/hub-v0.2.0/install-node.ps1')
+    expect(unix).toContain('/releases/download/hub-v1.0.0/install-node.sh')
+    expect(windows).toContain('/releases/download/hub-v1.0.0/install-node.ps1')
     expect(unix).not.toContain('DSH_HUB_ACCESS_CLIENT_SECRET')
     expect(windows).not.toContain('DSH_HUB_ACCESS_CLIENT_SECRET')
   })
@@ -365,6 +365,47 @@ describe('Hub management Settings pages', () => {
     expect(JSON.stringify(api.invoke.mock.calls)).not.toContain('artifactHash')
   })
 
+  it('keeps mixed registry and externally managed plugins usable when one lookup fails', async () => {
+    api.invoke.mockImplementation(async (_runtime, capability, operation) => {
+      if (operation === 'inventory') return {
+        plugins: [
+          { packageName: '@example/update', version: '1.0.0', enabled: true, healthy: true },
+          { packageName: '@example/local', version: '1.0.0', enabled: true, healthy: true },
+          { packageName: '@example/unavailable', version: '1.0.0', enabled: true, healthy: true },
+        ],
+        lockHash: 'a'.repeat(43), checkedAt: 1_000,
+      }
+      if (operation === 'history') return { changes: [] }
+      if (capability === 'dsh.snapshots' && operation === 'list') return { snapshots: [] }
+      if (operation === 'check-updates') return {
+        plugins: [
+          {
+            packageName: '@example/update', version: '1.0.0', latestVersion: '2.0.0',
+            updateAvailable: true, updateStatus: 'available', updateSource: 'registry',
+            enabled: true, healthy: true,
+          },
+          {
+            packageName: '@example/local', version: '1.0.0', updateAvailable: false,
+            updateStatus: 'external', updateSource: 'external', enabled: true, healthy: true,
+          },
+          {
+            packageName: '@example/unavailable', version: '1.0.0', updateAvailable: false,
+            updateStatus: 'unavailable', updateSource: 'registry', updateError: 'HTTP 503',
+            enabled: true, healthy: true,
+          },
+        ],
+        lockHash: 'a'.repeat(43), checkedAt: 1_100,
+      }
+      throw new Error(`unexpected operation ${String(operation)}`)
+    })
+
+    render(<HubPluginsSection close={() => undefined} useSessions={unusedHook} useWorkspaces={unusedHook} />)
+    fireEvent.click(await screen.findByRole('button', { name: '检查更新' }))
+    expect(await screen.findByRole('button', { name: '更新到 2.0.0' })).toBeTruthy()
+    expect(screen.getByText('外部管理').getAttribute('title')).toContain('不会擅自改写')
+    expect(screen.getByText('暂无法查询').getAttribute('title')).toBe('HTTP 503')
+  })
+
   it('rolls a plugin back independently from explicit snapshot create and restore', async () => {
     api.invoke.mockImplementation(async (_runtime, capability, operation) => {
       if (operation === 'inventory') return {
@@ -398,7 +439,7 @@ describe('Hub management Settings pages', () => {
       }))
     })
 
-    fireEvent.click(screen.getByText('整机快照与恢复'))
+    fireEvent.click(screen.getByText('受管范围快照与恢复'))
     fireEvent.change(screen.getByLabelText('名称'), { target: { value: '手工保护点' } })
     await waitFor(() => { expect(screen.getByRole('button', { name: '创建快照' })).not.toHaveProperty('disabled', true) })
     fireEvent.click(screen.getByRole('button', { name: '创建快照' }))

@@ -16,8 +16,11 @@ interface PluginRecord {
 }
 
 interface PluginUpdate extends PluginRecord {
-  latestVersion: string
+  latestVersion?: string
   updateAvailable: boolean
+  updateStatus?: 'current' | 'available' | 'external' | 'unavailable'
+  updateSource?: 'registry' | 'external'
+  updateError?: string
 }
 
 interface PluginChange {
@@ -157,7 +160,7 @@ export function HubPluginsSection(_props: HubPluginsSectionProps): ReactNode {
   }
 
   const applyUpdate = (plugin: PluginUpdate): void => {
-    if (runtime === undefined || inventory === undefined) return
+    if (runtime === undefined || inventory === undefined || plugin.latestVersion === undefined) return
     setBusy(`update:${plugin.packageName}`)
     setError(undefined)
     void invoke(runtime, 'dsh.plugins', 'apply', {
@@ -219,6 +222,11 @@ export function HubPluginsSection(_props: HubPluginsSectionProps): ReactNode {
       <header className={css.pageHeader}>
         <div><h2>节点插件</h2><p>查看实际安装状态；每次更新会自动保存更新前版本，失败时自动恢复，也可从历史一键回退。</p></div>
       </header>
+      <ol className={css.featureFlow} aria-label="安全更新流程">
+        <li><strong>1</strong><span>检查节点实况<small>逐插件判断来源与版本</small></span></li>
+        <li><strong>2</strong><span>自动保留旧版<small>锁文件、配置与制品可追溯</small></span></li>
+        <li><strong>3</strong><span>验证或恢复<small>失败自动恢复，成功后仍可一键回退</small></span></li>
+      </ol>
       {error === undefined ? null : <p className={css.error} role="alert">{error}</p>}
       <label className={css.runtimePicker}>管理目标
         <select value={selected} disabled={busy !== undefined} onChange={(event) => { selectRuntime(event.currentTarget.value) }}>
@@ -242,18 +250,30 @@ export function HubPluginsSection(_props: HubPluginsSectionProps): ReactNode {
               {inventory?.plugins.length === 0 ? <p className={css.empty}>该 Profile 没有识别到 DSH 插件。</p> : null}
               {inventory?.plugins.map((plugin) => {
                 const update = updatesByPackage.get(plugin.packageName)
+                const updateStatus = update?.updateStatus
+                  ?? (update?.updateAvailable === true ? 'available' : 'current')
+                const canUpdate = updateStatus === 'available' && update?.latestVersion !== undefined
                 return (
                   <article className={css.pluginRow} key={plugin.packageName}>
                     <div className={css.pluginIdentity}>
                       <strong>{plugin.packageName}</strong>
-                      <span>当前 {plugin.version}{update === undefined ? '' : ` · 最新 ${update.latestVersion}`}</span>
+                      <span>当前 {plugin.version}{update?.latestVersion === undefined ? '' : ` · 最新 ${update.latestVersion}`}</span>
                     </div>
                     <span className={css.status} data-tone={plugin.enabled && plugin.healthy ? 'success' : 'danger'}>{plugin.enabled ? plugin.healthy ? '运行正常' : '状态异常' : '已停用'}</span>
-                    {update?.updateAvailable === true ? <button className={css.primaryButton} type="button" disabled={busy !== undefined} onClick={() => { applyUpdate(update) }}>{busy === `update:${plugin.packageName}` ? '更新中…' : `更新到 ${update.latestVersion}`}</button> : updates === undefined ? null : <span className={css.upToDate}>已是最新</span>}
+                    {canUpdate
+                      ? <button className={css.primaryButton} type="button" disabled={busy !== undefined} onClick={() => { applyUpdate(update) }}>{busy === `update:${plugin.packageName}` ? '更新中…' : `更新到 ${update.latestVersion}`}</button>
+                      : updates === undefined
+                        ? null
+                        : updateStatus === 'external'
+                          ? <span className={css.upToDate} title="该插件由本地文件、工作区、Git 或外部发布链路安装，Hub 不会擅自改写其来源。">外部管理</span>
+                          : updateStatus === 'unavailable'
+                            ? <span className={css.upToDate} title={update?.updateError}>暂无法查询</span>
+                            : <span className={css.upToDate}>已是最新</span>}
                   </article>
                 )
               })}
             </div>
+            {updates === undefined ? null : <p className={css.scopeHint}>“外部管理”表示插件来自本地文件、Workspace、Git 或独立 Release；Hub 只展示状态，不会擅自改写安装来源。</p>}
           </section>
 
           <section className={css.block}>
@@ -272,9 +292,9 @@ export function HubPluginsSection(_props: HubPluginsSectionProps): ReactNode {
 
           {supports(runtime, 'dsh.snapshots') ? (
             <details className={css.advanced}>
-              <summary>整机快照与恢复</summary>
+              <summary>受管范围快照与恢复</summary>
               <div className={css.advancedBody}>
-                <p>用于配置、依赖或数据的显式恢复点。插件更新不需要在这里手工建快照，它已经自动保留更新前版本。</p>
+                <p>只覆盖下方明确选择的 Profile 配置、依赖或 Node Agent 获准数据目录，不是操作系统整机镜像。插件更新不需要在这里手工建快照，它已经自动保留更新前版本。</p>
                 <form className={css.formGrid} onSubmit={createSnapshot}>
                   <label>范围<select value={snapshotType} onChange={(event) => { setSnapshotType(event.currentTarget.value as SnapshotRecord['type']) }}><option value="configuration">配置</option><option value="dependency">依赖</option><option value="data">数据</option><option value="fleet">全部受管路径</option></select></label>
                   <label>名称<input value={snapshotLabel} onChange={(event) => { setSnapshotLabel(event.currentTarget.value) }} placeholder="例如：升级 DSH 前" /></label>

@@ -14,6 +14,7 @@ import { HubStorage } from '@k1412/dsh-hub-storage'
 import { ReliablePeer, SqliteReliableJournal } from '@k1412/dsh-hub-transport'
 import type { HubAccessVerifier } from '../src/server.ts'
 import { HubServer } from '../src/server.ts'
+import { encodeFleetId } from '../src/fleet-web.ts'
 
 const roots: string[] = []
 const servers: HubServer[] = []
@@ -307,6 +308,43 @@ describe('Hub simultaneous multi-node integration', () => {
     await expect(nasGoalResponse.json()).resolves.toMatchObject({
       rpcId: 'nas-goal-rpc', result: { ok: true },
     })
+
+    const nasFleetSession = encodeFleetId('session', {
+      nodeId: nas.nodeId, runtimeId: nas.runtimeId,
+    }, 'nas-session')
+    const nasClearRequest = fetch(
+      `http://127.0.0.1:${String(address.port)}/api/goals/clear`,
+      {
+        method: 'POST',
+        headers: { origin: 'https://hub.example.com', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          type: 'client-request', rpcId: 'nas-goal-clear-rpc', method: 'goals/clear',
+          payload: {
+            args: { agentId: nasFleetSession, ref: { id: 'nas-goal', revision: 2 } },
+          },
+        }),
+      },
+    )
+    const nasClear = await nas.nextCommand()
+    expect(nasClear).toMatchObject({
+      capability: 'dsh.web', operation: 'fetch', payload: { path: '/api/goals/clear' },
+    })
+    const clearBody = JSON.parse(String((nasClear.payload as { body?: unknown }).body)) as {
+      payload?: { args?: unknown }
+    }
+    expect(clearBody.payload?.args).toEqual({
+      agentId: 'nas-session', ref: { id: 'nas-goal', revision: 2 },
+    })
+    await nas.respond(nasClear.commandId, {
+      status: 200,
+      headers: [['content-type', 'application/json; charset=utf-8']],
+      encoding: 'utf8',
+      body: JSON.stringify({
+        type: 'server-response', rpcId: 'nas-goal-clear-rpc',
+        result: { ok: true, value: { id: 'nas-goal', revision: 3 } },
+      }),
+    })
+    expect((await nasClearRequest).status).toBe(200)
     expect(storage.control.getCommand(homeHistory.commandId)?.status).not.toBe('ok')
 
     await home.respond(homeHistory.commandId, {

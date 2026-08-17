@@ -63,6 +63,29 @@ jobs:
       - name: Run two independent nodes concurrently
         run: pnpm exec vitest run packages/hub/hub-server/tests/multi-node.integration.spec.ts
 
+  performance:
+    name: Hub / performance budgets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Measure eight-node control and Fleet reads
+        run: DSH_HUB_BENCHMARK_JSON=.artifacts/performance.json pnpm run performance
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hub-performance
+          path: .artifacts/performance.json
+
   web-regression:
     name: Hub / reviewed Web desktop and mobile
     runs-on: ubuntu-latest

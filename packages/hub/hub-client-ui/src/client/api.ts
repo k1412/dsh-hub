@@ -90,9 +90,20 @@ interface HubCommand {
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init)
-  const body = await response.json() as T & { error?: unknown }
+  const text = await response.text()
+  let body: T & { error?: unknown }
+  try {
+    body = JSON.parse(text) as T & { error?: unknown }
+  } catch {
+    throw new Error(response.ok
+      ? `Hub 返回了无效 JSON（HTTP ${String(response.status)}）`
+      : `请求在抵达 Hub 前失败（HTTP ${String(response.status)}，返回内容不是 JSON）`)
+  }
   if (!response.ok) {
-    throw new Error(typeof body.error === 'string' ? body.error : `HTTP ${String(response.status)}`)
+    const error = typeof body === 'object' && body !== null && 'error' in body
+      ? (body as { error?: unknown }).error
+      : undefined
+    throw new Error(typeof error === 'string' ? error : `HTTP ${String(response.status)}`)
   }
   return body
 }
@@ -179,6 +190,7 @@ export async function invoke<T>(runtime: HubRuntime, capability: string, operati
     )
     if (command.status === 'ok') {
       await requestJson(`/hub/v1/commands/${encodeURIComponent(command.commandId)}`, mutation({}))
+        .catch(() => undefined)
       return command.result as T
     }
     if (command.status === 'error' || command.status === 'outcome-unknown') {
@@ -187,6 +199,7 @@ export async function invoke<T>(runtime: HubRuntime, capability: string, operati
         ? command.result.message
         : `节点操作失败：${command.status}`
       await requestJson(`/hub/v1/commands/${encodeURIComponent(command.commandId)}`, mutation({}))
+        .catch(() => undefined)
       throw new Error(message)
     }
     await new Promise(resolve => globalThis.setTimeout(resolve, 250))

@@ -207,7 +207,33 @@ const pluginRecord = z.strictObject({
   healthy: z.boolean(),
 })
 
-const pluginUpdate = pluginRecord.extend({
+const pluginUpdate = z.discriminatedUnion('updateStatus', [
+  pluginRecord.extend({
+    latestVersion: version,
+    updateAvailable: z.literal(true),
+    updateStatus: z.literal('available'),
+    updateSource: z.literal('registry'),
+  }),
+  pluginRecord.extend({
+    latestVersion: version,
+    updateAvailable: z.literal(false),
+    updateStatus: z.literal('current'),
+    updateSource: z.literal('registry'),
+  }),
+  pluginRecord.extend({
+    updateAvailable: z.literal(false),
+    updateStatus: z.literal('external'),
+    updateSource: z.literal('external'),
+  }),
+  pluginRecord.extend({
+    updateAvailable: z.literal(false),
+    updateStatus: z.literal('unavailable'),
+    updateSource: z.literal('registry'),
+    updateError: z.string().min(1).max(1_024),
+  }),
+])
+
+const legacyPluginUpdate = pluginRecord.extend({
   latestVersion: version,
   updateAvailable: z.boolean(),
 })
@@ -245,6 +271,57 @@ export const pluginsCapability = capability('dsh.plugins', [
     request: empty,
     response: z.strictObject({
       plugins: z.array(pluginUpdate).max(10_000),
+      lockHash: hash,
+      checkedAt: z.number().int().nonnegative(),
+    }),
+  },
+  {
+    name: 'apply',
+    idempotency: 'reconcile',
+    request: z.strictObject({
+      clientMutationId: id,
+      packageName,
+      version,
+      expectedLockHash: hash,
+    }),
+    response: z.strictObject({ plugin: pluginRecord, change: pluginChange, lockHash: hash }),
+  },
+  {
+    name: 'history',
+    idempotency: 'read',
+    request: empty,
+    response: z.strictObject({ changes: z.array(pluginChange).max(10_000) }),
+  },
+  {
+    name: 'rollback',
+    idempotency: 'reconcile',
+    request: z.strictObject({ clientMutationId: id, changeId: id, expectedLockHash: hash }),
+    response: z.strictObject({ plugins: z.array(pluginRecord).max(10_000), lockHash: hash, change: pluginChange }),
+  },
+], [{
+  name: 'inventory',
+  reconstructible: true,
+  frame: z.strictObject({ plugins: z.array(pluginRecord).max(10_000), lockHash: hash, checkedAt: z.number().int().nonnegative() }),
+}], '3.0.0')
+
+/** Exact wire compatibility for nodes still completing the rolling 1.0 upgrade from 0.2. */
+const legacyPluginsCapability = capability('dsh.plugins', [
+  {
+    name: 'inventory',
+    idempotency: 'read',
+    request: empty,
+    response: z.strictObject({
+      plugins: z.array(pluginRecord).max(10_000),
+      lockHash: hash,
+      checkedAt: z.number().int().nonnegative(),
+    }),
+  },
+  {
+    name: 'check-updates',
+    idempotency: 'read',
+    request: empty,
+    response: z.strictObject({
+      plugins: z.array(legacyPluginUpdate).max(10_000),
       lockHash: hash,
       checkedAt: z.number().int().nonnegative(),
     }),
@@ -378,6 +455,8 @@ export const hubCapabilityContracts: readonly HubCapabilityContract[] = [
   filesCapability,
 ]
 
+const compatibilityCapabilityContracts: readonly HubCapabilityContract[] = [legacyPluginsCapability]
+
 /**
  * Resolve one exact capability version and operation.
  * @param capabilityName - capability namespace advertised by a runtime.
@@ -390,7 +469,7 @@ export function resolveHubOperation(
   capabilityVersion: string,
   operationName: string,
 ): HubOperationContract | undefined {
-  const contract = hubCapabilityContracts.find(candidate =>
+  const contract = [...hubCapabilityContracts, ...compatibilityCapabilityContracts].find(candidate =>
     candidate.descriptor.name === capabilityName && candidate.descriptor.version === capabilityVersion)
   return contract?.operations.get(operationName)
 }
@@ -403,7 +482,7 @@ export function resolveHubOperation(
  * @returns the matching stream contract, or `undefined` when unsupported.
  */
 export function resolveHubStream(capabilityName: string, capabilityVersion: string, streamName: string): HubStreamContract | undefined {
-  const contract = hubCapabilityContracts.find(candidate =>
+  const contract = [...hubCapabilityContracts, ...compatibilityCapabilityContracts].find(candidate =>
     candidate.descriptor.name === capabilityName && candidate.descriptor.version === capabilityVersion)
   return contract?.streams.get(streamName)
 }

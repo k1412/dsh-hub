@@ -42,11 +42,13 @@ docker compose run --rm hub node /app/hub-server.mjs verify-backup \
 
 Hub 在启动时只执行已知的顺序数据库迁移。Schema v1 到 v2 会保留所有会话索引行并增加可空的项目工作目录字段；v2 到 v3 删除未投入使用的 Hub 对象缓存表，节点文件、插件制品和快照继续留在节点。迁移后的数据库不能由旧镜像打开。需要回滚镜像时，应停止 Hub，并恢复升级前使用该旧镜像创建和验证过的完整备份；不得让旧镜像直接写入已迁移 Volume。
 
-Hub 协议采用精确协商。新的 Hub 不再接受节点的协议或能力版本时，应升级节点。Hub Release 不得静默重新解释旧能力描述符。
+Hub 协议采用精确协商。新的 Hub 不再接受节点的协议或能力版本时，应升级节点。Hub Release 不得静默重新解释旧能力描述符。为了让节点可以逐台更新，Hub 1.0 在协商层同时接受 `dsh.plugins` 2.0 与 3.0：2.0 只保留原有的“是否有更新”响应，3.0 才能区分 Registry、外部来源和单插件查询失败。Hub 只向新连接声明当前的 3.0 合约，不会把 2.0 响应伪装成 3.0。
+
+推荐滚动顺序是：先备份并升级 Hub，再逐台升级 Node Agent，最后在不会中断重要任务的维护窗口内升级 Connector 并重启对应 DSH Profile。旧 Node Agent 在兼容窗口内仍可使用原有插件合约；新 Node Agent 重连后自动启用更完整的来源与错误状态，Connector 无需为此重启。完成整个机群升级并确认没有旧 Agent 后，后续大版本才可以移除旧能力合约。
 
 ## 升级节点
 
-先升级 Node Agent 包，重启其服务并验证重连。通过 `dsh plugin --profile <name> add <release-asset> --save-exact` 升级每个 DSH Profile 中的 Connector，然后重启对应 DSH 进程并验证其 Runtime Boot ID 已变化。
+先升级 Node Agent 包，重启其服务并验证重连。通过 `dsh plugin --profile <name> add <release-asset> --save-exact` 升级每个 DSH Profile 中的 Connector，然后重启对应 DSH 进程并验证其 Runtime Boot ID 已变化。正在运行长任务的 Runtime 可以暂缓 Connector 升级；不要为追求版本一致而中断会话，待任务结束后再补齐。
 
 Node Agent 离线时，本地客户端仍可继续工作。Connector 重启期间，对应 Runtime 在 Hub 中显示离线，排队操作仍受各自幂等类别约束。
 

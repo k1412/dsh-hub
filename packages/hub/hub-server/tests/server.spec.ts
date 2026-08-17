@@ -7,7 +7,7 @@ import { generateHubIdentity, HubCommandId, HubNodeId, HubRuntimeId } from '@k14
 import { HubStorage } from '@k1412/dsh-hub-storage'
 import type { HubAccessVerifier } from '../src/server.ts'
 import { HubOriginGuard } from '../src/auth.ts'
-import { decodeFleetId } from '../src/fleet-web.ts'
+import { decodeFleetId, encodeFleetId } from '../src/fleet-web.ts'
 import { HubServer } from '../src/server.ts'
 
 const roots: string[] = []
@@ -276,6 +276,165 @@ describe('Hub HTTP server', () => {
         title: 'project · Home Mac（离线）',
       }] } },
     })
+  })
+
+  it('routes nested Goal identities and returns signed node failures as RPC errors instead of opaque 502s', async () => {
+    const { base, storage, server } = await fixture()
+    const target = { nodeId: HubNodeId('goal-node'), runtimeId: HubRuntimeId('web') }
+    const grant = storage.control.createEnrollment(target.nodeId, 'Goal Node', Date.now() + 60_000)
+    storage.control.consumeEnrollment(grant.code, 'goal-public-key', 'goal-service')
+    storage.control.upsertRuntime({
+      ...target,
+      bootId: 'goal-runtime-boot',
+      dshVersion: '0.1.0-rc.7',
+      connectorVersion: '1.0.0',
+      capabilities: [webCapability.descriptor] as never,
+      online: true,
+      lastSeenAt: Date.now(),
+    })
+    vi.spyOn(server.agents, 'isOnline').mockReturnValue(true)
+    const invoke = vi.spyOn(server.agents, 'invoke').mockImplementation(async (
+      nodeId, runtimeId, capability, capabilityVersion, operation, payload,
+    ) => {
+      const request = JSON.parse(String((payload as { body?: unknown }).body)) as {
+        payload?: { args?: { agentId?: unknown; ref?: unknown } }
+      }
+      expect(request.payload?.args).toEqual({
+        agentId: 'source-session',
+        ref: { id: 'goal-1', revision: 4 },
+      })
+      const command = storage.control.createCommand({
+        commandId: HubCommandId('goal-clear-command-0001'),
+        nodeId,
+        runtimeId,
+        capability,
+        capabilityVersion,
+        operation,
+        idempotency: 'reconcile',
+        payload: payload as never,
+        createdAt: Date.now(),
+      })
+      storage.control.transitionCommand(command.commandId, 'sent', undefined)
+      storage.control.transitionCommand(command.commandId, 'error', {
+        code: 'conflict', message: 'goal revision is stale', retryable: false,
+      })
+      return storage.control.getCommand(command.commandId) as typeof command
+    })
+    const fleetSessionId = encodeFleetId('session', target, 'source-session')
+
+    const response = await fetch(`${base}/api/goals/clear`, {
+      method: 'POST',
+      headers: requestHeaders('human', true),
+      body: JSON.stringify({
+        type: 'client-request',
+        rpcId: 'goal-clear-rpc-0001',
+        method: 'goals/clear',
+        payload: {
+          args: { agentId: fleetSessionId, ref: { id: 'goal-1', revision: 4 } },
+        },
+      }),
+    })
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      rpcId: 'goal-clear-rpc-0001',
+      result: { ok: false, error: { code: 'internal', message: 'goal revision is stale' } },
+    })
+    expect(invoke).toHaveBeenCalledOnce()
+    const redacted = storage.control.getCommand('goal-clear-command-0001')
+    expect(redacted).toMatchObject({ status: 'error', payload: null })
+    expect(redacted).not.toHaveProperty('result')
+  })
+
+  it('returns a partial Fleet baseline with cached rows when one online node exceeds the read budget', async () => {
+    const reported: unknown[] = []
+    const { base, storage, server } = await fixture({
+      aggregateCommandTimeoutMs: 20,
+      reportError: error => reported.push(error),
+    })
+    const targets = [
+      { nodeId: HubNodeId('fast-node'), runtimeId: HubRuntimeId('web') },
+      { nodeId: HubNodeId('slow-node'), runtimeId: HubRuntimeId('web') },
+    ]
+    for (const [index, target] of targets.entries()) {
+      const grant = storage.control.createEnrollment(target.nodeId, target.nodeId, Date.now() + 60_000)
+      storage.control.consumeEnrollment(grant.code, `partial-key-${String(index)}`, `partial-service-${String(index)}`)
+      storage.control.upsertRuntime({
+        ...target,
+        bootId: `partial-runtime-${String(index)}`,
+        dshVersion: '0.1.0-rc.7',
+        connectorVersion: '1.0.0',
+        capabilities: [webCapability.descriptor] as never,
+        online: true,
+        lastSeenAt: Date.now(),
+      })
+    }
+    storage.control.upsertSessionIndex({
+      hubSessionId: 'slow-cached-hub-session',
+      nodeId: targets[1]!.nodeId,
+      runtimeId: targets[1]!.runtimeId,
+      sourceId: 'slow-cached-session',
+      title: 'Cached slow work',
+      workspacePath: '/srv/slow-project',
+      updatedAt: 900,
+      running: false,
+      stale: false,
+    })
+    vi.spyOn(server.agents, 'isOnline').mockReturnValue(true)
+    let sequence = 0
+    vi.spyOn(server.agents, 'invoke').mockImplementation(async (
+      nodeId, runtimeId, capability, capabilityVersion, operation, payload,
+    ) => {
+      sequence += 1
+      const request = JSON.parse(String((payload as { body?: unknown }).body)) as { rpcId: string }
+      const command = storage.control.createCommand({
+        commandId: HubCommandId(`partial-command-${String(sequence).padStart(4, '0')}`),
+        nodeId,
+        runtimeId,
+        capability,
+        capabilityVersion,
+        operation,
+        idempotency: 'read',
+        payload: payload as never,
+        createdAt: Date.now(),
+      })
+      storage.control.transitionCommand(command.commandId, 'sent', undefined)
+      if (nodeId === 'fast-node') {
+        storage.control.transitionCommand(command.commandId, 'ok', {
+          status: 200,
+          headers: [['content-type', 'application/json; charset=utf-8']],
+          encoding: 'utf8',
+          body: JSON.stringify({
+            type: 'server-response',
+            rpcId: request.rpcId,
+            result: { ok: true, value: { items: [{
+              sessionId: 'fast-live-session', cwd: '/srv/fast-project', updatedAt: 1_000,
+              running: false, blank: false,
+            }] } },
+          }),
+        })
+      }
+      return storage.control.getCommand(command.commandId) as typeof command
+    })
+
+    const startedAt = performance.now()
+    const response = await fetch(`${base}/api/session.list`, {
+      method: 'POST',
+      headers: requestHeaders('human', true),
+      body: JSON.stringify({
+        type: 'client-request', rpcId: 'partial-list-rpc', method: 'session.list', payload: {},
+      }),
+    })
+    const elapsedMs = performance.now() - startedAt
+    expect(response.status).toBe(200)
+    const body = await response.json() as { result: { value: { items: Array<{ sessionId: string }> } } }
+    expect(body.result.value.items.map(item => decodeFleetId(item.sessionId)?.sourceId)).toEqual([
+      'fast-live-session', 'slow-cached-session',
+    ])
+    expect(elapsedMs).toBeLessThan(500)
+    expect(reported).toHaveLength(1)
+    expect(storage.control.listAudit(10, targets[1]!.nodeId)).toContainEqual(expect.objectContaining({
+      action: 'command.wait-timeout', outcome: 'timeout',
+    }))
   })
 
   it('aggregates official sessions across Runtimes and routes a selected session back to its owner', async () => {

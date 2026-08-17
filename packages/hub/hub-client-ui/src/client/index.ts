@@ -47,7 +47,12 @@ export const inject = ['slots', 'locale', 'settingsScope']
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'hub-client-ui: dictionaries')
   const t = ctx.locale.bind(NS)
-  const injectSettingsRefresh = () => ({ refreshNodeSettings: () => { ctx.settingsScope.refreshAll() } })
+  const injectSettingsRefresh = () => ({ refreshNodeSettings: () => {
+    // Schema-backed rows and direct Host controllers use different official
+    // invalidation paths. Refresh both after request ownership changes.
+    ctx.settingsScope.refreshAll()
+    ctx.emit('connection/reset')
+  } })
   ctx.slots.inject('conversation.hero.runtime', () => ctx.slots.register({
     name: 'conversation.hero.runtime',
     locale: NS,

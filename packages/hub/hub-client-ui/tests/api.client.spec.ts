@@ -19,7 +19,7 @@ const runtime: HubRuntime = {
   lastSeenAt: 1_000,
   capabilities: [{
     name: 'dsh.plugins',
-    version: '2.0.0',
+    version: '3.0.0',
     operations: [{ name: 'inventory' }],
   }],
 }
@@ -85,7 +85,7 @@ describe('Hub settings operator API', () => {
       method: 'POST',
       body: JSON.stringify({
         nodeId: 'nas-home', runtimeId: 'web', capability: 'dsh.plugins',
-        capabilityVersion: '2.0.0', operation: 'inventory', payload: {},
+        capabilityVersion: '3.0.0', operation: 'inventory', payload: {},
       }),
     }))
     expect(fetch).toHaveBeenNthCalledWith(2, '/hub/v1/commands/command-1', undefined)
@@ -115,5 +115,31 @@ describe('Hub settings operator API', () => {
     await expect(createEnrollment({
       nodeId: 'work-pc', displayName: 'Work PC', expiresInSeconds: 900,
     })).rejects.toThrow('HTTP 403')
+  })
+
+  it('uses the response status when an operator endpoint returns JSON null', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(json(null, 502))
+    await expect(createEnrollment({
+      nodeId: 'work-pc', displayName: 'Work PC', expiresInSeconds: 900,
+    })).rejects.toThrow('HTTP 502')
+  })
+
+  it('does not expose an HTML edge response as a JSON parser exception', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('<!DOCTYPE html><title>Access denied</title>', {
+      status: 403,
+      headers: { 'Content-Type': 'text/html' },
+    }))
+    await expect(createEnrollment({
+      nodeId: 'work-pc', displayName: 'Work PC', expiresInSeconds: 900,
+    })).rejects.toThrow('请求在抵达 Hub 前失败（HTTP 403，返回内容不是 JSON）')
+  })
+
+  it('returns the authoritative command result even when best-effort redaction acknowledgement fails', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(json({ command: { commandId: 'command-3', status: 'pending' } }))
+      .mockResolvedValueOnce(json({ command: { commandId: 'command-3', status: 'ok', result: { plugins: [] } } }))
+      .mockRejectedValueOnce(new TypeError('network changed'))
+
+    await expect(invoke(runtime, 'dsh.plugins', 'inventory', {})).resolves.toEqual({ plugins: [] })
   })
 })

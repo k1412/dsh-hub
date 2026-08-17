@@ -53,12 +53,56 @@ const runtimes = nodes.map((node, index) => ({
   nodeId: node.nodeId,
   runtimeId: 'default',
   dshVersion: '0.1.0',
-  connectorVersion: '0.2.0',
+  connectorVersion: '1.0.0',
   online: node.online,
   lastSeenAt: node.lastSeenAt,
-  capabilities: [{ name: 'dsh.web', version: '1', operations: [{ name: 'fetch' }] }],
+  capabilities: [
+    { name: 'dsh.web', version: '1.0.0', operations: [{ name: 'fetch' }] },
+    {
+      name: 'dsh.plugins', version: '3.0.0',
+      operations: ['inventory', 'check-updates', 'history', 'apply', 'rollback'].map(name => ({ name })),
+    },
+    {
+      name: 'dsh.snapshots', version: '2.0.0',
+      operations: ['list', 'create', 'restore'].map(name => ({ name })),
+    },
+  ],
   order: index,
 }))
+
+function commandResult(operation) {
+  const plugins = [
+    { packageName: '@deepseek-ai/dsh-tool-web', version: '0.1.0-rc.7', enabled: true, healthy: true },
+    { packageName: '@k1412/dsh-hub-connector', version: '1.0.0', enabled: true, healthy: true },
+    { packageName: '@example/private-tool', version: '1.4.0', enabled: true, healthy: true },
+  ]
+  if (operation === 'inventory') return { plugins, lockHash: 'a'.repeat(43), checkedAt: now }
+  if (operation === 'check-updates') return {
+    plugins: [
+      { ...plugins[0], latestVersion: '0.1.0-rc.8', updateAvailable: true, updateStatus: 'available', updateSource: 'registry' },
+      { ...plugins[1], updateAvailable: false, updateStatus: 'external', updateSource: 'external' },
+      { ...plugins[2], updateAvailable: false, updateStatus: 'unavailable', updateSource: 'registry', updateError: 'Registry temporarily unavailable' },
+    ],
+    lockHash: 'a'.repeat(43),
+    checkedAt: now,
+  }
+  if (operation === 'history') return { changes: [{
+    changeId: 'change-demo-1',
+    packageName: '@deepseek-ai/dsh-tool-web',
+    fromVersion: '0.1.0-rc.6',
+    toVersion: '0.1.0-rc.7',
+    artifactHash: 'b'.repeat(43),
+    beforeLockHash: 'c'.repeat(43),
+    afterLockHash: 'a'.repeat(43),
+    createdAt: now - 86_400_000,
+    status: 'applied',
+  }] }
+  if (operation === 'list') return { snapshots: [{
+    snapshotId: 'snapshot-demo-1', type: 'configuration', createdAt: now - 172_800_000,
+    label: '升级 DSH 前', reason: 'manual',
+  }] }
+  return {}
+}
 
 function indexDocument(body) {
   return body.replace('<meta name="dsh-settings-access" content="authenticated-control-plane" />', '')
@@ -105,6 +149,8 @@ async function run() {
     args: [`--unsafely-treat-insecure-origin-as-secure=${origin}`],
   })
   const installRoutes = async (page) => {
+    const commands = new Map()
+    let sequence = 0
     if (process.env.DSH_HUB_SCREENSHOT_DEBUG === '1') {
       page.on('pageerror', error => console.error(`browser page error: ${error.message}`))
       page.on('console', message => {
@@ -117,6 +163,29 @@ async function run() {
     await page.route('**/hub/v1/enrollments', route => route.fulfill({
       contentType: 'application/json', body: JSON.stringify({ enrollments: [] }),
     }))
+    await page.route('**/hub/v1/commands**', async (route) => {
+      const request = route.request()
+      const pathname = new URL(request.url()).pathname
+      if (pathname === '/hub/v1/commands' && request.method() === 'POST') {
+        const input = request.postDataJSON()
+        const commandId = `screenshot-command-${String(++sequence)}`
+        commands.set(commandId, commandResult(input.operation))
+        await route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify({ command: { commandId, status: 'pending' } }),
+        })
+        return
+      }
+      const commandId = decodeURIComponent(pathname.slice('/hub/v1/commands/'.length))
+      if (request.method() === 'GET') {
+        await route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify({ command: { commandId, status: 'ok', result: commands.get(commandId) } }),
+        })
+        return
+      }
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ acknowledged: true }) })
+    })
   }
   const installBrowserPolyfills = async (context) => {
     await context.addInitScript(() => {
@@ -149,6 +218,17 @@ async function run() {
     await settings.getByRole('button', { name: 'Hub 节点' }).click()
     await settings.getByRole('heading', { name: '已登记节点' }).waitFor()
     await page.screenshot({ path: join(outputRoot, 'nodes.png') })
+
+    await settings.getByRole('button', { name: '节点插件', exact: true }).click()
+    await settings.getByRole('heading', { name: '节点插件', exact: true }).waitFor()
+    await settings.getByRole('button', { name: '检查更新', exact: true }).click()
+    await settings.getByRole('button', { name: '更新到 0.1.0-rc.8', exact: true }).waitFor()
+    await page.screenshot({ path: join(outputRoot, 'plugins.png') })
+    const snapshots = settings.getByText('受管范围快照与恢复', { exact: true })
+    await snapshots.click()
+    await snapshots.evaluate(element => { element.scrollIntoView({ block: 'start' }) })
+    const snapshotPanel = snapshots.locator('xpath=ancestor::details[1]')
+    await snapshotPanel.screenshot({ path: join(outputRoot, 'snapshots.png') })
     await desktop.close()
 
     const mobile = await browser.newContext({

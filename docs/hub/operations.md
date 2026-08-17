@@ -42,11 +42,13 @@ Create and export a fresh backup, read the release notes, pin the new immutable 
 
 Hub performs only known sequential database migrations at startup. Schema v1 to v2 preserves every session-index row and adds a nullable project working-directory field. Schema v2 to v3 removes the never-adopted Hub object-cache tables; node files, plugin artifacts, and snapshots remain on nodes. An older image cannot open the migrated database. To roll back an image, stop Hub and restore the complete pre-upgrade backup created and verified with that older image; never allow the old image to write the migrated volume directly.
 
-Hub protocol negotiation is exact. Upgrade nodes when the new Hub no longer accepts their protocol or capability versions. A Hub release must not silently reinterpret an older capability descriptor.
+Hub protocol negotiation is exact. Upgrade nodes when the new Hub no longer accepts their protocol or capability versions. A Hub release must not silently reinterpret an older capability descriptor. To support a node-by-node rollout, Hub 1.0 accepts both `dsh.plugins` 2.0 and 3.0 at negotiation time. Version 2.0 retains only the original update-available response; version 3.0 distinguishes registry sources, external sources, and per-plugin lookup failures. Hub advertises only the current 3.0 contract to new connections and never relabels a 2.0 response as 3.0.
+
+The recommended order is: back up and upgrade Hub, upgrade Node Agent one machine at a time, then upgrade Connector and restart the corresponding DSH Profile during a maintenance window that will not interrupt important work. An older Node Agent remains usable through the legacy plugin contract during the compatibility window; the richer source and error states become available when the new Node Agent reconnects, without restarting Connector. A later major release may remove the legacy contract only after the fleet contains no old Agent.
 
 ## Upgrade a node
 
-Upgrade the Node Agent package first, restart its service, and verify reconnection. Upgrade the Connector in each DSH profile through `dsh plugin --profile <name> add <release-asset> --save-exact`, then restart that DSH process and verify its runtime boot ID changes.
+Upgrade the Node Agent package first, restart its service, and verify reconnection. Upgrade the Connector in each DSH profile through `dsh plugin --profile <name> add <release-asset> --save-exact`, then restart that DSH process and verify its runtime boot ID changes. Connector upgrades may be deferred for a Runtime executing a long-running task; do not interrupt a session merely to make versions uniform, and finish that Runtime after the task completes.
 
 Local clients continue working while the Node Agent is offline. During a Connector restart the matching runtime is offline in Hub, and queued operations remain governed by their idempotency class.
 

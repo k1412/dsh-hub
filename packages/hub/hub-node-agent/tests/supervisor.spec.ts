@@ -198,6 +198,66 @@ if (args[0] === 'plugin' && args.includes('add')) {
     expect(restored).toMatchObject({ plugins: [], lockHash: before.lockHash, change: { status: 'rolled-back' } })
   })
 
+  it('checks mixed plugin sources independently without failing the inventory', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-hub-supervisor-plugin-scan-'))
+    roots.push(root)
+    const profile = join(root, 'profile')
+    const packages = [
+      ['@example/current', '1.0.0'],
+      ['@example/update', '1.0.0'],
+      ['@example/local', '3.0.0'],
+      ['@example/unavailable', '1.0.0'],
+    ] as const
+    await mkdir(profile)
+    await writeFile(join(profile, 'package.json'), JSON.stringify({
+      dependencies: {
+        '@example/current': '^1.0.0',
+        '@example/update': '1.0.0',
+        '@example/local': 'file:../local-plugin.tgz',
+        '@example/unavailable': '^1.0.0',
+      },
+      dsh: { profile: { bundles: packages.map(([name]) => name) } },
+    }))
+    for (const [name, version] of packages) {
+      const directory = join(profile, 'node_modules', ...name.split('/'))
+      await mkdir(directory, { recursive: true })
+      await writeFile(join(directory, 'package.json'), JSON.stringify({
+        name, version, dsh: { bundle: { patch: './cordis.patch.yml' } },
+      }))
+    }
+    const fetchMock = vi.fn(async (input: URL | RequestInfo) => {
+      const url = new URL(input instanceof Request ? input.url : input.toString())
+      if (url.pathname.includes('unavailable')) return new Response('not found', { status: 404 })
+      const packageName = decodeURIComponent(url.pathname.split('/').slice(1, -1).join('/'))
+      const version = packageName === '@example/update' ? '2.0.0' : '1.0.0'
+      return Response.json({
+        name: packageName,
+        version,
+        dist: { tarball: `https://registry.npmjs.org/example/-/example-${version}.tgz` },
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const supervisor = new HubNodeSupervisor(join(root, 'state'), {
+      runtimeId: 'web-runtime',
+      profileDirectory: profile,
+      profileName: 'web',
+      dshExecutable: 'dsh',
+      snapshotPaths: [],
+    })
+
+    const result = await supervisor.invoke('dsh.plugins', 'check-updates', {}) as {
+      plugins: Array<{ packageName: string; latestVersion?: string; updateStatus: string; updateError?: string }>
+    }
+    expect(result.plugins).toEqual([
+      expect.objectContaining({ packageName: '@example/current', latestVersion: '1.0.0', updateStatus: 'current' }),
+      expect.objectContaining({ packageName: '@example/local', updateStatus: 'external' }),
+      expect.objectContaining({ packageName: '@example/unavailable', updateStatus: 'unavailable', updateError: expect.stringContaining('HTTP 404') }),
+      expect.objectContaining({ packageName: '@example/update', latestVersion: '2.0.0', updateStatus: 'available' }),
+    ])
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('local'))).toBe(false)
+  })
+
   it.skipIf(process.platform === 'win32')('refuses snapshot restore through a symlinked parent', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-hub-supervisor-symlink-'))
     roots.push(root)
