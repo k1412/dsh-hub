@@ -39,6 +39,8 @@ export interface HubServerOptions {
   reportError?: (error: unknown) => void
   /** Command wait bound; production keeps 30 seconds, tests may use a shorter deterministic interval. */
   commandTimeoutMs?: number
+  /** Per-node Fleet-read bound; one degraded node must not stall the whole sidebar. */
+  aggregateCommandTimeoutMs?: number
   /** Browser WebSocket heartbeat; production keeps 20 seconds, tests may shorten it. */
   browserWebSocketHeartbeatMs?: number
 }
@@ -76,6 +78,7 @@ interface FleetWorkspaceSnapshot {
 const FLEET_AGGREGATE_METHODS = new Set(['session.list', 'session.search', 'workspace.list'])
 const INTERACTION_TARGET_LIFETIME_MS = 60 * 60_000
 const BROWSER_WEBSOCKET_HEARTBEAT_MS = 20_000
+const AGGREGATE_COMMAND_TIMEOUT_MS = 2_500
 
 const enrollmentSchema = z.strictObject({
   nodeId: z.string().min(1).max(64),
@@ -196,15 +199,21 @@ export class HubServer {
   private readonly publicOrigin: string
   private readonly staticDirectory: string | undefined
   private readonly browserWebSocketHeartbeatMs: number
+  private readonly aggregateCommandTimeoutMs: number
   private readonly maintenance: NodeJS.Timeout
 
   public constructor(private readonly options: HubServerOptions) {
     this.publicOrigin = normalizePublicOrigin(options.publicOrigin)
     this.staticDirectory = options.staticDirectory === undefined ? undefined : resolve(options.staticDirectory)
     this.browserWebSocketHeartbeatMs = options.browserWebSocketHeartbeatMs ?? BROWSER_WEBSOCKET_HEARTBEAT_MS
+    this.aggregateCommandTimeoutMs = options.aggregateCommandTimeoutMs ?? AGGREGATE_COMMAND_TIMEOUT_MS
     if (!Number.isSafeInteger(this.browserWebSocketHeartbeatMs)
       || this.browserWebSocketHeartbeatMs < 10 || this.browserWebSocketHeartbeatMs > 60_000) {
       throw new Error('browserWebSocketHeartbeatMs must be an integer from 10 to 60000')
+    }
+    if (!Number.isSafeInteger(this.aggregateCommandTimeoutMs)
+      || this.aggregateCommandTimeoutMs < 10 || this.aggregateCommandTimeoutMs > 30_000) {
+      throw new Error('aggregateCommandTimeoutMs must be an integer from 10 to 30000')
     }
     this.agents = new HubAgentRegistry(options.storage, this.events, options.hubIdentity)
     this.maintenance = setInterval(() => {
@@ -610,6 +619,7 @@ export class HubServer {
     path: string,
     body: unknown,
     human: HubHumanPrincipal,
+    waitTimeoutMs?: number,
   ): Promise<OfficialWebResponse> {
     if (!this.agents.isOnline(HubNodeId(target.nodeId))) throw new HttpProblem(503, 'node is offline')
     const command = await this.agents.invoke(
@@ -631,12 +641,16 @@ export class HubServer {
       && typeof (body as { method?: unknown }).method === 'string'
       ? (body as { method: string }).method.slice(0, 128)
       : undefined
-    const completed = await this.waitCommand(command.commandId, rpcMethod)
+    const completed = await this.waitCommand(command.commandId, rpcMethod, waitTimeoutMs)
+    const commandResult = completed.result
     this.redactCommand(completed)
-    if (completed.status !== 'ok' || typeof completed.result !== 'object' || completed.result === null) {
+    if (completed.status !== 'ok') {
+      return this.officialCommandFailure(body, commandResult)
+    }
+    if (typeof commandResult !== 'object' || commandResult === null) {
       throw new HttpProblem(502, 'node Web request failed')
     }
-    const result = completed.result as Partial<OfficialWebResponse>
+    const result = commandResult as Partial<OfficialWebResponse>
     if (typeof result.status !== 'number'
       || !Array.isArray(result.headers)
       || (result.encoding !== 'utf8' && result.encoding !== 'base64')
@@ -644,6 +658,31 @@ export class HubServer {
       throw new Error('node Web response is invalid')
     }
     return result as OfficialWebResponse
+  }
+
+  private officialCommandFailure(body: unknown, failure: unknown): OfficialWebResponse {
+    const rpc = this.officialRpcRequest(body)
+    if (rpc === undefined || rpc.type !== 'client-request') {
+      throw new HttpProblem(502, 'node Web request failed')
+    }
+    const record = typeof failure === 'object' && failure !== null && !Array.isArray(failure)
+      ? failure as Record<string, unknown>
+      : {}
+    const candidateMessage = typeof record.message === 'string' ? record.message : 'Node request failed'
+    const message = Array.from(candidateMessage, (character) => {
+      const codePoint = character.codePointAt(0) ?? 0
+      return codePoint <= 31 || codePoint === 127 ? ' ' : character
+    }).join('').slice(0, 8_192)
+    return {
+      status: 200,
+      headers: [['content-type', 'application/json; charset=utf-8']],
+      encoding: 'utf8',
+      body: JSON.stringify({
+        type: 'server-response',
+        rpcId: rpc.rpcId,
+        result: { ok: false, error: { code: 'internal', message, details: {} } },
+      }),
+    }
   }
 
   private encodeOfficialResponse(
@@ -671,10 +710,10 @@ export class HubServer {
     return this.officialRuntimes(true).filter(target => !online.has(this.workspaceTargetKey(target)))
   }
 
-  private cachedOfflineSessions(): unknown[] {
+  private cachedSessionsFor(targets: FleetWebTarget[], suffix: string): unknown[] {
     const sessions = this.options.storage.control.listSessionIndex()
-    return this.offlineOfficialTargets().flatMap((target) => {
-      const offlineTarget = { ...target, displayName: `${target.displayName ?? target.nodeId}（离线）` }
+    return targets.flatMap((target) => {
+      const cachedTarget = { ...target, displayName: `${target.displayName ?? target.nodeId}${suffix}` }
       return sessions.filter(session => session.nodeId === target.nodeId && session.runtimeId === target.runtimeId)
         .map(session => encodeFleetPayload({
           sessionId: session.sourceId,
@@ -689,14 +728,14 @@ export class HubServer {
               sessionListMetadata: { blank: false, lastPromptAt: session.updatedAt },
             },
           },
-        }, offlineTarget))
+        }, cachedTarget))
     })
   }
 
-  private cachedOfflineWorkspaces(): unknown[] {
+  private cachedWorkspacesFor(targets: FleetWebTarget[], suffix: string): unknown[] {
     const sessions = this.options.storage.control.listSessionIndex()
-    return this.offlineOfficialTargets().flatMap((target) => {
-      const offlineTarget = { ...target, displayName: `${target.displayName ?? target.nodeId}（离线）` }
+    return targets.flatMap((target) => {
+      const cachedTarget = { ...target, displayName: `${target.displayName ?? target.nodeId}${suffix}` }
       const grouped = new Map<string, typeof sessions>()
       for (const session of sessions) {
         if (session.nodeId !== target.nodeId || session.runtimeId !== target.runtimeId
@@ -715,7 +754,7 @@ export class HubServer {
           sessionIds: rows.map(row => row.sourceId),
           createdAt: new Date(updatedAt).toISOString(),
           updatedAt: new Date(updatedAt).toISOString(),
-        }, offlineTarget)
+        }, cachedTarget)
       })
     })
   }
@@ -727,23 +766,45 @@ export class HubServer {
     human: HubHumanPrincipal,
   ): Promise<OfficialWebResponse> {
     const targets = this.officialRuntimes()
-    const cachedSessions = rpcMethod === 'session.list' ? this.cachedOfflineSessions() : []
-    const cachedWorkspaces = rpcMethod === 'workspace.list' ? this.cachedOfflineWorkspaces() : []
+    const offlineTargets = this.offlineOfficialTargets()
+    const cachedSessions = rpcMethod === 'session.list'
+      ? this.cachedSessionsFor(offlineTargets, '（离线）')
+      : []
+    const cachedWorkspaces = rpcMethod === 'workspace.list'
+      ? this.cachedWorkspacesFor(offlineTargets, '（离线）')
+      : []
     if (targets.length === 0 && rpcMethod !== 'session.list' && rpcMethod !== 'workspace.list') {
       throw new HttpProblem(503, 'no DSH Web Runtime is online')
     }
-    const settled = await Promise.allSettled(targets.map(async target => ({
-      target,
-      response: await this.invokeOfficialRequest(target, 'POST', path, body, human),
-    })))
+    const settled = await Promise.all(targets.map(async (target) => {
+      try {
+        return {
+          target,
+          response: await this.invokeOfficialRequest(
+            target, 'POST', path, body, human, this.aggregateCommandTimeoutMs,
+          ),
+        }
+      } catch (error) {
+        // waitCommand already records and reports bounded node timeouts.
+        if (!(error instanceof HttpProblem && error.status === 504)) this.options.reportError?.(error)
+        return { target, error }
+      }
+    }))
     const envelopes: Array<{ target: FleetWebTarget; response: OfficialWebResponse; envelope: OfficialRpcEnvelope }> = []
+    const failedTargets: FleetWebTarget[] = []
     for (const item of settled) {
-      if (item.status === 'rejected') {
-        this.options.reportError?.(item.reason)
+      if ('error' in item) {
+        failedTargets.push(item.target)
         continue
       }
-      const envelope = this.parseOfficialEnvelope(item.value.response)
-      if (envelope?.result.ok === true) envelopes.push({ ...item.value, envelope })
+      const envelope = this.parseOfficialEnvelope(item.response)
+      if (envelope?.result.ok === true) envelopes.push({ ...item, envelope })
+      else failedTargets.push(item.target)
+    }
+    if (rpcMethod === 'session.list') {
+      cachedSessions.push(...this.cachedSessionsFor(failedTargets, '（暂不可用）'))
+    } else if (rpcMethod === 'workspace.list') {
+      cachedWorkspaces.push(...this.cachedWorkspacesFor(failedTargets, '（暂不可用）'))
     }
     if (envelopes.length === 0 && cachedSessions.length === 0 && cachedWorkspaces.length === 0
       && targets.length > 0) throw new HttpProblem(502, 'no node returned a usable Web response')
@@ -961,43 +1022,75 @@ export class HubServer {
   private async waitCommand(
     commandId: string,
     rpcMethod?: string,
+    timeoutOverrideMs?: number,
   ): Promise<NonNullable<ReturnType<HubStorage['control']['getCommand']>>> {
     const startedAt = Date.now()
-    const timeoutMs = this.options.commandTimeoutMs ?? 30_000
-    const deadline = startedAt + timeoutMs
-    while (Date.now() < deadline) {
+    const timeoutMs = timeoutOverrideMs ?? this.options.commandTimeoutMs ?? 30_000
+    const terminal = (): NonNullable<ReturnType<HubStorage['control']['getCommand']>> | undefined => {
       const command = this.options.storage.control.getCommand(commandId)
-      if (command !== undefined && ['ok', 'error', 'outcome-unknown'].includes(command.status)) return command
-      await new Promise(resolveWait => setTimeout(resolveWait, 25))
+      return command !== undefined && ['ok', 'error', 'outcome-unknown'].includes(command.status)
+        ? command
+        : undefined
     }
+    const immediate = terminal()
+    if (immediate !== undefined) return immediate
+    return new Promise((resolveWait, rejectWait) => {
+      let settled = false
+      const finish = (result: NonNullable<ReturnType<HubStorage['control']['getCommand']>>): void => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        subscription.unsubscribe()
+        resolveWait(result)
+      }
+      const inspect = (): void => {
+        const result = terminal()
+        if (result !== undefined) finish(result)
+      }
+      const timeout = setTimeout(() => {
+        if (settled) return
+        settled = true
+        subscription.unsubscribe()
+        rejectWait(this.commandTimeoutProblem(commandId, rpcMethod, startedAt))
+      }, timeoutMs)
+      const subscription = this.events.subscribe(undefined, (event) => {
+        if (event.type !== 'command.result' || typeof event.data !== 'object'
+          || event.data === null || Array.isArray(event.data)
+          || event.data.commandId !== commandId) return
+        inspect()
+      })
+      // Fence a result committed between the first read and subscription.
+      inspect()
+    })
+  }
+
+  private commandTimeoutProblem(commandId: string, rpcMethod: string | undefined, startedAt: number): HttpProblem {
     const command = this.options.storage.control.getCommand(commandId)
     const elapsedMs = Date.now() - startedAt
-    if (command !== undefined) {
-      this.options.storage.control.appendAudit({
-        occurredAt: Date.now(),
-        actor: 'hub:timeout-monitor',
-        action: 'command.wait-timeout',
-        nodeId: command.nodeId,
-        ...(command.runtimeId === undefined ? {} : { runtimeId: command.runtimeId }),
-        resourceId: command.commandId,
-        outcome: 'timeout',
-        details: {
-          capability: command.capability,
-          operation: command.operation,
-          commandStatus: command.status,
-          elapsedMs,
-          ...(rpcMethod === undefined ? {} : { rpcMethod }),
-        },
-      })
-      this.options.reportError?.(new Error(
-        `node command timed out: ${command.nodeId}/${command.runtimeId ?? '-'} ${rpcMethod ?? `${command.capability}.${command.operation}`} after ${String(elapsedMs)} ms`,
-      ))
-      throw new HttpProblem(
-        504,
-        `node request timed out after ${String(elapsedMs)} ms (${command.nodeId}/${command.runtimeId ?? '-'} ${rpcMethod ?? `${command.capability}.${command.operation}`})`,
-      )
-    }
-    throw new HttpProblem(504, `node request timed out after ${String(elapsedMs)} ms`)
+    if (command === undefined) return new HttpProblem(504, `node request timed out after ${String(elapsedMs)} ms`)
+    this.options.storage.control.appendAudit({
+      occurredAt: Date.now(),
+      actor: 'hub:timeout-monitor',
+      action: 'command.wait-timeout',
+      nodeId: command.nodeId,
+      ...(command.runtimeId === undefined ? {} : { runtimeId: command.runtimeId }),
+      resourceId: command.commandId,
+      outcome: 'timeout',
+      details: {
+        capability: command.capability,
+        operation: command.operation,
+        commandStatus: command.status,
+        elapsedMs,
+        ...(rpcMethod === undefined ? {} : { rpcMethod }),
+      },
+    })
+    this.options.reportError?.(new Error(
+      `node command timed out: ${command.nodeId}/${command.runtimeId ?? '-'} ${rpcMethod ?? `${command.capability}.${command.operation}`} after ${String(elapsedMs)} ms`,
+    ))
+    return new HttpProblem(
+      504,
+      `node request timed out after ${String(elapsedMs)} ms (${command.nodeId}/${command.runtimeId ?? '-'} ${rpcMethod ?? `${command.capability}.${command.operation}`})`,
+    )
   }
 
   private redactCommand(command: NonNullable<ReturnType<HubStorage['control']['getCommand']>>): void {

@@ -9,6 +9,7 @@ const root = resolve(import.meta.dirname, '..')
 const required = [
   'README.md', 'README.en.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md',
   'docs/assets/overview.png', 'docs/assets/nodes.png', 'docs/assets/mobile.png',
+  'docs/assets/plugins.png', 'docs/assets/snapshots.png',
   'docs/upstream.md', 'docs/upstream.en.md',
 ]
 const forbidden = [

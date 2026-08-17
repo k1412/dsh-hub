@@ -32,7 +32,7 @@ declare module '@deepseek-ai/dsh-api-gateway/types' {
 }
 
 /** Connector release sent in the authenticated local baseline. */
-export const HUB_CONNECTOR_VERSION = '0.2.0'
+export const HUB_CONNECTOR_VERSION = '1.0.0'
 
 /** Connector configuration stored in the DSH profile. */
 export interface Config {
@@ -201,6 +201,18 @@ function unwrap<T>(response: RpcResponse<T>): T {
   const error = new Error(response.result.error.message)
   error.name = response.result.error.code
   throw error
+}
+
+function remoteFailure(error: unknown): {
+  ok: false
+  error: { code: string; message: string; details: Record<string, never> }
+} {
+  const candidateMessage = error instanceof Error ? error.message : 'Remote endpoint failed'
+  const message = Array.from(candidateMessage, (character) => {
+    const codePoint = character.codePointAt(0) ?? 0
+    return codePoint <= 31 || codePoint === 127 ? ' ' : character
+  }).join('').slice(0, 8_192)
+  return { ok: false, error: { code: 'internal', message, details: {} } }
 }
 
 function titleOf(summary: SessionSummary): string | undefined {
@@ -534,7 +546,7 @@ export class HubConnector {
       if (endpoint.includes('/') && parsedBody.success && parsedBody.data.method === endpoint) {
         const result = await this.gateway.dispatch(
           endpoint, parsedBody.data.payload, new AbortController().signal,
-        )
+        ).catch(remoteFailure)
         const envelope = serverResponseSchema.parse({
           type: 'server-response',
           rpcId: parsedBody.data.rpcId,
@@ -549,7 +561,7 @@ export class HubConnector {
       if (parsedBody.data.method === endpoint) {
         const result = await this.gateway.dispatch(
           endpoint, parsedBody.data.payload, new AbortController().signal,
-        )
+        ).catch(remoteFailure)
         response = Response.json(serverResponseSchema.parse({
           type: 'server-response', rpcId: parsedBody.data.rpcId, result,
         }))

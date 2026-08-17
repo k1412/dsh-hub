@@ -13,6 +13,22 @@ This guide explains what Hub adds to official DSH Web. Sessions, project groups,
 
 Changing the node before the first message clears the previous blank-session selection so a prompt cannot be sent to the old node by mistake. Choosing an existing Workspace from the fleet list synchronizes the node selector to its owner. No visit to Settings is required.
 
+## Check Current Runtime before changing Settings
+
+The Settings header always shows **Current Runtime**. Switching it does not reload the shell. Hub refreshes both schema-backed settings and direct Host controllers such as models, permissions, and agents, while preventing a late read from the previous node from replacing the new state.
+
+Settings scopes are:
+
+| Page or setting | Owner |
+|---|---|
+| General permissions, default agent, and submission behavior | Current Runtime |
+| General language and appearance | Current browser, independent of nodes |
+| Models, configurable plugins, and Agent presets | Current Runtime |
+| Hub nodes | Hub-global |
+| Node plugins, update history, and managed-scope snapshots | Management target selected inside Node plugins |
+
+The official **Plugins** page configures runtime settings for DSH feature plugins. Hub's separate **Node plugins** page manages package inventory, updates, and recovery; they are not the same operation.
+
 ## Enroll nodes and choose a fallback runtime
 
 Open **Settings → Hub nodes**.
@@ -38,6 +54,10 @@ Open **Settings → Node plugins** and choose a target runtime. **Current plugin
 
 After **Check for updates**, the page shows current and registry-latest versions and exposes an update button only when a newer version exists. Every update follows this sequence:
 
+- **Externally managed** means the package came from a local file, Workspace, Git, or an independent Release. Hub does not query npm or rewrite that source.
+- **Temporarily unavailable** affects only that plugin; the rest of the inventory and update buttons remain usable.
+- **Up to date** means the npm registry lookup succeeded and versions match.
+
 1. The node verifies that the dependency lock did not change after the page read it.
 2. The node automatically saves package manifests, lockfiles, Cordis configuration, and managed-plugin records as an update-specific rollback point.
 3. The node downloads the exact version from the restricted public npm registry, records its artifact hash, invokes DSH profile management, and validates composition and installed state.
@@ -45,11 +65,11 @@ After **Check for updates**, the page shows current and registry-latest versions
 
 Rollback never requires an operator to remember a hash, artifact ID, or snapshot ID. If a later update has changed the lock, an older rollback stops instead of overwriting newer state.
 
-## Plugin rollback versus whole-profile snapshots
+## Plugin rollback versus managed-scope snapshots
 
 Plugin update does not require a manual snapshot. Each update creates its own automatic rollback point solely to undo that plugin change.
 
-**Whole-profile snapshots** is collapsed by default and is a separate advanced recovery feature:
+**Managed-scope snapshots** is collapsed by default and is a separate advanced recovery feature. It is not a disk or operating-system image:
 
 - Configuration: top-level Cordis composition files.
 - Dependencies: package manifests and lockfiles.

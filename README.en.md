@@ -32,6 +32,34 @@ DSH Hub is a self-hosted multi-node control plane for [DeepSeek Harness](https:/
   </tr>
 </table>
 
+## Using sessions and Settings
+
+The home page is always a **Fleet view**. It aggregates projects and sessions from every node and is never filtered by the current Runtime. For a new session, choose the node/Runtime above the composer, then use the adjacent official Workspace picker to select or browse a folder on that node. Once created, the encoded Workspace identity routes later messages, Goals, questions, and approvals back to the owner automatically.
+
+All management entry points live under **Settings** in the lower-left corner. “Current Runtime” in the header identifies the owner of official Host settings, but not every setting is node-owned:
+
+| Page or setting | Storage and scope | How to switch |
+|---|---|---|
+| General: permissions, default agent, submission behavior | Current Runtime | “Current Runtime” in the Settings header |
+| General: language and appearance | Current browser | Independent of nodes |
+| Models, configurable plugins, and Agent presets | Current Runtime | “Current Runtime” in the Settings header |
+| Hub nodes | Hub-global | No node switch required |
+| Node plugins, update history, and managed-scope snapshots | Runtime explicitly selected on that page | “Management target” on Node plugins |
+
+Changing Runtime does not reload the Settings shell. Hub invalidates both official schema-backed settings and direct Host controllers such as models, permissions, and agents, while fencing late responses from the previous node so node A state cannot be written to node B. See the [console guide](docs/hub/console.md) for the complete workflow.
+
+## Plugin updates, automatic rollback, and snapshots
+
+**Settings → Node plugins** is more than a list of version buttons. It reads the node's actual Profile and classifies every plugin as npm-registry managed, externally managed, or temporarily unavailable. A private or local plugin returning 404 cannot fail the whole scan.
+
+![Safe node plugin update and one-click rollback](docs/assets/plugins.png)
+
+Every Hub-managed update verifies the dependency lock, downloads one exact version, checks SHA-256, and automatically preserves the old manifest, lockfile, Cordis configuration, and managed artifact on the node. A failed install or composition check restores the previous state immediately; a successful update still retains **Rollback to previous version**. Plugins installed from local files, Workspaces, Git, or independent Releases remain visible, but Hub never rewrites their source.
+
+A **managed-scope snapshot** is a separate explicit protection layer. It includes only selected Profile configuration, dependencies, or data roots approved in Node Agent configuration; it is **not an operating-system image**. Restore creates another protection point first. Ordinary plugin updates do not require a manual snapshot.
+
+![Managed-scope snapshot and restore](docs/assets/snapshots.png)
+
 ## Core design
 
 ```mermaid

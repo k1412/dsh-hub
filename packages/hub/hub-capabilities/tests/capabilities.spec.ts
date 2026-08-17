@@ -27,11 +27,51 @@ describe('Hub capability contracts', () => {
     expect(resolveHubOperation('dsh.files', '1.0.0', 'read')?.request.safeParse({
       path: '/workspace/file', maxBytes: 5_000_000,
     }).success).toBe(false)
-    expect(resolveHubOperation('dsh.plugins', '2.0.0', 'apply')?.request.safeParse({
+    expect(resolveHubOperation('dsh.plugins', '3.0.0', 'apply')?.request.safeParse({
       clientMutationId: 'plugin-change-1', packageName: '../../escape', version: '1.0.0', expectedLockHash: 'b'.repeat(43),
     }).success).toBe(false)
-    expect(resolveHubOperation('dsh.plugins', '2.0.0', 'apply')?.request.safeParse({
+    expect(resolveHubOperation('dsh.plugins', '3.0.0', 'apply')?.request.safeParse({
       clientMutationId: 'plugin-change-1', packageName: '@example/plugin', version: 'latest', expectedLockHash: 'b'.repeat(43),
+    }).success).toBe(false)
+  })
+
+  it('retains the prior plugin contract during a rolling Hub and node upgrade', () => {
+    const legacy = resolveHubOperation('dsh.plugins', '2.0.0', 'check-updates')
+    const legacyResponse = {
+      plugins: [{
+        packageName: '@example/plugin', version: '1.0.0', latestVersion: '1.1.0',
+        updateAvailable: true, enabled: true, healthy: true,
+      }],
+      lockHash: 'a'.repeat(43),
+      checkedAt: 1,
+    }
+    const currentResponse = {
+      plugins: [{
+        packageName: '@example/plugin', version: '1.0.0', latestVersion: '1.1.0',
+        updateAvailable: true, updateStatus: 'available', updateSource: 'registry',
+        enabled: true, healthy: true,
+      }],
+      lockHash: 'a'.repeat(43),
+      checkedAt: 1,
+    }
+    const current = resolveHubOperation('dsh.plugins', '3.0.0', 'check-updates')
+    expect(legacy?.response.safeParse(legacyResponse).success).toBe(true)
+    expect(legacy?.response.safeParse(currentResponse).success).toBe(false)
+    expect(current?.response.safeParse(currentResponse).success).toBe(true)
+    expect(current?.response.safeParse(legacyResponse).success).toBe(false)
+    expect(current?.response.safeParse({
+      ...currentResponse,
+      plugins: [{
+        packageName: '@example/plugin', version: '1.0.0', updateAvailable: true,
+        updateStatus: 'available', updateSource: 'registry', enabled: true, healthy: true,
+      }],
+    }).success).toBe(false)
+    expect(current?.response.safeParse({
+      ...currentResponse,
+      plugins: [{
+        packageName: '@example/plugin', version: '1.0.0', updateAvailable: false,
+        updateStatus: 'external', updateSource: 'registry', enabled: true, healthy: true,
+      }],
     }).success).toBe(false)
   })
 

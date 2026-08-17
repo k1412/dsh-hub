@@ -89,6 +89,8 @@ const MAX_SNAPSHOT_FILES = 20_000
 const MAX_SNAPSHOT_BYTES = 512 * 1024 * 1024
 const MAX_ARTIFACT_BYTES = 128 * 1024 * 1024
 const MAX_REGISTRY_METADATA_BYTES = 1024 * 1024
+const REGISTRY_TIMEOUT_MS = 8_000
+const REGISTRY_CONCURRENCY = 6
 const PACKAGE_NAME = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/
 const PACKAGE_VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
 
@@ -134,6 +136,36 @@ async function boundedResponseBytes(response: Response, maximum: number): Promis
     throw error
   }
   return Buffer.concat(chunks, total)
+}
+
+async function mapConcurrent<T, U>(
+  values: readonly T[],
+  concurrency: number,
+  operation: (value: T) => Promise<U>,
+): Promise<U[]> {
+  const results = new Array<U>(values.length)
+  let next = 0
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    for (;;) {
+      const index = next++
+      if (index >= values.length) return
+      results[index] = await operation(values[index] as T)
+    }
+  }))
+  return results
+}
+
+function registryManaged(spec: string | undefined, tracked: ManagedPlugin | undefined): boolean {
+  if (tracked !== undefined) return true
+  if (spec === undefined) return false
+  return !/^(?:file|link|workspace|portal|patch|git(?:\+[^:]+)?|https?):/iu.test(spec)
+    && !/^(?:github|gitlab|bitbucket):/iu.test(spec)
+    && !/^[^/\s]+\/[^/\s]+(?:#.*)?$/u.test(spec)
+}
+
+function updateCheckError(error: unknown): string {
+  const message = error instanceof Error ? error.message : 'plugin registry request failed'
+  return message.length <= 1_024 ? message : `${message.slice(0, 1_021)}...`
 }
 
 async function run(command: string, args: string[], cwd: string): Promise<void> {
@@ -421,17 +453,41 @@ export class HubNodeSupervisor {
         plugins: Array<Record<string, HubJson | undefined>>
         lockHash: string
       }
-      const plugins: HubJson[] = []
-      for (const plugin of current.plugins) {
+      const manifest = await readJson<PackageManifest>(join(this.profile.profileDirectory, 'package.json'), {})
+      const managed = await readJson<ManagedPlugin[]>(this.managedPath, [])
+      const dependencies = { ...manifest.devDependencies, ...manifest.dependencies }
+      const managedByName = new Map(managed.map(plugin => [plugin.packageName, plugin]))
+      const plugins = await mapConcurrent(current.plugins, REGISTRY_CONCURRENCY, async (plugin): Promise<HubJson> => {
         if (typeof plugin.packageName !== 'string') throw new Error('plugin inventory contains an invalid package name')
         const packageName = plugin.packageName
-        const metadata = await this.registryMetadata(packageName, 'latest')
-        plugins.push({
-          ...plugin,
-          latestVersion: metadata.version,
-          updateAvailable: metadata.version !== plugin.version,
-        })
-      }
+        if (!registryManaged(dependencies[packageName], managedByName.get(packageName))) {
+          return {
+            ...plugin,
+            updateAvailable: false,
+            updateStatus: 'external',
+            updateSource: 'external',
+          }
+        }
+        try {
+          const metadata = await this.registryMetadata(packageName, 'latest')
+          const updateAvailable = metadata.version !== plugin.version
+          return {
+            ...plugin,
+            latestVersion: metadata.version,
+            updateAvailable,
+            updateStatus: updateAvailable ? 'available' : 'current',
+            updateSource: 'registry',
+          }
+        } catch (error) {
+          return {
+            ...plugin,
+            updateAvailable: false,
+            updateStatus: 'unavailable',
+            updateSource: 'registry',
+            updateError: updateCheckError(error),
+          }
+        }
+      })
       return { plugins, lockHash: current.lockHash, checkedAt: Date.now() }
     }
     if (operation === 'history') {
@@ -604,7 +660,7 @@ export class HubNodeSupervisor {
   }> {
     const metadataResponse = await fetch(
       `https://registry.npmjs.org/${encodeURIComponent(packageName)}/${encodeURIComponent(requestedVersion)}`,
-      { redirect: 'error' },
+      { redirect: 'error', signal: AbortSignal.timeout(REGISTRY_TIMEOUT_MS) },
     )
     if (!metadataResponse.ok) throw new Error(`plugin registry metadata failed with HTTP ${String(metadataResponse.status)}`)
     const metadata = JSON.parse(

@@ -90,6 +90,7 @@ function fixture() {
     slots,
     locale,
     settingsScope: { refreshAll: vi.fn() },
+    emit: vi.fn(),
     effect(activate: () => unknown) {
       const dispose = activate()
       if (typeof dispose === 'function') effects.push(dispose as () => void)
@@ -131,6 +132,19 @@ describe('Hub official Settings registration', () => {
     expect(entries.map(labelOf)).toEqual(['Hub nodes', 'Node plugins'])
     ctx.dispose()
     expect(slots.entries('settings.section')).toHaveLength(0)
+  })
+
+  it('invalidates schema-backed and direct Host settings after a Runtime change', () => {
+    const { ctx, slots } = fixture()
+    slots.declare('settings.action')
+    apply(ctx as never)
+    const target = slots.entries('settings.action')[0]
+    if (target === undefined) throw new Error('Settings target registration missing')
+    const injected = (target.options as { inject?: () => { refreshNodeSettings: () => void } }).inject?.()
+    if (injected === undefined) throw new Error('Settings target injection missing')
+    injected.refreshNodeSettings()
+    expect(ctx.settingsScope.refreshAll).toHaveBeenCalledOnce()
+    expect(ctx.emit).toHaveBeenCalledWith('connection/reset')
   })
 
   it('recovers when the Settings declaration arrives after the plugin', () => {
