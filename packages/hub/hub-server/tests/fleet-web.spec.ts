@@ -3,8 +3,8 @@ import {
   decodeFleetId, decodeFleetPayload, encodeFleetId, encodeFleetPayload, singleFleetTarget,
 } from '../src/fleet-web.ts'
 
-const mac = { nodeId: 'mac-neo', runtimeId: 'web', displayName: 'Mac Neo' }
-const nas = { nodeId: 'nas-work', runtimeId: 'default', displayName: 'Home NAS' }
+const mac = { nodeId: 'workstation-a', runtimeId: 'web', displayName: 'Mac Neo' }
+const nas = { nodeId: 'nas-node', runtimeId: 'default', displayName: 'Home NAS' }
 
 describe('fleet Web identity routing', () => {
   it('round-trips collision-free session and workspace identities', () => {
@@ -12,10 +12,10 @@ describe('fleet Web identity routing', () => {
     const workspace = encodeFleetId('workspace', nas, 'same-local-id')
     expect(session).not.toBe(workspace)
     expect(decodeFleetId(session)).toEqual({
-      kind: 'session', nodeId: 'mac-neo', runtimeId: 'web', sourceId: 'same-local-id',
+      kind: 'session', nodeId: 'workstation-a', runtimeId: 'web', sourceId: 'same-local-id',
     })
     expect(decodeFleetId(workspace)).toEqual({
-      kind: 'workspace', nodeId: 'nas-work', runtimeId: 'default', sourceId: 'same-local-id',
+      kind: 'workspace', nodeId: 'nas-node', runtimeId: 'default', sourceId: 'same-local-id',
     })
   })
 
@@ -42,7 +42,7 @@ describe('fleet Web identity routing', () => {
           agentId: 'session-one',
         },
       },
-      targets: [{ nodeId: 'nas-work', runtimeId: 'default' }],
+      targets: [{ nodeId: 'nas-node', runtimeId: 'default' }],
     })
   })
 
@@ -64,7 +64,7 @@ describe('fleet Web identity routing', () => {
         sessionId: 'one',
         payload: { text: encoded, title: encoded },
       },
-      targets: [{ nodeId: 'mac-neo', runtimeId: 'web' }],
+      targets: [{ nodeId: 'workstation-a', runtimeId: 'web' }],
     })
     expect(decodeFleetPayload(encoded, 'sessionId').value).toBe('one')
   })

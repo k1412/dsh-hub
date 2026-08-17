@@ -60,3 +60,25 @@ index 98733dc0cd752b554bd94e45904ca341ad141bba..fa234291206617ae5a6d8605abf97712
 
  const DEFAULT_FILE = 'sh';
  const DEFAULT_NAME = 'xterm';
+diff --git a/scripts/post-install.js b/scripts/post-install.js
+index 23dadf53779a9a25ab40cef447de67cd625c618c..cb64864e9b51af86fa8f8ba12f1901bb15470c5f 100644
+--- a/scripts/post-install.js
++++ b/scripts/post-install.js
+@@ -77,4 +77,17 @@ if (os.platform() !== 'win32') {
+   }
+ }
+ 
++// node-pty@1.1.0's npm tarball lost the executable bit on the macOS
++// prebuilt spawn-helper. pnpm preserves that mode, so restore the reviewed
++// helper before consumers try to create a terminal.
++if (os.platform() === 'darwin') {
++  for (const arch of ['darwin-arm64', 'darwin-x64']) {
++    const helper = path.join(__dirname, '..', 'prebuilds', arch, 'spawn-helper');
++    if (fs.existsSync(helper)) {
++      fs.chmodSync(helper, 0o755);
++      console.log(`  Marked ${helper} executable`);
++    }
++  }
++}
++
+ process.exit(0);

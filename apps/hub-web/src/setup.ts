@@ -1,6 +1,6 @@
 /** Empty-fleet enrollment gate; the full product remains the official DSH Web shell. */
 
-import './setup.css'
+export {}
 
 interface NodeSummary {
   nodeId: string

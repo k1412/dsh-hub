@@ -15,11 +15,10 @@ permissions:
 
 env:
   NODE_VERSION: '22.22.1'
-  WEB_NODE_VERSION: '24.19.0'
   DSH_TELEMETRY_DISABLED: '1'
 
 jobs:
-  node:
+  core:
     name: Hub / ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -29,7 +28,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
@@ -38,25 +36,56 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-      - name: Install immutable dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Type-check Hub packages
-        run: pnpm run hub:typecheck
-      - name: Lint Hub sources
-        run: pnpm run hub:lint
-      - name: Run Hub tests
-        run: pnpm run hub:test
-      - name: Build Hub Web
-        run: pnpm run hub:web:build:contracts-ready
-      - name: Verify Hub server backup path
-        run: pnpm run hub:server:verify
-      - name: Build release assets
-        run: pnpm run hub:release:pack
-      - name: Verify packed installation
-        run: pnpm run hub:release:verify
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run lint
+      - run: pnpm run test
+      - run: pnpm run hub:web:build
+      - run: pnpm run hub:server:verify
+      - run: pnpm run hub:release:pack
+      - run: pnpm run hub:release:verify
 
-  windows-typecheck:
-    name: Hub / windows typecheck
+  multi-node:
+    name: Hub / simultaneous multi-node
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Run two independent nodes concurrently
+        run: pnpm exec vitest run packages/hub/hub-server/tests/multi-node.integration.spec.ts
+
+  web-regression:
+    name: Hub / reviewed Web desktop and mobile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm run hub:web:build
+      - run: pnpm run hub:web:csp:verify
+      - name: Verify Hub UI components and target switching
+        run: pnpm exec vitest run packages/hub/hub-client-ui/tests apps/hub-web/tests
+
+  windows:
+    name: Hub / Windows
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v6
@@ -69,15 +98,9 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-      - name: Install immutable dependencies
-        shell: pwsh
-        run: pnpm install --frozen-lockfile
-      - name: Type-check Hub packages
-        shell: pwsh
-        run: pnpm run hub:typecheck
-      - name: Lint Hub sources
-        shell: pwsh
-        run: pnpm run hub:lint
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run lint
       - name: Parse Windows node installer
         shell: pwsh
         run: |
@@ -92,17 +115,14 @@ jobs:
             $errors | ForEach-Object { Write-Error $_.Message }
             exit 1
           }
-      - name: Build Hub Web
-        shell: pwsh
-        run: pnpm run hub:web:build:contracts-ready
+      - run: pnpm run hub:web:build
 
   documentation:
-    name: Hub / documentation
+    name: Hub / public documentation and repository boundary
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
@@ -112,43 +132,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Verify documentation and generated references
-        run: pnpm run doc-sync
-
-  web-regression:
-    name: Hub / official Web regression
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 11.7.0
-      - uses: actions/setup-node@v6
-        with:
-          node-version: ${{ env.WEB_NODE_VERSION }}
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - name: Install the locked Chromium runtime
-        run: pnpm --filter @deepseek-ai/dsh-web-frontend exec playwright install --with-deps chromium
-      - name: Prepare bubblewrap for DSH subprocess sandboxes
-        run: bash scripts/prepare-ci-bubblewrap.sh
-      - name: Build Hub Web under the official client roster
-        run: pnpm run hub:web:build
-      - name: Verify Hub Web under the production CSP
-        run: pnpm run hub:web:csp:verify
-      - name: Run official GUI unit and component tests
-        run: pnpm run test:gui
-      - name: Run official Web replay tests
-        env:
-          DSH_SNAPSHOT: replay
-          # The fleet-console gate values deterministic compatibility over
-          # throughput. Some upstream replay fixtures register process-wide
-          # loaders and are not safe to overlap on a small hosted runner.
-          DSH_SNAPSHOT_MAX_CONCURRENCY: '1'
-        run: pnpm run test:web
+      - run: pnpm run docs:check
+      - run: pnpm run repo:check
 
   container:
     name: Hub / linux-amd64 container

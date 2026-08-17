@@ -59,7 +59,7 @@ try {
     || agent.bin?.['dsh-hub-node'] !== 'lib/bin.js' || agent.dependencies?.['node-pty'] !== '1.1.0') {
     throw new Error('packed Node Agent identity or executable is incorrect')
   }
-  if (connector.peerDependencies?.['@deepseek-ai/dsh-host-apiproxy'] !== '0.1.0-rc.5') {
+  if (connector.peerDependencies?.['@deepseek-ai/dsh-host-apiproxy'] !== '0.1.0-rc.7') {
     throw new Error('packed Connector must pin its supported DSH Host gateway version')
   }
   const connectorPatch = await readFile(join(connectorRoot, 'cordis.patch.yml'), 'utf8')
@@ -80,6 +80,9 @@ try {
   if (unixInstaller.includes('@VERSION@') || windowsInstaller.includes('@VERSION@')
     || !unixInstaller.includes(`DSH_HUB_RELEASE_VERSION='${version}'`)
     || !windowsInstaller.includes(`$ReleaseVersion = '${version}'`)
+    || !unixInstaller.includes('"allowScripts":{"node-pty":true}')
+    || !windowsInstaller.includes("allowScripts = @{ 'node-pty' = $true }")
+    || !unixInstaller.includes('-name spawn-helper -type f -print0')
     || (unixMetadata.mode & 0o111) === 0) {
     throw new Error('packed one-command installers are incomplete or unversioned')
   }

@@ -6,7 +6,6 @@
   },
   "include": ["src"],
   "references": [
-    { "path": "../hub-protocol" },
-    { "path": "../../runtime-diagnostics/invariants" }
+    { "path": "../hub-protocol" }
   ]
 }

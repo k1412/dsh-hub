@@ -3,7 +3,6 @@
   "compilerOptions": { "rootDir": "src", "outDir": "lib/types" },
   "include": ["src"],
   "references": [
-    { "path": "../hub-protocol" },
-    { "path": "../../runtime-diagnostics/invariants" }
+    { "path": "../hub-protocol" }
   ]
 }

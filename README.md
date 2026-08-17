@@ -1,60 +1,147 @@
 # DSH Hub
 
-English | [中文](README.zh.md)
+[English](README.en.md) | 中文
 
-DSH Hub is a self-hosted control plane for operating multiple [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) runtimes from one browser. Each node keeps its own DSH runtime, sessions, workspace files, credentials, and local clients. A Node Agent creates an outbound authenticated connection to the Hub, while an in-process Cordis Connector consumes the same transport-independent Host gateway reached by local Web and desktop clients.
+[![CI](https://github.com/k1412/dsh-hub/actions/workflows/hub-ci.yml/badge.svg)](https://github.com/k1412/dsh-hub/actions/workflows/hub-ci.yml)
+[![Release](https://img.shields.io/github/v/release/k1412/dsh-hub?display_name=tag)](https://github.com/k1412/dsh-hub/releases)
+[![License](https://img.shields.io/github/license/k1412/dsh-hub)](LICENSE)
 
-## Capabilities
+**一个浏览器，继续你所有电脑上的 DSH 会话。**
 
-- Continue one session interchangeably from local Web, a desktop client, or Hub.
-- Browse all enrolled nodes and sessions from a responsive single-user interface.
-- Run session commands, workspace file operations, and interactive terminals under the Node Agent operating-system account.
-- Pin, stage, inventory, and roll back DSH profile plugins by exact version and artifact hash.
-- Create and restore node-local configuration, dependency, data, and fleet snapshots while excluding known secret-file classes and symbolic links.
-- Recover outbound WSS connections through durable sequencing, acknowledgements, replay, idempotency, and connection-generation fencing.
+DSH Hub 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的自托管多节点控制面。电脑、NAS 和云主机继续在本地运行自己的 DSH Runtime、保存会话与文件；每台机器只需主动连接 Hub，就能在同一个官方风格 Web 界面里按文件夹汇总项目和会话，并在新建会话时直接选择节点与工作区。
 
-## Architecture
+![DSH Hub 多节点会话总览](docs/assets/overview.png)
 
-Hub is a control plane, not a DSH runtime. It never runs agents or node plugins and has no local execution mode. Nodes remain authoritative for live sessions, workspaces, managed plugin artifacts, and snapshots; Hub persists only control state, minimal session discovery, command delivery state, and audit records. It has no transparent node-content or object cache.
+## 它解决什么问题
 
-Browser requests use REST for commands, SSE for live state, and a dedicated WebSocket for PTY traffic. Node Agents use outbound-only WSS and authenticate with a Cloudflare Access service token plus a pinned Ed25519 node identity. Human access uses Cloudflare Access and a Hub-side email allowlist.
+- **会话不再困在一台电脑上**：本地 Web、桌面客户端和 Hub 使用同一个 DSH Runtime 与会话存储，可以从任何入口继续同一个工作。
+- **真正的机群视图**：项目按工作区文件夹分组，每条会话同时标明所属节点；切换默认节点不会过滤整页会话。
+- **节点只出站连接**：节点无需公网 IP、端口映射或 SSH 暴露，Node Agent 通过签名 WSS 主动连接 Hub，并在断线后可靠恢复。
+- **不是阉割版 Web UI**：Hub 组装固定版本的官方 DSH Web 组件，只把节点、工作区和运维能力加入官方设置与会话流程。
+- **节点运维可回退**：查看插件清单和版本，按哈希暂存制品，执行更新事务，保留上一个可恢复版本，并管理节点本地快照。
+- **手机可以真正使用**：会话、Composer、Runtime 选择器、侧栏和全屏设置均有 390px 浏览器回归测试。
 
-See the [architecture reference](docs/hub/architecture.md) and [security reference](docs/hub/security.md).
+<table>
+  <tr>
+    <td width="64%"><img src="docs/assets/nodes.png" alt="节点注册、Runtime 与双向可靠队列监控"></td>
+    <td width="36%"><img src="docs/assets/mobile.png" alt="DSH Hub 手机界面"></td>
+  </tr>
+  <tr>
+    <td align="center">节点注册、Runtime、插件与传输健康</td>
+    <td align="center">390px 手机界面</td>
+  </tr>
+</table>
 
-## Run
+## 核心设计
 
-This fork retains the complete upstream DSH runtime and development surface.
-
-### Run from `npm`
-
-Install Node.js, then run the upstream Web UI:
-
-```sh
-npx @deepseek-ai/dsh web
+```mermaid
+flowchart LR
+  Browser["浏览器 / 手机"] -->|"Cloudflare Access"| Proxy["HTTPS 入口"]
+  Proxy -->|"Origin Secret"| Hub["DSH Hub"]
+  Hub <-->|"签名 WSS · 仅出站"| AgentA["Node Agent · NAS"]
+  Hub <-->|"签名 WSS · 仅出站"| AgentB["Node Agent · Workstation"]
+  AgentA <-->|"本地 IPC"| RuntimeA["DSH + Connector"]
+  AgentB <-->|"本地 IPC"| RuntimeB["DSH + Connector"]
+  Local["本地 Web / Desktop"] --> RuntimeB
 ```
 
-The Web UI listens on `http://127.0.0.1:3080` by default. See the [Web UI guide](docs/user/guide/index.md).
+Hub **不是**另一个 DSH Runtime，也没有特殊的“本地执行模式”。它负责身份、路由、最小会话索引、可靠交付、节点管理和审计；模型调用、会话正文、工作区、插件和快照仍由节点负责。想让 VPS 本机也执行任务，就在同一台 VPS 上按普通节点方式部署 DSH、Connector 和 Node Agent。
 
-### Run from source
+Connector 是安装进现有 DSH Profile 的 Cordis 插件，复用本地 Web 和桌面端已经使用的 Host API。Node Agent 是同账户 Sidecar，负责节点身份、出站 WSS、断线 Journal 和机器级管理；它不会启动第二套 DSH Runtime，也不会开放入站端口。
 
-```sh
+## 快速开始
+
+### 1. 准备安全入口
+
+推荐准备一个域名，例如 `hub.example.com`，用 Cloudflare Access 保护浏览器登录，并让反向代理把流量转发到仅绑定回环或私有网络的 Hub Origin。反向代理必须删除外部传入的 `X-DSH-Origin-Secret`，再注入自己持有的随机值。
+
+最低安全配置包括：
+
+- Cloudflare Access Self-hosted Application，人员策略只允许你的账号；
+- Hub 内再配置精确邮箱白名单，不能只依赖 Cloudflare 登录成功；
+- Origin 端口只绑定回环或私有接口，公网只开放 HTTPS 入口；
+- 每个节点使用独立的 Cloudflare Service Token；
+- Hub 与 Node Agent 均使用非特权账户和仅所有者可读的状态目录。
+
+完整配置见[部署指南](docs/hub/deployment.zh.md)和[安全模型](docs/hub/security.zh.md)。如果不希望服务器接受任何公网入站连接，可以使用文档中的 **Cloudflare Tunnel 模式**；Hub、反向代理与 NAS 都可只留在内网。
+
+### 2. 启动 Hub
+
+```bash
 git clone https://github.com/k1412/dsh-hub.git
-cd dsh-hub
-pnpm install
-pnpm run build
-pnpm dsh web
+cd dsh-hub/deploy/hub
+cp .env.example .env
+chmod 600 .env
+# 填写公共 Origin、Cloudflare Access 参数、操作员邮箱和独立 Origin Secret
+docker compose pull
+docker compose up -d
+docker compose ps
 ```
 
-## Deploy
+生产环境建议把 `DSH_HUB_IMAGE` 固定到 Release 对应的不可变 Digest，而不是长期使用 `latest`。随附 Compose 默认以 UID 10001、只读根文件系统、移除全部 Linux Capability、`no-new-privileges` 和回环端口运行。
 
-The supported Hub deployment is the hardened [Docker Compose definition](deploy/hub/compose.yaml). Nodes install the release Node Agent and the DSH Connector bundle. The Connector joins an existing composition that provides the DSH Host gateway and does not install or proxy the DSH Web transport.
+### 3. 一条命令接入节点
 
-Follow the [deployment guide](docs/hub/deployment.md), then use the [operations guide](docs/hub/operations.md) for enrollment, backup, restore, upgrades, and revocation.
+在 Hub 打开 **设置 → Hub 节点**，填写显示名称和节点 ID，生成 15 分钟有效的一次性注册码。页面会给出 Linux／macOS 或 Windows 的安装命令。典型 Unix 命令如下；实际使用时请直接复制页面生成的版本：
 
-## Development
+```bash
+curl -fsSL https://github.com/k1412/dsh-hub/releases/latest/download/install-node.sh \
+  | DSH_HUB_ENROLLMENT_CODE='一次性注册码' bash -s -- \
+      --hub 'https://hub.example.com' --node 'workstation'
+```
 
-Hub packages live under [`packages/hub`](packages/hub), and the browser application lives under [`apps/hub-web`](apps/hub-web). Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md) and the repository's existing package, documentation, testing, and bilingual-pairing rules.
+安装器会校验 Release 的 SHA-256，安装 Connector 插件与当前用户的 Node Agent 服务，并通过交互式隐藏输入读取节点专属 Service Token Secret。重启一次现有 DSH Profile 后，本地 Web、桌面端和 Hub 就能同时使用同一组会话。
 
-## Upstream and license
+## 部署方式
 
-This repository is a fork of DeepSeek Harness. Upstream DSH code, the Hub additions, and the complete repository are distributed under the [MIT License](LICENSE). Third-party notices remain in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). DSH Hub is an independent community project and does not use DeepSeek branding as its own product identity.
+| 模式 | 入口 | Origin 暴露 | 适合场景 |
+|---|---|---:|---|
+| 域名 + Access + 反向代理 | 公网 HTTPS | 回环或私网 | 最通用，手机和异地电脑直接访问 |
+| Cloudflare Tunnel | Cloudflare 出站隧道 | 不开放入站端口 | NAS、家庭网络、无法做端口映射 |
+| Access + Overlay Network | VPS 入口转发到 Tailscale/WireGuard 内的 Hub | 仅 Overlay | Hub 在 NAS，VPS 只做网页入口 |
+
+纯 `IP:端口`、没有 Access 与 Origin Secret 的直接公网暴露不是受支持的生产拓扑。Tailscale 只能解决可达性，若仍通过浏览器使用 Hub，认证、精确操作员授权和 Origin 隔离依然需要保留。
+
+## 权限与数据边界
+
+本项目采用明确的单操作员模型：**Hub 操作员拥有节点账户可以执行的全部权限**。节点不会为每条命令再次弹出本地确认。请用能够访问目标 DSH Profile 和工作区的最低权限账户运行 Node Agent；如果用 `root` 运行，就等于主动把该节点的 Root 权限交给 Hub。
+
+Hub 保存节点、公钥、Runtime、最小会话发现索引、命令状态、可靠交付 Journal 和审计记录；它不缓存会话全文和节点文件。插件制品与快照保留在节点本地。详细备份、恢复、吊销、队列监控与故障处理见[运维手册](docs/hub/operations.zh.md)。
+
+## 功能一览
+
+- 多节点项目与会话聚合，新建会话可选节点和浏览工作区；
+- 官方会话、消息、思考、工具、提问、审批、Goal 和队列交互；
+- 浏览器、桌面端与本地 Web 的会话共存；
+- 节点注册、吊销、在线状态、Runtime 与能力清单；
+- 双向可靠队列、心跳、压力、抑制流量和控制请求监控；
+- 节点插件盘点、版本锁定、更新、回退与恢复事务；
+- 节点文件、终端和快照操作；
+- Ed25519 节点身份、连接代次隔离、断线重放和审计哈希链；
+- 桌面、手机、多节点并发、容器与跨平台 CI。
+
+## 文档
+
+- [部署指南](docs/hub/deployment.zh.md)：三种网络拓扑、Cloudflare、反向代理、Docker 和节点接入；
+- [架构设计](docs/hub/architecture.zh.md)：Hub、Node Agent、Connector、官方 Web 与存储边界；
+- [安全模型](docs/hub/security.zh.md)：完整权限、人员／节点认证、Origin 隔离和机密处理；
+- [运维手册](docs/hub/operations.zh.md)：升级、备份、恢复、撤销、监控和故障排查；
+- [节点服务](docs/hub/node-services.zh.md)：systemd User、launchd 与 Windows 当前用户任务；
+- [性能与多节点](docs/hub/performance.zh.md)：并发、背压和测试保证；
+- [控制台说明](docs/hub/console.zh.md)：终端、文件、插件与快照的用途和风险。
+
+## 开发与贡献
+
+仓库只保留 Hub 自有代码、经过 Review 的官方 Web 构建快照及其可复现源码补丁、部署文件、测试和双语文档。Hub 包位于 `packages/hub`，浏览器入口位于 `apps/hub-web`。
+
+```bash
+pnpm install --frozen-lockfile
+pnpm run check
+pnpm run build
+```
+
+提交、Issue、兼容性和不允许修改的安全原则见 [CONTRIBUTING.md](CONTRIBUTING.md)。个人维护者可以直接维护自己的分支；如果未来有多位贡献者，功能变更通过 PR、必需检查和明确 Review 合并。改变“Hub 拥有节点账户全部权限”这一产品原则的提案应先在自己的 Fork 中验证，不会直接改变本项目默认模型。
+
+## 上游、独立性与许可证
+
+DSH Hub 使用 DeepSeek Harness 的公开插件 API，并复用固定提交构建的官方 Web 交互层；它由社区独立维护，不是 DeepSeek 官方项目。上游组件和本项目均按 MIT License 使用；详见 [LICENSE](LICENSE)、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)和[上游归属说明](docs/upstream.md)。项目不会把 DeepSeek 名称、图标或其他商标用作官方背书。

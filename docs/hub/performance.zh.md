@@ -61,7 +61,7 @@ Hub 按设计不提供透明的工作区、Transcript 或节点对象缓存。�
 
 ## 真实双节点验收
 
-发布部署后，让 NAS Runtime 与 `wuyang-home` 同时在线，并完成：
+发布部署后，让 NAS Runtime 与 `workstation-b` 同时在线，并完成：
 
 1. 打开 Fleet 页面，确认两个节点的项目都按 Workspace 文件夹分组，并附带节点标签。
 2. 先选择节点，再选择该节点返回的目录，分别在两个节点创建会话；无需切换 Fleet 过滤器即可同时发消息。

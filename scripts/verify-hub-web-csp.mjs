@@ -4,14 +4,12 @@
 
 import { createServer } from 'node:http'
 import { readFile, stat } from 'node:fs/promises'
-import { createRequire } from 'node:module'
 import { extname, resolve, sep } from 'node:path'
+import { chromium } from 'playwright'
 import { HUB_CONTENT_SECURITY_POLICY } from '../packages/hub/hub-server/src/server.ts'
 
 const repositoryRoot = resolve(import.meta.dirname, '..')
 const staticRoot = resolve(repositoryRoot, 'apps', 'hub-web', 'dist')
-const requireFromWeb = createRequire(resolve(repositoryRoot, 'apps', 'web', 'package.json'))
-const { chromium } = requireFromWeb('playwright')
 const mediaTypes = {
   '.css': 'text/css; charset=utf-8',
   '.html': 'text/html; charset=utf-8',

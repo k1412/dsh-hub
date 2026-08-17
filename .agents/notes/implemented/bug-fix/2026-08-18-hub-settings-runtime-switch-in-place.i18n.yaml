@@ -1,6 +1,0 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
-#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-18-hub-settings-runtime-switch-in-place.md
-2026-08-18-hub-settings-runtime-switch-in-place.md: 1659fa723a17c3b7cb9283ff7a9f1325c1e41237
-2026-08-18-hub-settings-runtime-switch-in-place.zh.md: 0ac4c43ab3f3e19096073e0ef15cfdb69eaa0b93

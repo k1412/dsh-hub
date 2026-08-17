@@ -1,20 +1,9 @@
 {
   "name": "@k1412/dsh-hub-web",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "build": "vite build && node ../../scripts/build-hub-web.mjs",
-    "dev": "vite --host 127.0.0.1"
-  },
   "dependencies": {
-    "@deepseek-ai/dsh-client-web": "workspace:^",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0"
-  },
-  "devDependencies": {
-    "@vitejs/plugin-react": "^4.0.0",
-    "typescript": "^6.0.3",
-    "vite": "8.0.16"
+    "@k1412/dsh-hub-client-ui": "workspace:^"
   }
 }

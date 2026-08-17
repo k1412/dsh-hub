@@ -65,8 +65,12 @@ try {
 
   $RuntimePrefix = Join-Path $StateDirectory "runtime\$ReleaseVersion"
   New-Item -ItemType Directory -Force -Path $RuntimePrefix | Out-Null
+  @{ private = $true; allowScripts = @{ 'node-pty' = $true } } |
+    ConvertTo-Json -Depth 3 | Set-Content -Encoding utf8 (Join-Path $RuntimePrefix 'package.json')
   & npm install --prefix $RuntimePrefix --no-package-lock --omit=dev --legacy-peer-deps (Join-Path $TemporaryDirectory $AgentAsset)
   if ($LASTEXITCODE -ne 0) { throw 'Node Agent package installation failed' }
+  & node -e "require(process.argv[1])" (Join-Path $RuntimePrefix 'node_modules\node-pty')
+  if ($LASTEXITCODE -ne 0) { throw 'node-pty native runtime validation failed' }
 
   $AgentExecutable = Join-Path $RuntimePrefix 'node_modules\.bin\dsh-hub-node.cmd'
   $DshExecutable = (Get-Command dsh).Source

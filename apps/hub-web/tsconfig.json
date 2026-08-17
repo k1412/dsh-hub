@@ -4,9 +4,6 @@
     "rootDir": "src",
     "outDir": "lib/types"
   },
-  "include": ["src"],
-  "references": [
-    { "path": "../../packages/client/web" },
-    { "path": "../../packages/client/modules" }
-  ]
+  "include": ["src/setup.ts"],
+  "references": []
 }
