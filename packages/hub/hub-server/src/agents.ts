@@ -32,6 +32,7 @@ interface ActiveNodeConnection {
   peer: ReliablePeer
   sentSequence: number
   runtimes: Map<string, Map<string, HubCapabilityDescriptor>>
+  recoveryResyncRuntimes: Set<string>
   flushPromise: Promise<void> | undefined
   flushRequested: boolean
   messageChain: Promise<void>
@@ -251,6 +252,10 @@ export class HubAgentRegistry {
         const descriptors = (runtime.capabilities as unknown[]).map(verifyHubCapability)
         return [runtime.runtimeId, new Map(descriptors.map(descriptor => [descriptor.name, descriptor]))]
       })),
+      recoveryResyncRuntimes: new Set(journal.pendingOutbound(10_000).flatMap(record =>
+        record.body.type === 'runtime.resync-required' && record.body.runtimeId !== undefined
+          ? [record.body.runtimeId]
+          : [])),
       flushPromise: undefined,
       flushRequested: false,
       messageChain: Promise.resolve(),
@@ -591,11 +596,14 @@ export class HubAgentRegistry {
       if (stream === undefined) throw new Error('stream contract is unavailable')
       if (record.recovery) {
         if (stream.reconstructible) {
-          connection.peer.enqueue({
-            type: 'runtime.resync-required',
-            runtimeId: body.runtimeId,
-            reason: 'baseline-changed',
-          })
+          if (!connection.recoveryResyncRuntimes.has(body.runtimeId)) {
+            connection.recoveryResyncRuntimes.add(body.runtimeId)
+            connection.peer.enqueue({
+              type: 'runtime.resync-required',
+              runtimeId: body.runtimeId,
+              reason: 'baseline-changed',
+            })
+          }
         } else {
           this.events.publish('stream.interrupted', {
             nodeId: connection.nodeId,

@@ -229,7 +229,6 @@ export class HubConnector {
   private readonly runtimeBootId = HubMessageId(randomBytes(18).toString('base64url'))
   private active: ActiveIpc | undefined
   private indexRevision = 0
-  private eventFrameSequence = 0
   private webMuxFrameSequence = 0
   private webHostFrameSequence = 0
   private detectedDshVersion: string | undefined
@@ -716,18 +715,10 @@ export class HubConnector {
           } as unknown as HubJson,
         } })
         if (frame.payload.type !== 'session/event') continue
-        const sequence = eventSequence(frame.payload.event)
-        this.eventFrameSequence += 1
-        await this.send({ type: 'ipc.hub-body', body: {
-          type: 'stream.frame', runtimeId: this.config.runtimeId, capability: 'dsh.sessions',
-          streamId: HubMessageId(jsonHash(`${this.config.runtimeId}:dsh.sessions:events`).slice(0, 24)),
-          stream: 'events', frameSequence: this.eventFrameSequence,
-          payload: {
-            sessionId: frame.payload.sessionId,
-            fromSequence: sequence,
-            events: [frame.payload.event],
-          } as unknown as HubJson,
-        } })
+        // dsh.web:mux is the official UI's canonical live event lane. Sending
+        // the same session event again through dsh.sessions:events doubles the
+        // reliable queue and its SQLite/ack work without serving a consumer.
+        // Session history remains authoritative through the unary capability.
         this.scheduleIndexRefresh()
       }
     }

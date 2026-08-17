@@ -8,7 +8,7 @@ import {
 } from '@k1412/dsh-hub-capabilities'
 import { HubMessageId, signHubEnvelope, verifyHubEnvelope, type HubEnvelopeBody } from '@k1412/dsh-hub-protocol'
 import type { HubDroppedStream, HubJson, HubTransportStatusBody } from '@k1412/dsh-hub-protocol'
-import { ReliablePeer, type ReliableInboundRecord } from '@k1412/dsh-hub-transport'
+import { ReliablePeer, type ReliableInboundRecord, type ReliableJournalUsage } from '@k1412/dsh-hub-transport'
 import { HubConnectorServer, type LocalRuntimeBaseline } from './ipc-server.ts'
 import type { HubNodeAgentState } from './state.ts'
 import { HubNodeSupervisor } from './supervisor.ts'
@@ -40,8 +40,9 @@ interface ActiveHubConnection {
   statusTimer: NodeJS.Timeout | undefined
 }
 
-const STREAM_RECORD_RESERVE = 2_000
-const STREAM_BYTE_RESERVE = 16 * 1024 * 1024
+const MAX_PENDING_STREAM_RECORDS = 500
+const MAX_PENDING_STREAM_BYTES = 4 * 1024 * 1024
+const STREAM_SUPPRESSION_RECHECK_MS = 1_000
 const HANDSHAKE_TIMEOUT_MS = 30_000
 const TRANSPORT_STATUS_INTERVAL_MS = 15_000
 const DEFERRED_CONNECTOR_BODY_LIMIT = 2_048
@@ -177,8 +178,11 @@ export class HubNodeAgent {
   private readonly pendingRuntimeStates = new Map<string, LocalRuntimeBaseline | 'offline'>()
   private readonly deferredConnectorBodies: HubEnvelopeBody[] = []
   private readonly droppedStreams = new Map<string, HubDroppedStream>()
+  private readonly runtimesNeedingStreamResync = new Set<string>()
+  private readonly receivedRuntimeResyncs = new Set<string>()
   private droppedStreamFramesTotal = 0
   private reportedPressure: HubTransportStatusBody['pressure'] = 'normal'
+  private streamSuppressedUntil = 0
 
   public constructor(private readonly options: HubNodeAgentOptions) {
     for (const profile of options.state.config.management?.profiles ?? []) {
@@ -393,7 +397,6 @@ export class HubNodeAgent {
     if (received.kind === 'rejected') throw new Error(`Hub frame rejected: ${received.reason}`)
     this.drainDeferredConnectorBodies()
     this.drainPendingRuntimeStates()
-    if (this.droppedStreams.size > 0) this.enqueueTransportStatus()
     this.updatePressureNotice()
     this.requestFlush()
     if (received.kind === 'duplicate') return
@@ -417,7 +420,12 @@ export class HubNodeAgent {
       const targets = body.runtimeId === undefined
         ? this.connector.baselines().map(baseline => baseline.runtimeId)
         : [body.runtimeId]
-      for (const runtimeId of targets) await this.connector.send(runtimeId, body)
+      for (const runtimeId of targets) {
+        const coalescible = body.reason !== 'operator-request'
+        if (coalescible && this.receivedRuntimeResyncs.has(runtimeId)) continue
+        if (coalescible) this.receivedRuntimeResyncs.add(runtimeId)
+        if (!await this.connector.send(runtimeId, body) && coalescible) this.receivedRuntimeResyncs.delete(runtimeId)
+      }
       return true
     }
     if (body.type !== 'capability.invoke') throw new Error(`unexpected Hub body ${body.type}`)
@@ -581,10 +589,17 @@ export class HubNodeAgent {
   }
 
   private shouldSuppressStream(): boolean {
+    const now = Date.now()
+    if (now < this.streamSuppressedUntil) return true
     const usage = this.options.state.journal.outboundUsage()
-    const recordThreshold = usage.maxRecords - Math.min(STREAM_RECORD_RESERVE, Math.ceil(usage.maxRecords * 0.2))
-    const byteThreshold = usage.maxBytes - Math.min(STREAM_BYTE_RESERVE, Math.ceil(usage.maxBytes * 0.25))
-    return usage.records >= recordThreshold || usage.bytes >= byteThreshold
+    // Reconstructible UI streams must not sit ahead of human interaction and
+    // command results for thousands of records. Keep only a short live burst;
+    // an authoritative resync reconstructs anything suppressed beyond it.
+    const recordThreshold = Math.min(usage.maxRecords, MAX_PENDING_STREAM_RECORDS)
+    const byteThreshold = Math.min(usage.maxBytes, MAX_PENDING_STREAM_BYTES)
+    const suppressed = usage.records >= recordThreshold || usage.bytes >= byteThreshold
+    if (suppressed) this.streamSuppressedUntil = now + STREAM_SUPPRESSION_RECHECK_MS
+    return suppressed
   }
 
   private recordDroppedStream(body: Extract<HubEnvelopeBody, { type: 'stream.frame' }>): void {
@@ -601,7 +616,11 @@ export class HubNodeAgent {
       })
     }
     this.droppedStreamFramesTotal += 1
-    this.updatePressureNotice()
+    this.runtimesNeedingStreamResync.add(body.runtimeId)
+    if (this.reportedPressure === 'normal') {
+      this.reportedPressure = 'warning'
+      this.notice('error', 'reliable transport queue pressure is warning (live stream backlog suppressed)')
+    }
   }
 
   private enqueueTransportStatus(): void {
@@ -625,36 +644,44 @@ export class HubNodeAgent {
       if (!(error instanceof Error) || error.message !== 'reliable outbox quota exceeded') {
         this.notice('error', error instanceof Error ? error.message : 'Transport status was rejected')
       }
-      this.updatePressureNotice()
+      this.updatePressureNotice(usage)
       return
     }
     this.droppedStreams.clear()
-    for (const runtimeId of new Set(droppedStreams.map(stream => stream.runtimeId))) {
-      void this.connector.send(runtimeId, {
-        type: 'runtime.resync-required', runtimeId, reason: 'retention-exceeded',
-      }).catch((error: unknown) => {
-        this.notice('error', error instanceof Error ? error.message : 'Runtime resynchronization failed')
-      })
-    }
-    this.updatePressureNotice()
+    this.updatePressureNotice(usage)
   }
 
   private transportPressure(records: number, maxRecords: number, bytes: number, maxBytes: number): HubTransportStatusBody['pressure'] {
     const ratio = Math.max(records / maxRecords, bytes / maxBytes)
     if (ratio >= 0.95 || this.deferredConnectorBodies.length > 0) return 'critical'
-    if (ratio >= 0.75 || this.droppedStreams.size > 0) return 'warning'
+    if (ratio >= 0.75
+      || records >= Math.min(maxRecords, MAX_PENDING_STREAM_RECORDS)
+      || bytes >= Math.min(maxBytes, MAX_PENDING_STREAM_BYTES)
+      || this.droppedStreams.size > 0) return 'warning'
     return 'normal'
   }
 
-  private updatePressureNotice(): void {
-    const usage = this.options.state.journal.outboundUsage()
+  private updatePressureNotice(usage: ReliableJournalUsage = this.options.state.journal.outboundUsage()): void {
     const pressure = this.transportPressure(usage.records, usage.maxRecords, usage.bytes, usage.maxBytes)
     if (pressure === this.reportedPressure) return
     this.reportedPressure = pressure
     if (pressure === 'normal') {
       this.notice('connected', 'reliable transport queue pressure recovered')
+      this.resyncDroppedStreams()
     } else {
       this.notice('error', `reliable transport queue pressure is ${pressure} (${String(usage.records)}/${String(usage.maxRecords)} records)`)
+    }
+  }
+
+  private resyncDroppedStreams(): void {
+    for (const runtimeId of this.runtimesNeedingStreamResync) {
+      this.runtimesNeedingStreamResync.delete(runtimeId)
+      void this.connector.send(runtimeId, {
+        type: 'runtime.resync-required', runtimeId, reason: 'retention-exceeded',
+      }).catch((error: unknown) => {
+        this.runtimesNeedingStreamResync.add(runtimeId)
+        this.notice('error', error instanceof Error ? error.message : 'Runtime resynchronization failed')
+      })
     }
   }
 

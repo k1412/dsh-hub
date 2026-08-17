@@ -95,6 +95,19 @@ describe('Hub Connector coexistence', () => {
 
     const calls: string[] = []
     const success = <T>(rpcId: string, value: T) => ({ rpcId, result: { ok: true as const, value } })
+    const sessionEvents = async function* (signal: AbortSignal) {
+      yield {
+        rpcId: 'loader-session-event-0001',
+        payload: {
+          type: 'session/event', sessionId: 'loader-shared-session',
+          event: { type: 'step/start', seq: 1, time: 1, data: {} },
+        },
+      }
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) resolve()
+        else signal.addEventListener('abort', () => { resolve() }, { once: true })
+      })
+    }
     const api = {
       sessions: {
         list: async (request: { rpcId: string }) => success(request.rpcId, { items: [{
@@ -113,7 +126,7 @@ describe('Hub Connector coexistence', () => {
         writable: true, hasDocument: true, namespaces: [],
       }) },
       events: {
-        mux: (_request: unknown, signal: AbortSignal) => idle(signal),
+        mux: (_request: unknown, signal: AbortSignal) => sessionEvents(signal),
         host: (_request: unknown, signal: AbortSignal) => idle(signal),
       },
       respond: async () => ({ accepted: true as const }),
@@ -195,6 +208,10 @@ describe('Hub Connector coexistence', () => {
     expect(index.payload).toMatchObject({
       sessions: [{ sessionId: 'loader-shared-session', workspacePath: root }],
     })
+    await vi.waitFor(() => { expect(bodies.some(body => body.type === 'stream.frame'
+      && body.capability === 'dsh.web' && body.stream === 'mux')).toBe(true) })
+    expect(bodies.some(body => body.type === 'stream.frame'
+      && body.capability === 'dsh.sessions' && body.stream === 'events')).toBe(false)
 
     await server.send('loader-runtime', {
       type: 'capability.invoke',

@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { generateHubIdentity, HubMessageId, type HubEnvelopeBody } from '@k1412/dsh-hub-protocol'
 import { HubNodeAgent } from '../src/agent.ts'
 import { HubNodeAgentState, loadHubNodeAgentConfig } from '../src/state.ts'
@@ -167,4 +167,106 @@ describe('Node Agent private state', () => {
     })
     state.close()
   }, 30_000)
+
+  it('bounds reconstructible stream backlog while admitting a human interaction frame', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-hub-node-stream-burst-'))
+    roots.push(root)
+    const configPath = join(root, 'node-agent.json')
+    const stateDirectory = join(root, 'state')
+    await writeFile(configPath, `${JSON.stringify({
+      hubUrl: 'https://hub.example.com',
+      nodeId: 'node-stream-burst',
+      accessClientId: 'node-token.access',
+      accessClientSecret: 'service-token-secret-with-at-least-32-characters',
+      hubPublicKey: generateHubIdentity().publicKey,
+      stateDirectory,
+      ipcEndpoint: join(stateDirectory, 'connector.sock'),
+    })}\n`, { mode: 0o600 })
+    const state = await HubNodeAgentState.open(configPath)
+    for (let index = 1; index <= 500; index += 1) {
+      state.journal.enqueue(
+        { type: 'transport.ack' },
+        2_000 + index,
+        HubMessageId(`node-stream-burst-${String(index).padStart(8, '0')}`),
+      )
+    }
+    const agent = new HubNodeAgent({ state })
+    const internal = agent as unknown as {
+      connectorBody(body: HubEnvelopeBody): void
+      transportPressure(records: number, maxRecords: number, bytes: number, maxBytes: number): string
+    }
+    const usage = vi.spyOn(state.journal, 'outboundUsage')
+
+    internal.connectorBody({
+      type: 'stream.frame', runtimeId: 'default', streamId: 'ordinary-stream-0001',
+      capability: 'dsh.sessions', stream: 'events', frameSequence: 1, payload: {},
+    })
+    internal.connectorBody({
+      type: 'stream.frame', runtimeId: 'default', streamId: 'ordinary-stream-0001',
+      capability: 'dsh.sessions', stream: 'events', frameSequence: 2, payload: {},
+    })
+    expect(usage).toHaveBeenCalledTimes(1)
+    expect(state.journal.outboundUsage().records).toBe(500)
+    expect(internal.transportPressure(500, 10_000, 1, 64 * 1024 * 1024)).toBe('warning')
+
+    internal.connectorBody({
+      type: 'stream.frame', runtimeId: 'default', streamId: 'question-stream-0001',
+      capability: 'dsh.web', stream: 'mux', frameSequence: 3,
+      payload: {
+        type: 'server-request', rpcId: 'question-rpc-burst-0001', method: 'question/requested',
+        payload: { type: 'question/requested', sessionId: 'session-one', questions: [] },
+      },
+    })
+    expect(state.journal.outboundUsage().records).toBe(501)
+    expect(state.journal.pendingOutbound(501).at(-1)?.body).toMatchObject({
+      type: 'stream.frame', capability: 'dsh.web', stream: 'mux',
+      payload: { method: 'question/requested' },
+    })
+    state.close()
+  })
+
+  it('coalesces repeated Hub resynchronization requests for one runtime', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-hub-node-resync-burst-'))
+    roots.push(root)
+    const configPath = join(root, 'node-agent.json')
+    const stateDirectory = join(root, 'state')
+    await writeFile(configPath, `${JSON.stringify({
+      hubUrl: 'https://hub.example.com',
+      nodeId: 'node-resync-burst',
+      accessClientId: 'node-token.access',
+      accessClientSecret: 'service-token-secret-with-at-least-32-characters',
+      hubPublicKey: generateHubIdentity().publicKey,
+      stateDirectory,
+      ipcEndpoint: join(stateDirectory, 'connector.sock'),
+    })}\n`, { mode: 0o600 })
+    const state = await HubNodeAgentState.open(configPath)
+    const agent = new HubNodeAgent({ state })
+    const internal = agent as unknown as {
+      connector: { send(runtimeId: string, body: HubEnvelopeBody): Promise<boolean> }
+      processHubInbound(record: {
+        sequence: number
+        messageId: ReturnType<typeof HubMessageId>
+        body: HubEnvelopeBody
+        bodyHash: string
+        bodySize: number
+        createdAt: number
+        recovery: boolean
+      }): Promise<boolean>
+    }
+    const sent = vi.spyOn(internal.connector, 'send').mockResolvedValue(true)
+    const record = (sequence: number) => ({
+      sequence,
+      messageId: HubMessageId(`resync-message-${String(sequence).padStart(8, '0')}`),
+      body: {
+        type: 'runtime.resync-required' as const,
+        runtimeId: 'default',
+        reason: 'baseline-changed' as const,
+      },
+      bodyHash: 'hash', bodySize: 1, createdAt: 1, recovery: false,
+    })
+    await expect(internal.processHubInbound(record(1))).resolves.toBe(true)
+    await expect(internal.processHubInbound(record(2))).resolves.toBe(true)
+    expect(sent).toHaveBeenCalledTimes(1)
+    state.close()
+  })
 })
