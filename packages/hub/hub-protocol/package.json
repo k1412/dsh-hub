@@ -1,7 +1,7 @@
 {
   "name": "@k1412/dsh-hub-protocol",
   "description": "Signed, versioned capability protocol shared by DSH Hub and outbound node agents",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publishConfig": {
     "access": "public"
   },

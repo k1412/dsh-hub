@@ -7,7 +7,7 @@ import { z } from 'zod'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { generateHubIpcSecret } from '@k1412/dsh-hub-node-ipc'
 import { generateHubIdentity, HubNodeId, type HubIdentityKeyPair, type HubNodeId as HubNodeIdType } from '@k1412/dsh-hub-protocol'
-import { SqliteReliableJournal } from '@k1412/dsh-hub-transport'
+import { SqliteReliableJournal, type ReliableJournalLimits } from '@k1412/dsh-hub-transport'
 
 /** Persistent Node Agent configuration. Secret-bearing files require mode 0600. */
 export interface HubNodeManagementProfile {
@@ -29,6 +29,11 @@ export interface HubNodeAgentConfig {
   stateDirectory: string
   ipcEndpoint: string
   management?: { profiles: HubNodeManagementProfile[] }
+}
+
+/** Process-local state options. Production callers normally use the durable defaults. */
+export interface HubNodeAgentStateOptions {
+  journalLimits?: Partial<ReliableJournalLimits>
 }
 
 const configSchema = z.strictObject({
@@ -113,9 +118,13 @@ export class HubNodeAgentState implements Disposable {
   /**
    * Open or create identity, IPC secret, and durable transport journal.
    * @param configPath - owner-only Node Agent configuration path.
+   * @param options - optional process-local transport limits, primarily for bounded tests.
    * @returns initialized durable Node Agent state.
    */
-  public static async open(configPath: string): Promise<HubNodeAgentState> {
+  public static async open(
+    configPath: string,
+    options: HubNodeAgentStateOptions = {},
+  ): Promise<HubNodeAgentState> {
     const actualConfigPath = resolve(configPath)
     const config = await loadHubNodeAgentConfig(actualConfigPath)
     await mkdir(config.stateDirectory, { recursive: true, mode: 0o700 })
@@ -132,7 +141,7 @@ export class HubNodeAgentState implements Disposable {
       identity,
       ipcSecret,
       database,
-      new SqliteReliableJournal(database, 'hub'),
+      new SqliteReliableJournal(database, 'hub', options.journalLimits),
     )
   }
 
