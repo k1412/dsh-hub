@@ -128,8 +128,16 @@ fi
 
 runtime_prefix="${state_directory}/runtime/${DSH_HUB_RELEASE_VERSION}"
 mkdir -p "$runtime_prefix"
+printf '%s\n' '{"private":true,"allowScripts":{"node-pty":true}}' >"${runtime_prefix}/package.json"
 npm install --prefix "$runtime_prefix" --no-package-lock --omit=dev --legacy-peer-deps \
   "${temporary_directory}/${agent_asset}"
+if [[ "$(uname -s)" == Darwin ]]; then
+  while IFS= read -r -d '' helper; do
+    chmod 755 "$helper"
+  done < <(find "${runtime_prefix}/node_modules/node-pty/prebuilds" -name spawn-helper -type f -print0)
+fi
+node -e 'require(process.argv[1])' "${runtime_prefix}/node_modules/node-pty" \
+  || { printf '%s\n' 'install-node: node-pty native runtime validation failed' >&2; exit 1; }
 agent_executable="${runtime_prefix}/node_modules/.bin/dsh-hub-node"
 dsh_executable="$(command -v dsh)"
 profile_directory="${DSH_HOME:-${HOME}/.dsh}/profiles/${profile_name}"

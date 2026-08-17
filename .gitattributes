@@ -11,6 +11,7 @@
 # The reviewed upstream Web snapshot is byte-for-byte pinned. Generated bundles
 # and the reproducibility patch may contain upstream whitespace verbatim.
 third_party/official-web/** -whitespace
+patches/*.patch -whitespace
 
 # Pairing records are generated from the three confirmed owner-blob pairs.
 # The worktree-local installer registers the fail-closed driver command.

@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  node-pty@1.1.0: 7a0c04f1f49d798a9ffe2f7f414c01064a44ca2489772d0c3e1235ab336755e6
+  node-pty@1.1.0: 2a323b2a76b7e1c3c7888645cb318096ee3620c506c80b95996dadbba4e718eb
 
 importers:
 
@@ -171,7 +171,7 @@ importers:
         version: link:../hub-transport
       node-pty:
         specifier: 1.1.0
-        version: 1.1.0(patch_hash=7a0c04f1f49d798a9ffe2f7f414c01064a44ca2489772d0c3e1235ab336755e6)
+        version: 1.1.0(patch_hash=2a323b2a76b7e1c3c7888645cb318096ee3620c506c80b95996dadbba4e718eb)
       ws:
         specifier: ^8.21.0
         version: 8.21.0
@@ -4924,7 +4924,7 @@ snapshots:
       node-addon-require-builtin-win32-x64-msvc: 0.1.4
     optional: true
 
-  node-pty@1.1.0(patch_hash=7a0c04f1f49d798a9ffe2f7f414c01064a44ca2489772d0c3e1235ab336755e6):
+  node-pty@1.1.0(patch_hash=2a323b2a76b7e1c3c7888645cb318096ee3620c506c80b95996dadbba4e718eb):
     dependencies:
       node-addon-api: 7.1.1
 

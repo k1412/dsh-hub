@@ -80,6 +80,9 @@ try {
   if (unixInstaller.includes('@VERSION@') || windowsInstaller.includes('@VERSION@')
     || !unixInstaller.includes(`DSH_HUB_RELEASE_VERSION='${version}'`)
     || !windowsInstaller.includes(`$ReleaseVersion = '${version}'`)
+    || !unixInstaller.includes('"allowScripts":{"node-pty":true}')
+    || !windowsInstaller.includes("allowScripts = @{ 'node-pty' = $true }")
+    || !unixInstaller.includes('-name spawn-helper -type f -print0')
     || (unixMetadata.mode & 0o111) === 0) {
     throw new Error('packed one-command installers are incomplete or unversioned')
   }
