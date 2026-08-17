@@ -29,16 +29,18 @@ export const inject = ['slots', 'locale', 'settingsScope']
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'hub-client-ui: dictionaries')
   const t = ctx.locale.bind(NS)
+  const injectSettingsRefresh = () => ({ refreshNodeSettings: () => { ctx.settingsScope.refreshAll() } })
   ctx.slots.inject('conversation.hero.runtime', () => ctx.slots.register({
     name: 'conversation.hero.runtime',
     locale: NS,
-    inject: () => ({ refreshNodeSettings: () => { ctx.settingsScope.refreshAll() } }),
+    inject: injectSettingsRefresh,
   }, HubRuntimePicker))
   ctx.slots.inject('settings.action', () => ctx.slots.register({
     name: 'settings.action',
     id: 'hub-runtime-target',
     order: -100,
     locale: NS,
+    inject: injectSettingsRefresh,
   }, HubSettingsTarget))
   ctx.slots.inject('settings.section', function* () {
     yield ctx.slots.register({
@@ -46,6 +48,7 @@ export function apply(ctx: ClientContext): void {
       id: 'hub-nodes',
       order: 30,
       label: () => t('nodesNav'),
+      inject: injectSettingsRefresh,
     }, HubNodesSection)
     yield ctx.slots.register({
       name: 'settings.section',

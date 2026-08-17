@@ -84,19 +84,6 @@ export function replaceRuntimeTarget(target: HubRuntimeTarget): void {
   globalThis.history.replaceState(globalThis.history.state, '', url)
 }
 
-/**
- * Persist a Runtime choice and reload official Web on that target.
- * @param target - selected node and Runtime.
- */
-export function navigateRuntimeTarget(target: HubRuntimeTarget): void {
-  if (!validTarget(target)) throw new Error('Runtime target is malformed')
-  persistTarget(target)
-  const url = new URL(globalThis.location.href)
-  url.searchParams.set('nodeId', target.nodeId)
-  url.searchParams.set('runtimeId', target.runtimeId)
-  globalThis.location.assign(url)
-}
-
 function decodeBase64url(value: string): string | undefined {
   if (value.length % 4 === 1) return undefined
   try {

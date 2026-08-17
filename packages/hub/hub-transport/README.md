@@ -12,7 +12,7 @@ An acknowledgement deletes only the confirmed outbound prefix. A reconnect re-si
 
 Inbound work has `pending`, `processing`, and `processed` states. A process crash before dispatch leaves `pending` work. A crash during dispatch leaves `processing` work, allowing the capability layer to apply its declared read, idempotent, reconcile, or never-retry policy. Transport replay never assumes that a partially executed mutation is safe to repeat.
 
-The outbox applies record and byte quotas and exposes records, bytes, oldest-record time, and configured capacity to its owner for backpressure and health reporting. Processed inbox content is removed while a bounded metadata suffix remains for deduplication. Acknowledgement-only records coalesce and are not answered with another acknowledgement-only record by the connection loop.
+The outbox applies record and byte quotas and exposes records, bytes, oldest-record time, and configured capacity to its owner for backpressure and health reporting. Sequence cursors and the queued-byte total live in the same peer-state transaction as each insert or acknowledgement, so admission remains constant-time as the queue approaches its 10,000-record limit. Opening an older database adds and backfills the byte counter from its retained outbox before accepting new work. Processed inbox content is removed while a bounded metadata suffix remains for deduplication. Acknowledgement-only records coalesce and are not answered with another acknowledgement-only record by the connection loop.
 
 ## Model Experience
 

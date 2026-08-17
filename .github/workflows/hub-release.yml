@@ -64,6 +64,11 @@ jobs:
           revision="$(git rev-parse HEAD)"
           short_revision="$(git rev-parse --short=7 HEAD)"
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
+          # GitHub's default docker driver cannot emit OCI attestations. Use an
+          # isolated BuildKit container so SBOM and provenance remain attached
+          # to the published multi-manifest image.
+          docker buildx create --name hub-release --driver docker-container --use
+          docker buildx inspect --bootstrap
           docker buildx build \
             --file deploy/hub/Dockerfile \
             --platform linux/amd64 \

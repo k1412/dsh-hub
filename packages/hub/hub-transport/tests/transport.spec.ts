@@ -218,6 +218,45 @@ describe('reliable Hub transport', () => {
     expect(journal.outboundUsageForBodyType('stream.frame').bytes).toBeLessThan(1_024)
   })
 
+  it('migrates durable byte usage and keeps it exact across acknowledgement and reopen', () => {
+    const database = new DatabaseSync(':memory:')
+    databases.push(database)
+    database.exec(`
+      CREATE TABLE reliable_peer_state (
+        peer_id TEXT PRIMARY KEY,
+        outbound_sequence INTEGER NOT NULL DEFAULT 0 CHECK (outbound_sequence >= 0),
+        outbound_ack INTEGER NOT NULL DEFAULT 0 CHECK (outbound_ack >= 0),
+        inbound_ack INTEGER NOT NULL DEFAULT 0 CHECK (inbound_ack >= 0)
+      ) STRICT;
+      CREATE TABLE reliable_outbox (
+        peer_id TEXT NOT NULL REFERENCES reliable_peer_state(peer_id) ON DELETE CASCADE,
+        sequence INTEGER NOT NULL CHECK (sequence > 0),
+        message_id TEXT NOT NULL,
+        body_json TEXT NOT NULL,
+        body_hash TEXT NOT NULL,
+        body_size INTEGER NOT NULL CHECK (body_size >= 0),
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (peer_id, sequence),
+        UNIQUE (peer_id, message_id)
+      ) STRICT;
+      INSERT INTO reliable_peer_state (peer_id, outbound_sequence) VALUES ('hub', 2);
+      INSERT INTO reliable_outbox
+        (peer_id, sequence, message_id, body_json, body_hash, body_size, created_at)
+      VALUES
+        ('hub', 1, 'migration-message-01', '{"type":"transport.ack"}', 'hash-one', 24, 6100),
+        ('hub', 2, 'migration-message-02', '{"type":"transport.ack"}', 'hash-two', 25, 6200);
+    `)
+
+    const migrated = new SqliteReliableJournal(database, 'hub')
+    expect(migrated.outboundUsage()).toMatchObject({ records: 2, bytes: 49, oldestCreatedAt: 6_100 })
+    migrated.acknowledgeOutbound(1)
+    expect(migrated.outboundUsage()).toMatchObject({ records: 1, bytes: 25, oldestCreatedAt: 6_200 })
+    const reopened = new SqliteReliableJournal(database, 'hub')
+    expect(reopened.outboundUsage()).toMatchObject({ records: 1, bytes: 25 })
+    reopened.acknowledgeOutbound(2)
+    expect(reopened.outboundUsage()).toMatchObject({ records: 0, bytes: 0, oldestCreatedAt: 0 })
+  })
+
   it('does not dispatch a duplicate message id under a different sequence', () => {
     const { hub, nodeId, nodeIdentity } = peerPair()
     const first = signHubEnvelope({

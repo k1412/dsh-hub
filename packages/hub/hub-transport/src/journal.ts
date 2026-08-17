@@ -87,6 +87,7 @@ export function installReliableJournalSchema(database: DatabaseSync): void {
       peer_id           TEXT PRIMARY KEY,
       outbound_sequence INTEGER NOT NULL DEFAULT 0 CHECK (outbound_sequence >= 0),
       outbound_ack      INTEGER NOT NULL DEFAULT 0 CHECK (outbound_ack >= 0),
+      outbound_bytes    INTEGER NOT NULL DEFAULT 0 CHECK (outbound_bytes >= 0),
       inbound_ack       INTEGER NOT NULL DEFAULT 0 CHECK (inbound_ack >= 0)
     ) STRICT;
 
@@ -119,6 +120,23 @@ export function installReliableJournalSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS reliable_inbox_recovery
       ON reliable_inbox(peer_id, state, sequence);
   `)
+  const stateColumns = database.prepare('PRAGMA table_info(reliable_peer_state)').all()
+    .map(row => String(row.name))
+  if (!stateColumns.includes('outbound_bytes')) {
+    transaction(database, () => {
+      database.exec(`
+        ALTER TABLE reliable_peer_state
+          ADD COLUMN outbound_bytes INTEGER NOT NULL DEFAULT 0 CHECK (outbound_bytes >= 0)
+      `)
+      database.exec(`
+        UPDATE reliable_peer_state
+        SET outbound_bytes = COALESCE((
+          SELECT SUM(body_size) FROM reliable_outbox
+          WHERE reliable_outbox.peer_id = reliable_peer_state.peer_id
+        ), 0)
+      `)
+    })
+  }
 }
 
 /** Durable peer journal shared by reconnecting WebSocket generations. */
@@ -153,26 +171,26 @@ export class SqliteReliableJournal {
     const body = hubEnvelopeBodySchema.parse(bodyInput)
     const bodyJson = canonicalHubJson(body as unknown as HubJson)
     const bodySize = Buffer.byteLength(bodyJson, 'utf8')
+    const bodyHash = hubJsonHash(body as unknown as HubJson)
     return transaction(this.database, () => {
-      const usage = this.database.prepare(`
-        SELECT COUNT(*) AS records, COALESCE(SUM(body_size), 0) AS bytes
-        FROM reliable_outbox WHERE peer_id = ?
-      `).get(this.peerId) as { records: number; bytes: number }
-      if (usage.records >= this.limits.maxOutboundRecords
-        || usage.bytes + bodySize > this.limits.maxOutboundBytes) {
+      const state = this.state()
+      const records = state.outboundSequence - state.outboundAck
+      if (records >= this.limits.maxOutboundRecords
+        || state.outboundBytes + bodySize > this.limits.maxOutboundBytes) {
         throw new Error('reliable outbox quota exceeded')
       }
-      const state = this.state()
       const sequence = state.outboundSequence + 1
       this.database.prepare(`
         INSERT INTO reliable_outbox (
           peer_id, sequence, message_id, body_json, body_hash, body_size, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(this.peerId, sequence, messageId, bodyJson, hubJsonHash(body as unknown as HubJson), bodySize, now)
+      `).run(this.peerId, sequence, messageId, bodyJson, bodyHash, bodySize, now)
       this.database.prepare(`
-        UPDATE reliable_peer_state SET outbound_sequence = ? WHERE peer_id = ?
-      `).run(sequence, this.peerId)
-      return { sequence, messageId, body, bodyHash: hubJsonHash(body as unknown as HubJson), bodySize, createdAt: now }
+        UPDATE reliable_peer_state
+        SET outbound_sequence = ?, outbound_bytes = outbound_bytes + ?
+        WHERE peer_id = ?
+      `).run(sequence, bodySize, this.peerId)
+      return { sequence, messageId, body, bodyHash, bodySize, createdAt: now }
     })
   }
 
@@ -209,15 +227,15 @@ export class SqliteReliableJournal {
    * @returns record, byte, and configured capacity totals.
    */
   public outboundUsage(): ReliableJournalUsage {
-    const usage = this.database.prepare(`
-      SELECT COUNT(*) AS records, COALESCE(SUM(body_size), 0) AS bytes,
-             COALESCE(MIN(created_at), 0) AS oldest_created_at
+    const state = this.state()
+    const oldest = this.database.prepare(`
+      SELECT COALESCE(MIN(created_at), 0) AS oldest_created_at
       FROM reliable_outbox WHERE peer_id = ?
-    `).get(this.peerId) as { records: number; bytes: number; oldest_created_at: number }
+    `).get(this.peerId) as { oldest_created_at: number }
     return {
-      records: usage.records,
-      bytes: usage.bytes,
-      oldestCreatedAt: usage.oldest_created_at,
+      records: state.outboundSequence - state.outboundAck,
+      bytes: state.outboundBytes,
+      oldestCreatedAt: oldest.oldest_created_at,
       maxRecords: this.limits.maxOutboundRecords,
       maxBytes: this.limits.maxOutboundBytes,
     }
@@ -261,12 +279,18 @@ export class SqliteReliableJournal {
       }
       if (acknowledgement > state.outboundSequence) throw new Error('outbound acknowledgement exceeds allocated sequence')
       if (acknowledgement === state.outboundAck) return
+      const acknowledged = this.database.prepare(`
+        SELECT COALESCE(SUM(body_size), 0) AS bytes
+        FROM reliable_outbox WHERE peer_id = ? AND sequence <= ?
+      `).get(this.peerId, acknowledgement) as { bytes: number }
       this.database.prepare(`
         DELETE FROM reliable_outbox WHERE peer_id = ? AND sequence <= ?
       `).run(this.peerId, acknowledgement)
       this.database.prepare(`
-        UPDATE reliable_peer_state SET outbound_ack = ? WHERE peer_id = ?
-      `).run(acknowledgement, this.peerId)
+        UPDATE reliable_peer_state
+        SET outbound_ack = ?, outbound_bytes = outbound_bytes - ?
+        WHERE peer_id = ?
+      `).run(acknowledgement, acknowledged.bytes, this.peerId)
     })
   }
 
@@ -421,15 +445,21 @@ export class SqliteReliableJournal {
     return rows.findLast(record => record.body.type === 'transport.ack')
   }
 
-  private state(): { outboundSequence: number; outboundAck: number; inboundAck: number } {
+  private state(): {
+    outboundSequence: number
+    outboundAck: number
+    outboundBytes: number
+    inboundAck: number
+  } {
     const row = this.database.prepare(`
-      SELECT outbound_sequence, outbound_ack, inbound_ack
+      SELECT outbound_sequence, outbound_ack, outbound_bytes, inbound_ack
       FROM reliable_peer_state WHERE peer_id = ?
     `).get(this.peerId)
     if (row === undefined) throw new Error('reliable peer state not found')
     return {
       outboundSequence: Number(row.outbound_sequence),
       outboundAck: Number(row.outbound_ack),
+      outboundBytes: Number(row.outbound_bytes),
       inboundAck: Number(row.inbound_ack),
     }
   }

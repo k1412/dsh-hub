@@ -5,21 +5,23 @@ import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots
 import {
   IconApiOutline14, IconChevronDownOutline14, Menu, type MenuEntry,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import { readFleet, switchRuntime, type FleetSnapshot } from './api.ts'
+import { readFleet, type FleetSnapshot } from './api.ts'
 import {
-  readRuntimeTarget, runtimeKey, supportsOfficialWeb,
+  readRuntimeTarget, replaceRuntimeTarget, runtimeKey, supportsOfficialWeb,
+  type HubRuntimeTarget,
 } from './runtime-target.ts'
 import css from './HubSettings.module.css'
 
 /** Full props composed by the Settings action registration. */
 export type HubSettingsTargetProps = PropsRuntime<'settings.action'> & PropsLocale<'hub.settings'>
+  & { refreshNodeSettings?: () => void }
 
 /** Render the active node/Runtime binding in Settings chrome. */
-export function HubSettingsTarget({ t }: HubSettingsTargetProps): ReactNode {
+export function HubSettingsTarget({ t, refreshNodeSettings = () => undefined }: HubSettingsTargetProps): ReactNode {
   const [fleet, setFleet] = useState<FleetSnapshot>()
   const [open, setOpen] = useState(false)
   const [failed, setFailed] = useState(false)
-  const target = readRuntimeTarget()
+  const [target, setTarget] = useState<HubRuntimeTarget | undefined>(() => readRuntimeTarget())
 
   useEffect(() => {
     let current = true
@@ -43,9 +45,12 @@ export function HubSettingsTarget({ t }: HubSettingsTargetProps): ReactNode {
   useEffect(() => {
     if (fleet === undefined || requested !== undefined || selected === undefined) return
     // The server uses the same first-online fallback for an ownerless request.
-    // Pin it through a full reload before the user edits a Host-backed row.
-    switchRuntime(selected)
-  }, [fleet, requested, selected])
+    // Pin it before refreshing active Host-backed scopes. Their generation
+    // fence prevents a late response from the previous owner from publishing.
+    setTarget(selected)
+    replaceRuntimeTarget(selected)
+    refreshNodeSettings()
+  }, [fleet, refreshNodeSettings, requested, selected])
   const items: MenuEntry[] = runtimes.map(runtime => ({
     id: runtimeKey(runtime),
     label: `${names.get(runtime.nodeId) ?? runtime.nodeId} · ${runtime.runtimeId}`,
@@ -58,7 +63,9 @@ export function HubSettingsTarget({ t }: HubSettingsTargetProps): ReactNode {
     setOpen(false)
     const runtime = runtimes.find(candidate => runtimeKey(candidate) === id)
     if (runtime === undefined || runtimeKey(runtime) === selectedId) return
-    switchRuntime(runtime)
+    setTarget(runtime)
+    replaceRuntimeTarget(runtime)
+    refreshNodeSettings()
   }
 
   return (
