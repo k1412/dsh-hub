@@ -1,10 +1,11 @@
 /** Hub node enrollment, status, switching, and high-risk diagnostic boundaries. */
 
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import {
-  cancelEnrollment, createEnrollment, readFleet, revokeNode,
-  type EnrollmentGrant, type FleetSnapshot, type HubNode, type HubOutboxHealth, type HubRuntime,
+  cancelEnrollment, createEnrollment, readFleet, readPerformance, revokeNode,
+  type EnrollmentGrant, type FleetSnapshot, type HubNode, type HubOutboxHealth,
+  type HubPerformanceSnapshot, type HubRuntime,
 } from './api.ts'
 import { AdvancedDiagnostics } from './AdvancedDiagnostics.tsx'
 import { nodeInstallCommand, type NodeInstallPlatform } from './install-command.ts'
@@ -35,6 +36,11 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MiB`
 }
 
+function formatDuration(milliseconds: number): string {
+  if (milliseconds < 1_000) return `${milliseconds.toFixed(milliseconds < 10 ? 1 : 0)} ms`
+  return `${(milliseconds / 1_000).toFixed(1)} s`
+}
+
 function queueSummary(queue: HubOutboxHealth): string {
   const capacity = `${String(queue.records)} / ${String(queue.maxRecords)} 条 · ${formatBytes(queue.bytes)} / ${formatBytes(queue.maxBytes)}`
   return queue.oldestPendingAt === undefined ? capacity : `${capacity} · 最早 ${formatTime(queue.oldestPendingAt)}`
@@ -55,6 +61,8 @@ function currentRuntimeKey(): string | undefined {
 /** Render the complete node registration and lifecycle page. */
 export function HubNodesSection({ refreshNodeSettings = () => undefined }: HubNodesSectionProps): ReactNode {
   const [fleet, setFleet] = useState<FleetSnapshot>()
+  const [performance, setPerformance] = useState<HubPerformanceSnapshot>()
+  const [performanceError, setPerformanceError] = useState<string>()
   const [grant, setGrant] = useState<EnrollmentGrant>()
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState<string>()
@@ -64,13 +72,24 @@ export function HubNodesSection({ refreshNodeSettings = () => undefined }: HubNo
   const [installPlatform, setInstallPlatform] = useState<NodeInstallPlatform>('unix')
   const [copied, setCopied] = useState(false)
   const [activeKey, setActiveKey] = useState<string | undefined>(() => currentRuntimeKey())
+  const loading = useRef(false)
 
   const load = async (): Promise<void> => {
+    if (loading.current) return
+    loading.current = true
     setError(undefined)
     try {
-      setFleet(await readFleet())
-    } catch (reason) {
-      setError(messageOf(reason))
+      const [fleetResult, performanceResult] = await Promise.allSettled([readFleet(), readPerformance()])
+      if (fleetResult.status === 'fulfilled') setFleet(fleetResult.value)
+      else setError(messageOf(fleetResult.reason))
+      if (performanceResult.status === 'fulfilled') {
+        setPerformance(performanceResult.value)
+        setPerformanceError(undefined)
+      } else {
+        setPerformanceError(messageOf(performanceResult.reason))
+      }
+    } finally {
+      loading.current = false
     }
   }
 
@@ -257,6 +276,7 @@ export function HubNodesSection({ refreshNodeSettings = () => undefined }: HubNo
                     <small>{health.reportedAt === undefined ? '尚未收到节点报告' : `更新于 ${formatTime(health.reportedAt)}`}</small>
                   </div>
                   <dl className={css.transportQueues}>
+                    <div><dt>Node Agent</dt><dd>{health.agentVersion ?? '等待节点上线'}</dd></div>
                     <div><dt>节点 → Hub</dt><dd>{health.nodeOutbox === undefined ? '等待节点上线' : queueSummary(health.nodeOutbox)}</dd></div>
                     <div><dt>Hub → 节点</dt><dd>{queueSummary(health.hubOutbox)}</dd></div>
                     <div><dt>已抑制流量</dt><dd>{String(health.droppedStreamFramesTotal)} 帧</dd></div>
@@ -304,6 +324,34 @@ export function HubNodesSection({ refreshNodeSettings = () => undefined }: HubNo
             )
           })}
         </div>
+      </section>
+
+      <section className={css.block} aria-label="链路性能">
+        <div className={css.blockHeader}>
+          <div>
+            <h3>链路性能</h3>
+            <p>最近 {String(performance?.summary.requests ?? 0)} 次节点请求；只保留耗时、结果和字节数，不保留会话内容。</p>
+          </div>
+          {performance === undefined ? null : (
+            <span className={css.status} data-tone={performance.summary.timeouts > 0 ? 'danger' : performance.summary.errors > 0 ? 'warning' : 'success'}>
+              {performance.summary.timeouts > 0 ? `${String(performance.summary.timeouts)} 次超时` : performance.summary.errors > 0 ? `${String(performance.summary.errors)} 次失败` : '运行正常'}
+            </span>
+          )}
+        </div>
+        {performanceError === undefined ? null : <p className={css.warning}>性能数据暂不可用：{performanceError}</p>}
+        {performance === undefined || performance.targets.length === 0 ? <p className={css.empty}>暂无节点请求样本。</p> : (
+          <ul className={css.historyList}>
+            {performance.targets.map(target => (
+              <li key={`${target.nodeId}\u0000${target.runtimeId}`}>
+                <div>
+                  <strong>{target.nodeId} / {target.runtimeId}</strong>
+                  <span>p95 {formatDuration(target.p95Ms)} · 等待 {formatDuration(target.waitP95Ms)} · 最大响应 {formatBytes(target.maxResponseBytes)}</span>
+                  <small>{String(target.requests)} 次请求 · {String(target.errors)} 次失败 · 慢操作：{target.methods.slice(0, 3).map(method => `${method.method} ${formatDuration(method.p95Ms)}`).join('，')}</small>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
       </section>
 
       <AdvancedDiagnostics runtimes={fleet?.runtimes ?? []} />

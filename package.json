@@ -1,6 +1,6 @@
 {
   "name": "@k1412/dsh-hub",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Self-hosted multi-node control plane for DeepSeek Harness",
   "license": "MIT",
   "private": true,

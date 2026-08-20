@@ -48,7 +48,16 @@ The recommended order is: back up and upgrade Hub, upgrade Node Agent one machin
 
 ## Upgrade a node
 
-Upgrade the Node Agent package first, restart its service, and verify reconnection. Upgrade the Connector in each DSH profile through `dsh plugin --profile <name> add <release-asset> --save-exact`, then restart that DSH process and verify its runtime boot ID changes. Connector upgrades may be deferred for a Runtime executing a long-running task; do not interrupt a session merely to make versions uniform, and finish that Runtime after the task completes.
+Linux and macOS nodes enrolled by the one-command installer can be upgraded in place without a new enrollment grant or another Cloudflare credential prompt:
+
+```sh
+curl -fsSL https://github.com/k1412/dsh-hub/releases/latest/download/install-node.sh \
+  | bash -s -- --upgrade --profile web
+```
+
+On Windows, run `install-node.ps1 -Upgrade` from the same Release. The upgrader verifies the Release, retains Connector under the persistent `~/.dsh-hub/packages` directory, atomically replaces any expired temporary `file:` reference in the profile, reinstalls and restarts the Node Agent service. Restart the corresponding DSH profile during a safe maintenance window, then verify both Node Agent and Connector versions under **Settings → Hub nodes**. Supply `--state-directory` and `--profile` for non-default locations and profiles, or their PowerShell/environment equivalents.
+
+For manually managed nodes, upgrade the Node Agent package and restart its service first. Retain the Connector Release artifact in a persistent directory and run `dsh plugin --profile <name> add <persistent-release-asset> --save-exact`; never leave a profile pointing at an installer temporary-directory tgz. Connector upgrades may be deferred for a Runtime executing a long-running task. Do not interrupt a session merely to make versions uniform; finish that Runtime after the task completes.
 
 Local clients continue working while the Node Agent is offline. During a Connector restart the matching runtime is offline in Hub, and queued operations remain governed by their idempotency class.
 

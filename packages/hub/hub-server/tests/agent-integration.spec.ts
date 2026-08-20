@@ -184,6 +184,7 @@ describe('Hub Agent WebSocket integration', () => {
     await Promise.all(peer.renderPending().map(frame => send(socket, frame)))
     await vi.waitFor(() => {
       expect(server.agents.transportHealth(nodeId)).toMatchObject({
+        agentVersion: '0.1.0-rc.5',
         reportedAt: 2_500,
         pressure: 'warning',
         nodeOutbox: { records: 8_100, maxRecords: 10_000 },
@@ -312,6 +313,13 @@ describe('Hub Agent WebSocket integration', () => {
     await expect(officialResponse.json()).resolves.toMatchObject({
       result: { ok: true, value: { version: '0.1.0-rc.5' } },
     })
+    const performanceResponse = await fetch(`http://127.0.0.1:${String(address.port)}/hub/v1/performance`)
+    const performance = await performanceResponse.json() as {
+      targets: Array<{ methods: Array<{ method: string }> }>
+    }
+    expect(performance.targets.flatMap(target => target.methods.map(method => method.method))).toEqual(
+      expect.arrayContaining(['dsh.sessions.list', 'GET /api/host.describe']),
+    )
 
     const officialSocket = new WebSocket(
       `ws://127.0.0.1:${String(address.port)}/api/events.mux?nodeId=node-a&runtimeId=default-runtime`,

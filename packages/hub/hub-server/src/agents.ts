@@ -27,6 +27,7 @@ export interface HubAgentUpgrade {
 interface ActiveNodeConnection {
   nodeId: HubNodeIdType
   nodeBootId: string
+  agentVersion: string
   generation: number
   socket: WebSocket
   peer: ReliablePeer
@@ -44,6 +45,7 @@ interface ActiveNodeConnection {
 
 /** Operator-visible live transport health derived from both reliable peers. */
 export interface HubNodeTransportHealth {
+  agentVersion?: string
   reportedAt?: number
   lastPongAt?: number
   pressure: 'normal' | 'warning' | 'critical' | 'unknown'
@@ -251,6 +253,7 @@ export class HubAgentRegistry {
     const connection: ActiveNodeConnection = {
       nodeId: node.nodeId,
       nodeBootId: upgrade.nodeBootId,
+      agentVersion: body.agentVersion,
       generation,
       socket,
       peer,
@@ -327,6 +330,7 @@ export class HubAgentRegistry {
           ? 'warning'
           : 'normal'
     return {
+      ...(connection === undefined ? {} : { agentVersion: connection.agentVersion }),
       ...(status === undefined ? {} : {
         reportedAt: status.observedAt,
         nodeOutbox: {

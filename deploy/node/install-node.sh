@@ -14,9 +14,11 @@ node_id="${DSH_HUB_NODE_ID:-}"
 profile_name="${DSH_HUB_PROFILE:-web}"
 state_directory="${DSH_HUB_STATE_DIRECTORY:-${HOME}/.dsh-hub}"
 install_service=true
+upgrade_existing=false
 
 usage() {
   printf '%s\n' 'usage: install-node.sh --hub https://hub.example.com --node node-id [--profile web] [--no-service]'
+  printf '%s\n' '       install-node.sh --upgrade [--profile web] [--state-directory PATH] [--no-service]'
 }
 
 while (($# > 0)); do
@@ -25,20 +27,23 @@ while (($# > 0)); do
     --node) node_id="${2:-}"; shift 2 ;;
     --profile) profile_name="${2:-}"; shift 2 ;;
     --state-directory) state_directory="${2:-}"; shift 2 ;;
+    --upgrade) upgrade_existing=true; shift ;;
     --no-service) install_service=false; shift ;;
     --help|-h) usage; exit 0 ;;
     *) printf 'install-node: unknown option %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
-if [[ ! "$hub_url" =~ ^https://[^/?#]+/?$ ]]; then
-  printf '%s\n' 'install-node: --hub must be an HTTPS origin without a path, query, or fragment' >&2
-  exit 2
-fi
-hub_url="${hub_url%/}"
-if [[ ! "$node_id" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
-  printf '%s\n' 'install-node: --node must contain 1-64 letters, digits, dots, underscores, or hyphens' >&2
-  exit 2
+if [[ "$upgrade_existing" == false ]]; then
+  if [[ ! "$hub_url" =~ ^https://[^/?#]+/?$ ]]; then
+    printf '%s\n' 'install-node: --hub must be an HTTPS origin without a path, query, or fragment' >&2
+    exit 2
+  fi
+  hub_url="${hub_url%/}"
+  if [[ ! "$node_id" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
+    printf '%s\n' 'install-node: --node must contain 1-64 letters, digits, dots, underscores, or hyphens' >&2
+    exit 2
+  fi
 fi
 if [[ ! "$profile_name" =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
   printf '%s\n' 'install-node: --profile contains unsupported characters' >&2
@@ -89,15 +94,20 @@ read_terminal() {
   printf -v "$variable_name" '%s' "$value"
 }
 
-access_client_id="${DSH_HUB_ACCESS_CLIENT_ID:-}"
-access_client_secret="${DSH_HUB_ACCESS_CLIENT_SECRET:-}"
-enrollment_code="${DSH_HUB_ENROLLMENT_CODE:-}"
-[[ -n "$access_client_id" ]] || read_terminal access_client_id 'Cloudflare Access Client ID: '
-[[ -n "$access_client_secret" ]] || read_terminal access_client_secret 'Cloudflare Access Client Secret: ' true
-[[ -n "$enrollment_code" ]] || read_terminal enrollment_code 'Hub one-time enrollment code: ' true
-if [[ -z "$access_client_id" || -z "$access_client_secret" || -z "$enrollment_code" ]]; then
-  printf '%s\n' 'install-node: credentials cannot be empty' >&2
-  exit 1
+access_client_id=""
+access_client_secret=""
+enrollment_code=""
+if [[ "$upgrade_existing" == false ]]; then
+  access_client_id="${DSH_HUB_ACCESS_CLIENT_ID:-}"
+  access_client_secret="${DSH_HUB_ACCESS_CLIENT_SECRET:-}"
+  enrollment_code="${DSH_HUB_ENROLLMENT_CODE:-}"
+  [[ -n "$access_client_id" ]] || read_terminal access_client_id 'Cloudflare Access Client ID: '
+  [[ -n "$access_client_secret" ]] || read_terminal access_client_secret 'Cloudflare Access Client Secret: ' true
+  [[ -n "$enrollment_code" ]] || read_terminal enrollment_code 'Hub one-time enrollment code: ' true
+  if [[ -z "$access_client_id" || -z "$access_client_secret" || -z "$enrollment_code" ]]; then
+    printf '%s\n' 'install-node: credentials cannot be empty' >&2
+    exit 1
+  fi
 fi
 
 umask 077
@@ -142,18 +152,32 @@ agent_executable="${runtime_prefix}/node_modules/.bin/dsh-hub-node"
 dsh_executable="$(command -v dsh)"
 profile_directory="${DSH_HOME:-${HOME}/.dsh}/profiles/${profile_name}"
 config_path="${state_directory}/node-agent.json"
+package_directory="${state_directory}/packages"
+mkdir -p "$package_directory"
+connector_package="${package_directory}/${connector_asset}"
+cp -- "${temporary_directory}/${connector_asset}" "$connector_package"
+chmod 600 "$connector_package"
 
-DSH_HUB_ACCESS_CLIENT_SECRET="$access_client_secret" \
-DSH_HUB_ENROLLMENT_CODE="$enrollment_code" \
-  "$agent_executable" init \
-    --hub "$hub_url" \
-    --node "$node_id" \
-    --access-client-id "$access_client_id" \
+if [[ "$upgrade_existing" == true ]]; then
+  [[ -f "$config_path" ]] \
+    || { printf 'install-node: existing private config not found: %s\n' "$config_path" >&2; exit 1; }
+  "$agent_executable" upgrade-connector \
+    --config "$config_path" \
     --profile "$profile_name" \
-    --runtime-id default \
-    --profile-directory "$profile_directory" \
-    --dsh-executable "$dsh_executable" \
-    --install-connector "${temporary_directory}/${connector_asset}"
+    --connector "$connector_package"
+else
+  DSH_HUB_ACCESS_CLIENT_SECRET="$access_client_secret" \
+  DSH_HUB_ENROLLMENT_CODE="$enrollment_code" \
+    "$agent_executable" init \
+      --hub "$hub_url" \
+      --node "$node_id" \
+      --access-client-id "$access_client_id" \
+      --profile "$profile_name" \
+      --runtime-id default \
+      --profile-directory "$profile_directory" \
+      --dsh-executable "$dsh_executable" \
+      --install-connector "$connector_package"
+fi
 
 install_systemd_user_service() {
   local service_directory="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
@@ -174,6 +198,7 @@ install_systemd_user_service() {
   chmod 600 "$service_path"
   systemctl --user daemon-reload
   systemctl --user enable --now dsh-hub-node.service
+  systemctl --user restart dsh-hub-node.service
   if command -v loginctl >/dev/null 2>&1 && [[ "$(loginctl show-user "$(id -u)" -p Linger --value 2>/dev/null || true)" != yes ]]; then
     printf '%s\n' 'install-node: note: this user service stops after logout unless your administrator enables user lingering.'
   fi
@@ -220,7 +245,11 @@ if [[ "$install_service" == true ]]; then
   esac
 fi
 
-printf '\n%s\n' "Node ${node_id} is installed. Restart DSH profile ${profile_name} once so it loads the Hub Connector plugin."
+if [[ "$upgrade_existing" == true ]]; then
+  printf '\n%s\n' "Node Agent and Connector are upgraded to ${DSH_HUB_RELEASE_VERSION}. Restart DSH profile ${profile_name} once to activate the Connector."
+else
+  printf '\n%s\n' "Node ${node_id} is installed. Restart DSH profile ${profile_name} once so it loads the Hub Connector plugin."
+fi
 if [[ "$install_service" == false ]]; then
   printf 'Start the Node Agent with: %q --config %q\n' "$agent_executable" "$config_path"
 fi

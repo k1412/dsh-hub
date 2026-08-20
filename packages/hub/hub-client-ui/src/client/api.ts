@@ -14,6 +14,7 @@ export interface HubNode {
 
 /** Latest reliable-queue health from both sides of one node connection. */
 export interface HubTransportHealth {
+  agentVersion?: string
   reportedAt?: number
   lastPongAt?: number
   pressure: 'normal' | 'warning' | 'critical' | 'unknown'
@@ -82,6 +83,33 @@ export interface FleetSnapshot {
   enrollments: PendingEnrollment[]
 }
 
+/** Rolling node-backed latency metrics retained only in Hub process memory. */
+export interface HubPerformanceMetrics {
+  requests: number
+  errors: number
+  timeouts: number
+  p50Ms: number
+  p95Ms: number
+  maxMs: number
+  dispatchP95Ms: number
+  waitP95Ms: number
+  responseBytes: number
+  maxResponseBytes: number
+}
+
+/** Authenticated performance snapshot grouped by Runtime and RPC method. */
+export interface HubPerformanceSnapshot {
+  generatedAt: number
+  windowStartedAt?: number
+  sampleLimit: number
+  summary: HubPerformanceMetrics
+  targets: Array<HubPerformanceMetrics & {
+    nodeId: string
+    runtimeId: string
+    methods: Array<HubPerformanceMetrics & { method: string }>
+  }>
+}
+
 interface HubCommand {
   commandId: string
   status: 'pending' | 'sent' | 'running' | 'ok' | 'error' | 'outcome-unknown'
@@ -126,6 +154,11 @@ export async function readFleet(): Promise<FleetSnapshot> {
     requestJson<{ enrollments: PendingEnrollment[] }>('/hub/v1/enrollments'),
   ])
   return { ...fleet, enrollments: pending.enrollments }
+}
+
+/** Read the live bounded latency window without exposing command payloads. */
+export function readPerformance(): Promise<HubPerformanceSnapshot> {
+  return requestJson('/hub/v1/performance')
 }
 
 /**
