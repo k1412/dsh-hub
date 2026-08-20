@@ -6,6 +6,7 @@ import {
   createEnrollment,
   invoke,
   readFleet,
+  readPerformance,
   revokeNode,
   type HubRuntime,
 } from '../src/client/api.ts'
@@ -53,6 +54,19 @@ describe('Hub settings operator API', () => {
     })
     expect(fetch).toHaveBeenNthCalledWith(1, '/hub/v1/nodes', undefined)
     expect(fetch).toHaveBeenNthCalledWith(2, '/hub/v1/enrollments', undefined)
+  })
+
+  it('reads the bounded same-origin performance window', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(json({
+      generatedAt: 2_000,
+      sampleLimit: 2_048,
+      summary: { requests: 1, errors: 0, timeouts: 0, p50Ms: 12, p95Ms: 12, maxMs: 12,
+        dispatchP95Ms: 2, waitP95Ms: 10, responseBytes: 64, maxResponseBytes: 64 },
+      targets: [],
+    }))
+
+    await expect(readPerformance()).resolves.toMatchObject({ sampleLimit: 2_048 })
+    expect(fetch).toHaveBeenCalledWith('/hub/v1/performance', undefined)
   })
 
   it('uses explicit same-origin mutation routes for enrollment cancellation and revocation', async () => {

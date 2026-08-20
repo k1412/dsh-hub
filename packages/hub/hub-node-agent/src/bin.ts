@@ -8,7 +8,8 @@ import { join, resolve } from 'node:path'
 import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { HubNodeAgent } from './agent.ts'
 import { readHubBootstrap } from './bootstrap.ts'
-import { HubNodeAgentState } from './state.ts'
+import { upgradeConnectorPackage } from './connector-upgrade.ts'
+import { HubNodeAgentState, loadHubNodeAgentConfig } from './state.ts'
 
 function option(args: readonly string[], name: string): string | undefined {
   const index = args.indexOf(name)
@@ -107,6 +108,29 @@ async function initialize(args: readonly string[]): Promise<void> {
   ].join('\n') + '\n')
 }
 
+async function upgradeConnector(args: readonly string[]): Promise<void> {
+  const configPath = resolve(option(args, '--config') ?? join(defaultStateDirectory(), 'node-agent.json'))
+  const config = await loadHubNodeAgentConfig(configPath)
+  const profileName = option(args, '--profile')?.trim()
+  const profiles = config.management?.profiles ?? []
+  const profile = profileName === undefined
+    ? profiles.length === 1 ? profiles[0] : undefined
+    : profiles.find(candidate => candidate.profileName === profileName)
+  if (profile === undefined) {
+    throw new Error(profileName === undefined
+      ? 'exactly one managed profile is required, or pass --profile'
+      : `managed profile not found: ${profileName}`)
+  }
+  await upgradeConnectorPackage({
+    profileDirectory: profile.profileDirectory,
+    profileName: profile.profileName,
+    dshExecutable: profile.dshExecutable,
+    connectorPackage: requiredOption(args, '--connector'),
+    run: command,
+  })
+  process.stdout.write(`Connector upgraded in profile ${profile.profileName}\n`)
+}
+
 async function serve(args: readonly string[]): Promise<void> {
   const index = args.indexOf('--config')
   const configPath = index < 0 ? process.env.DSH_HUB_NODE_CONFIG : args[index + 1]
@@ -131,6 +155,7 @@ async function serve(args: readonly string[]): Promise<void> {
 try {
   const args = process.argv.slice(2)
   if (args[0] === 'init') await initialize(args.slice(1))
+  else if (args[0] === 'upgrade-connector') await upgradeConnector(args.slice(1))
   else await serve(args)
 } catch (error) {
   process.stderr.write(`dsh-hub-node: ${error instanceof Error ? error.message : String(error)}\n`)

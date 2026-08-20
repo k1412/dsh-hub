@@ -275,8 +275,8 @@ describe('Hub management Settings pages', () => {
 
     expect(unix).toContain("--node 'mac-'\"'\"'neo'")
     expect(windows).toContain("$env:DSH_HUB_NODE_ID='mac-''neo'")
-    expect(unix).toContain('/releases/download/hub-v1.0.3/install-node.sh')
-    expect(windows).toContain('/releases/download/hub-v1.0.3/install-node.ps1')
+    expect(unix).toContain('/releases/download/hub-v1.0.4/install-node.sh')
+    expect(windows).toContain('/releases/download/hub-v1.0.4/install-node.ps1')
     expect(unix).not.toContain('DSH_HUB_ACCESS_CLIENT_SECRET')
     expect(windows).not.toContain('DSH_HUB_ACCESS_CLIENT_SECRET')
   })
@@ -404,6 +404,23 @@ describe('Hub management Settings pages', () => {
     expect(await screen.findByRole('button', { name: '更新到 2.0.0' })).toBeTruthy()
     expect(screen.getByText('外部管理').getAttribute('title')).toContain('不会擅自改写')
     expect(screen.getByText('暂无法查询').getAttribute('title')).toBe('HTTP 503')
+  })
+
+  it('keeps plugin inventory usable when optional history or snapshots fail', async () => {
+    api.invoke.mockImplementation(async (_runtime, capability, operation) => {
+      if (operation === 'inventory') return {
+        plugins: [{ packageName: '@example/healthy', version: '2.0.0', enabled: true, healthy: true }],
+        lockHash: 'a'.repeat(43), checkedAt: 1_000,
+      }
+      if (operation === 'history') throw new Error('history temporarily unavailable')
+      if (capability === 'dsh.snapshots' && operation === 'list') throw new Error('snapshots temporarily unavailable')
+      throw new Error(`unexpected operation ${String(operation)}`)
+    })
+
+    render(<HubPluginsSection close={() => undefined} useSessions={unusedHook} useWorkspaces={unusedHook} />)
+    expect(await screen.findByText('@example/healthy')).toBeTruthy()
+    expect(screen.getByText('运行正常')).toBeTruthy()
+    expect(screen.getByRole('alert').textContent).toContain('部分插件数据暂不可用')
   })
 
   it('rolls a plugin back independently from explicit snapshot create and restore', async () => {

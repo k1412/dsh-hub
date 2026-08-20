@@ -126,6 +126,13 @@ describe('Hub HTTP server', () => {
     const me = await fetch(`${base}/hub/v1/me`, { headers: requestHeaders('human') })
     expect(me.status).toBe(200)
     await expect(me.json()).resolves.toMatchObject({ email: 'operator@example.com' })
+    const performance = await fetch(`${base}/hub/v1/performance`, { headers: requestHeaders('human') })
+    expect(performance.status).toBe(200)
+    await expect(performance.json()).resolves.toMatchObject({
+      sampleLimit: 2_048,
+      summary: { requests: 0, errors: 0, timeouts: 0 },
+      targets: [],
+    })
   })
 
   it('routes an empty fleet to the authenticated enrollment gate', async () => {
@@ -608,6 +615,22 @@ describe('Hub HTTP server', () => {
       rpcMethod: 'goals/pause',
       payload: { sessionId: 'nas-session' },
     }])
+
+    const performanceResponse = await fetch(`${base}/hub/v1/performance`, {
+      headers: requestHeaders('human'),
+    })
+    expect(performanceResponse.status).toBe(200)
+    const performanceBody = await performanceResponse.json() as {
+      summary: { requests: number; errors: number; responseBytes: number }
+      targets: Array<{ nodeId: string; runtimeId: string; methods: Array<{ method: string }> }>
+    }
+    expect(performanceBody.summary).toMatchObject({ errors: 0 })
+    expect(performanceBody.summary.requests).toBeGreaterThanOrEqual(5)
+    expect(performanceBody.summary.responseBytes).toBeGreaterThan(0)
+    expect(performanceBody.targets).toContainEqual(expect.objectContaining({
+      nodeId: 'nas-node', runtimeId: 'web',
+      methods: expect.arrayContaining([expect.objectContaining({ method: 'goals/pause' })]),
+    }))
 
     const workspaceResponse = await fetch(`${base}/api/workspace.list`, {
       method: 'POST',

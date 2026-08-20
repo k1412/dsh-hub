@@ -11,10 +11,11 @@ import {
   HubAuthError, type HubHumanPrincipal, type HubRequestHeaders, type HubServicePrincipal,
 } from './auth.ts'
 import { HubAgentRegistry, parseAgentUpgrade } from './agents.ts'
-import { HubEventBroker, type HubBrowserEvent } from './events.ts'
+import { HubEventBroker, type HubBrowserEvent, type HubEventSubscription } from './events.ts'
 import {
   decodeFleetPayload, encodeFleetPayload, singleFleetTarget, type FleetWebTarget,
 } from './fleet-web.ts'
+import { HubPerformanceTracker, type HubRequestOutcome } from './performance.ts'
 
 /** Access verifier interface implemented by Cloudflare JWT validation. */
 export interface HubAccessVerifier {
@@ -79,6 +80,71 @@ const FLEET_AGGREGATE_METHODS = new Set(['session.list', 'session.search', 'work
 const INTERACTION_TARGET_LIFETIME_MS = 60 * 60_000
 const BROWSER_WEBSOCKET_HEARTBEAT_MS = 20_000
 const AGGREGATE_COMMAND_TIMEOUT_MS = 2_500
+const BROWSER_STREAM_MAX_PENDING_MESSAGES = 512
+const BROWSER_STREAM_MAX_PENDING_BYTES = 4 * 1024 * 1024
+
+interface BrowserStreamSocket {
+  readyState: number
+  send(data: string, callback: (error?: Error) => void): void
+  close(code?: number, reason?: string): void
+}
+
+/**
+ * Serialize browser stream writes and bound unsent memory. Official Web streams
+ * are reconstructible, so a slow browser is reconnected instead of retaining an
+ * unbounded token/event backlog that can crash both the page and Hub process.
+ */
+export class HubBrowserStreamWriter {
+  private chain = Promise.resolve()
+  private pendingMessages = 0
+  private pendingBytes = 0
+  private closed = false
+
+  public constructor(
+    private readonly socket: BrowserStreamSocket,
+    private readonly maxPendingMessages = BROWSER_STREAM_MAX_PENDING_MESSAGES,
+    private readonly maxPendingBytes = BROWSER_STREAM_MAX_PENDING_BYTES,
+  ) {
+    if (!Number.isSafeInteger(maxPendingMessages) || maxPendingMessages < 1
+      || !Number.isSafeInteger(maxPendingBytes) || maxPendingBytes < 1) {
+      throw new Error('browser stream queue limits must be positive integers')
+    }
+  }
+
+  /** Queue one JSON frame, or close the reconstructible stream for resync. */
+  public enqueue(value: unknown): boolean {
+    if (this.closed || this.socket.readyState !== WebSocket.OPEN) return false
+    const payload = JSON.stringify(value)
+    const bytes = Buffer.byteLength(payload, 'utf8')
+    if (this.pendingMessages + 1 > this.maxPendingMessages || this.pendingBytes + bytes > this.maxPendingBytes) {
+      this.closed = true
+      this.socket.close(1012, 'browser stream backpressure')
+      return false
+    }
+    this.pendingMessages += 1
+    this.pendingBytes += bytes
+    const operation = this.chain.then(() => new Promise<void>((resolveSend, rejectSend) => {
+      if (this.closed || this.socket.readyState !== WebSocket.OPEN) {
+        rejectSend(new Error('browser stream is closed'))
+        return
+      }
+      this.socket.send(payload, (error) => {
+        if (error == null) resolveSend()
+        else rejectSend(error)
+      })
+    }))
+    this.chain = operation.catch(() => {
+      if (!this.closed) {
+        this.closed = true
+        this.socket.close(1012, 'browser stream write failed')
+      }
+    }).finally(() => {
+      this.pendingMessages -= 1
+      this.pendingBytes -= bytes
+    })
+    return true
+  }
+}
 
 const enrollmentSchema = z.strictObject({
   nodeId: z.string().min(1).max(64),
@@ -194,6 +260,8 @@ export class HubServer {
   private readonly events = new HubEventBroker()
   private readonly interactionTargets = new Map<string, { target: FleetWebTarget; expiresAt: number }>()
   private readonly workspaceSnapshots = new Map<string, FleetWorkspaceSnapshot>()
+  private readonly performance = new HubPerformanceTracker()
+  private readonly performanceSubscription: HubEventSubscription
   /** Authenticated outbound-node registry used by REST and terminal routing. */
   public readonly agents: HubAgentRegistry
   private readonly publicOrigin: string
@@ -216,6 +284,25 @@ export class HubServer {
       throw new Error('aggregateCommandTimeoutMs must be an integer from 10 to 30000')
     }
     this.agents = new HubAgentRegistry(options.storage, this.events, options.hubIdentity)
+    this.performanceSubscription = this.events.subscribe(undefined, (event) => {
+      if (event.type !== 'command.result' || typeof event.data !== 'object'
+        || event.data === null || Array.isArray(event.data)
+        || typeof event.data.commandId !== 'string') return
+      const command = options.storage.control.getCommand(event.data.commandId)
+      if (command === undefined || command.capability === 'dsh.web' || command.terminalAt === undefined) return
+      const durationMs = Math.max(0, command.terminalAt - command.createdAt)
+      this.performance.record({
+        occurredAt: command.terminalAt,
+        nodeId: command.nodeId,
+        runtimeId: command.runtimeId ?? '-',
+        method: `${command.capability}.${command.operation}`,
+        outcome: command.status === 'ok' ? 'ok' : 'node-error',
+        durationMs,
+        dispatchMs: 0,
+        waitMs: durationMs,
+        responseBytes: Buffer.byteLength(JSON.stringify(command.result ?? null), 'utf8'),
+      })
+    })
     this.maintenance = setInterval(() => {
       options.storage.control.redactTerminalCommandContentBefore(Date.now() - 5 * 60_000)
       const now = Date.now()
@@ -265,6 +352,7 @@ export class HubServer {
   /** Stop accepting requests and close active Agent connections. */
   public async close(): Promise<void> {
     clearInterval(this.maintenance)
+    this.performanceSubscription.unsubscribe()
     this.agents.close()
     this.agentWebSockets.close()
     this.terminalWebSockets.close()
@@ -308,6 +396,10 @@ export class HubServer {
     }
     if (method === 'GET' && url.pathname === '/hub/v1/me') {
       json(response, 200, { email: human.email, expiresAt: human.expiresAt })
+      return
+    }
+    if (method === 'GET' && url.pathname === '/hub/v1/performance') {
+      json(response, 200, this.performance.snapshot())
       return
     }
     if ((method === 'GET' || method === 'HEAD') && (url.pathname === '/' || url.pathname === '/setup.html')) {
@@ -621,43 +713,81 @@ export class HubServer {
     human: HubHumanPrincipal,
     waitTimeoutMs?: number,
   ): Promise<OfficialWebResponse> {
-    if (!this.agents.isOnline(HubNodeId(target.nodeId))) throw new HttpProblem(503, 'node is offline')
-    const command = await this.agents.invoke(
-      HubNodeId(target.nodeId),
-      HubRuntimeId(target.runtimeId),
-      'dsh.web',
-      '1.0.0',
-      'fetch',
-      {
-        clientMutationId: crypto.randomUUID(),
-        method,
-        path,
-        headers: method === 'POST' ? [['content-type', 'application/json']] : [],
-        ...(method === 'POST' ? { body: JSON.stringify(body) } : {}),
-      },
-      `human:${human.email}`,
-    )
     const rpcMethod = typeof body === 'object' && body !== null && 'method' in body
       && typeof (body as { method?: unknown }).method === 'string'
       ? (body as { method: string }).method.slice(0, 128)
       : undefined
-    const completed = await this.waitCommand(command.commandId, rpcMethod, waitTimeoutMs)
-    const commandResult = completed.result
-    this.redactCommand(completed)
-    if (completed.status !== 'ok') {
-      return this.officialCommandFailure(body, commandResult)
+    const metricMethod = rpcMethod ?? `${method} ${path.split('?', 1)[0] ?? path}`
+    const startedAt = performance.now()
+    let dispatchCompletedAt = startedAt
+    let waitCompletedAt = startedAt
+    let responseBytes = 0
+    let outcome: HubRequestOutcome = 'error'
+    try {
+      if (!this.agents.isOnline(HubNodeId(target.nodeId))) {
+        outcome = 'offline'
+        throw new HttpProblem(503, 'node is offline')
+      }
+      const command = await this.agents.invoke(
+        HubNodeId(target.nodeId),
+        HubRuntimeId(target.runtimeId),
+        'dsh.web',
+        '1.0.0',
+        'fetch',
+        {
+          clientMutationId: crypto.randomUUID(),
+          method,
+          path,
+          headers: method === 'POST' ? [['content-type', 'application/json']] : [],
+          ...(method === 'POST' ? { body: JSON.stringify(body) } : {}),
+        },
+        `human:${human.email}`,
+      )
+      dispatchCompletedAt = performance.now()
+      const completed = await this.waitCommand(command.commandId, rpcMethod, waitTimeoutMs)
+      waitCompletedAt = performance.now()
+      const commandResult = completed.result
+      this.redactCommand(completed)
+      if (completed.status !== 'ok') {
+        const failure = this.officialCommandFailure(body, commandResult)
+        responseBytes = Buffer.byteLength(failure.body, failure.encoding)
+        outcome = 'node-error'
+        return failure
+      }
+      if (typeof commandResult !== 'object' || commandResult === null) {
+        throw new HttpProblem(502, 'node Web request failed')
+      }
+      const result = commandResult as Partial<OfficialWebResponse>
+      if (typeof result.status !== 'number'
+        || !Array.isArray(result.headers)
+        || (result.encoding !== 'utf8' && result.encoding !== 'base64')
+        || typeof result.body !== 'string') {
+        throw new Error('node Web response is invalid')
+      }
+      responseBytes = result.encoding === 'base64'
+        ? Buffer.byteLength(result.body, 'base64')
+        : Buffer.byteLength(result.body, 'utf8')
+      outcome = result.status >= 400 ? 'node-error' : 'ok'
+      return result as OfficialWebResponse
+    } catch (error) {
+      waitCompletedAt = performance.now()
+      if (error instanceof HttpProblem && error.status === 504) outcome = 'timeout'
+      else if (error instanceof HttpProblem && error.status === 503) outcome = 'offline'
+      throw error
+    } finally {
+      const completedAt = performance.now()
+      this.performance.record({
+        occurredAt: Date.now(),
+        nodeId: target.nodeId,
+        runtimeId: target.runtimeId,
+        method: metricMethod,
+        outcome,
+        durationMs: completedAt - startedAt,
+        dispatchMs: dispatchCompletedAt - startedAt,
+        waitMs: waitCompletedAt - dispatchCompletedAt,
+        responseBytes,
+      })
     }
-    if (typeof commandResult !== 'object' || commandResult === null) {
-      throw new HttpProblem(502, 'node Web request failed')
-    }
-    const result = commandResult as Partial<OfficialWebResponse>
-    if (typeof result.status !== 'number'
-      || !Array.isArray(result.headers)
-      || (result.encoding !== 'utf8' && result.encoding !== 'base64')
-      || typeof result.body !== 'string') {
-      throw new Error('node Web response is invalid')
-    }
-    return result as OfficialWebResponse
   }
 
   private officialCommandFailure(body: unknown, failure: unknown): OfficialWebResponse {
@@ -897,6 +1027,7 @@ export class HubServer {
     stream: 'mux' | 'host',
   ): Promise<void> {
     if (this.officialRuntimes().length === 0) throw new Error('no DSH Web Runtime is online')
+    const writer = new HubBrowserStreamWriter(socket)
     const subscription = this.events.subscribe(undefined, (event) => {
       if (event.type === 'stream.interrupted' && typeof event.data === 'object' && event.data !== null) {
         const interrupted = event.data as { capability?: unknown; stream?: unknown }
@@ -924,7 +1055,7 @@ export class HubServer {
         && 'rpcId' in data.payload && typeof data.payload.rpcId === 'string') {
         this.rememberInteractionTarget(data.payload.rpcId, target)
       }
-      void this.sendWebSocket(socket, rewritten).catch(() => { socket.close() })
+      writer.enqueue(rewritten)
     })
     const expiry = setTimeout(() => { socket.close(4003, 'operator authentication expired') }, Math.min(
       2_147_483_647, Math.max(1_000, human.expiresAt * 1_000 - Date.now()),

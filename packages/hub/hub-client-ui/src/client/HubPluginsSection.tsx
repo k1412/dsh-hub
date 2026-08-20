@@ -1,6 +1,6 @@
 /** Human-readable node plugin state, update rollback history, and explicit snapshots. */
 
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { invoke, readFleet, type HubRuntime } from './api.ts'
 import css from './HubSettings.module.css'
@@ -97,28 +97,30 @@ export function HubPluginsSection(_props: HubPluginsSectionProps): ReactNode {
   const [snapshotType, setSnapshotType] = useState<SnapshotRecord['type']>('configuration')
   const [busy, setBusy] = useState<string>()
   const [error, setError] = useState<string>()
+  const loadGeneration = useRef(0)
   const runtime = runtimes.find(candidate => keyOf(candidate) === selected)
 
   const loadRuntime = async (target: HubRuntime): Promise<void> => {
+    const generation = loadGeneration.current + 1
+    loadGeneration.current = generation
     setBusy('load')
     setError(undefined)
-    try {
-      const [nextInventory, nextHistory, nextSnapshots] = await Promise.all([
-        invoke<Inventory>(target, 'dsh.plugins', 'inventory', {}),
-        invoke<{ changes: PluginChange[] }>(target, 'dsh.plugins', 'history', {}),
-        supports(target, 'dsh.snapshots')
-          ? invoke<{ snapshots: SnapshotRecord[] }>(target, 'dsh.snapshots', 'list', {})
-          : Promise.resolve({ snapshots: [] }),
-      ])
-      setInventory(nextInventory)
-      setUpdates(undefined)
-      setHistory(nextHistory.changes)
-      setSnapshots(nextSnapshots.snapshots)
-    } catch (reason) {
-      setError(messageOf(reason))
-    } finally {
-      setBusy(undefined)
-    }
+    const results = await Promise.allSettled([
+      invoke<Inventory>(target, 'dsh.plugins', 'inventory', {}),
+      invoke<{ changes: PluginChange[] }>(target, 'dsh.plugins', 'history', {}),
+      supports(target, 'dsh.snapshots')
+        ? invoke<{ snapshots: SnapshotRecord[] }>(target, 'dsh.snapshots', 'list', {})
+        : Promise.resolve({ snapshots: [] }),
+    ])
+    if (loadGeneration.current !== generation) return
+    const [inventoryResult, historyResult, snapshotsResult] = results
+    setInventory(inventoryResult.status === 'fulfilled' ? inventoryResult.value : undefined)
+    setUpdates(undefined)
+    setHistory(historyResult.status === 'fulfilled' ? historyResult.value.changes : [])
+    setSnapshots(snapshotsResult.status === 'fulfilled' ? snapshotsResult.value.snapshots : [])
+    const failures = results.flatMap(result => result.status === 'rejected' ? [messageOf(result.reason)] : [])
+    setError(failures.length === 0 ? undefined : `部分插件数据暂不可用：${failures.join('；')}`)
+    setBusy(undefined)
   }
 
   useEffect(() => {
@@ -140,6 +142,7 @@ export function HubPluginsSection(_props: HubPluginsSectionProps): ReactNode {
   )
 
   const selectRuntime = (value: string): void => {
+    loadGeneration.current += 1
     setSelected(value)
     setInventory(undefined)
     setUpdates(undefined)

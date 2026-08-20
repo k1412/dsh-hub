@@ -32,7 +32,7 @@ declare module '@deepseek-ai/dsh-api-gateway/types' {
 }
 
 /** Connector release sent in the authenticated local baseline. */
-export const HUB_CONNECTOR_VERSION = '1.0.3'
+export const HUB_CONNECTOR_VERSION = '1.0.4'
 
 /** Connector configuration stored in the DSH profile. */
 export interface Config {
@@ -185,7 +185,8 @@ function invocationPriority(body: Extract<HubEnvelopeBody, { type: 'capability.i
   }
   if (pathname === '/api/respond') return 'interactive'
   const endpoint = pathname.slice('/api/'.length)
-  if (endpoint.startsWith('goals/')
+  if (endpoint === 'commands/execute'
+    || endpoint.startsWith('goals/')
     || endpoint.startsWith('settings/')
     || endpoint.startsWith('credentials/')) return 'interactive'
   if (endpoint.includes('/')) return 'bulk'

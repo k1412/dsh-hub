@@ -114,6 +114,7 @@ describe('Hub Connector coexistence', () => {
         return { ok: true, value: { completed: 'slow' } } as never
       }
       if (method === 'goals/pause') return { ok: true, value: { completed: 'goal' } } as never
+      if (method === 'commands/execute') return { ok: true, value: { completed: 'created' } } as never
       if (method === 'settings/update') return { ok: true, value: { completed: 'settings' } } as never
       if (method === 'respond') return { ok: true, value: { completed: 'answer' } } as never
       throw new Error(`unexpected Gateway method ${method}`)
@@ -167,11 +168,15 @@ describe('Hub Connector coexistence', () => {
       await slowStarted
       await Promise.all([
         server.send('default', webCommand('command-priority-goal-0001', 'goals/pause')),
+        server.send('default', webCommand('command-priority-create-0001', 'commands/execute')),
         server.send('default', webCommand('command-priority-settings-0001', 'settings/update')),
         server.send('default', webCommand('command-priority-answer-0001', 'respond')),
       ])
       await vi.waitFor(() => { expect(bodies).toContainEqual(expect.objectContaining({
         type: 'capability.result', commandId: 'command-priority-goal-0001', status: 'ok',
+      })) })
+      await vi.waitFor(() => { expect(bodies).toContainEqual(expect.objectContaining({
+        type: 'capability.result', commandId: 'command-priority-create-0001', status: 'ok',
       })) })
       await vi.waitFor(() => { expect(bodies).toContainEqual(expect.objectContaining({
         type: 'capability.result', commandId: 'command-priority-settings-0001', status: 'ok',

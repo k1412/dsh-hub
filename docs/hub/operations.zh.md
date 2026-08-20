@@ -48,7 +48,16 @@ Hub 协议采用精确协商。新的 Hub 不再接受节点的协议或能力�
 
 ## 升级节点
 
-先升级 Node Agent 包，重启其服务并验证重连。通过 `dsh plugin --profile <name> add <release-asset> --save-exact` 升级每个 DSH Profile 中的 Connector，然后重启对应 DSH 进程并验证其 Runtime Boot ID 已变化。正在运行长任务的 Runtime 可以暂缓 Connector 升级；不要为追求版本一致而中断会话，待任务结束后再补齐。
+已用一键安装器注册的 Linux／macOS 节点可以原地升级，不需要新注册码或再次输入 Cloudflare 凭据：
+
+```sh
+curl -fsSL https://github.com/k1412/dsh-hub/releases/latest/download/install-node.sh \
+  | bash -s -- --upgrade --profile web
+```
+
+Windows 使用同一 Release 的 `install-node.ps1 -Upgrade`。升级器会校验 Release，把 Connector 保存到 `~/.dsh-hub/packages` 的持久路径，原子替换 Profile 中已经失效的临时 `file:` 引用，重新安装 Node Agent 服务并重启它。然后在安全维护窗口重启对应 DSH Profile，并确认“设置 → Hub 节点”中的 Node Agent 与 Connector 版本都已变化。非默认 State Directory 或 Profile 分别传 `--state-directory`、`--profile`（PowerShell 使用对应参数或环境变量）。
+
+手工安装的节点应先升级 Node Agent 包并重启其服务，再把 Connector Release 制品保存到持久目录，通过 `dsh plugin --profile <name> add <persistent-release-asset> --save-exact` 更新。不要让 Profile 长期引用安装器临时目录中的 tgz。正在运行长任务的 Runtime 可以暂缓 Connector 升级；不要为追求版本一致而中断会话，待任务结束后再补齐。
 
 Node Agent 离线时，本地客户端仍可继续工作。Connector 重启期间，对应 Runtime 在 Hub 中显示离线，排队操作仍受各自幂等类别约束。
 
