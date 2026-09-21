@@ -9,7 +9,7 @@ import Include from '@deepseek-ai/cordis-plugin-include'
 import { generateHubIpcSecret, type HubIpcFrame } from '@k1412/dsh-hub-node-ipc'
 import { HubConnectorServer } from '../../hub-node-agent/src/ipc-server.ts'
 import type { HubEnvelopeBody } from '@k1412/dsh-hub-protocol'
-import { detectDshVersion, HubConnector } from '../src/index.ts'
+import { detectDshVersion, HubConnector, normalizeEventFrame } from '../src/index.ts'
 import * as HubConnectorPlugin from '../src/index.ts'
 
 const roots: string[] = []
@@ -54,6 +54,23 @@ function testGateway(): TestGateway {
 }
 
 describe('Hub Connector coexistence', () => {
+  it('normalizes current Gateway event frames for the legacy Web stream envelope', () => {
+    expect(normalizeEventFrame({ type: 'ready', clientId: 'client-1', host: { home: '/workspace' } })).toBeUndefined()
+    expect(normalizeEventFrame({ type: 'emit', event: 'api-session/status', args: [{ sessionId: 's1', running: true }] })).toMatchObject({
+      payload: { type: 'api-session/status', args: [{ sessionId: 's1', running: true }] },
+    })
+    expect(normalizeEventFrame({
+      type: 'waterfall', event: 'user-questions/request', eventId: 'question-1', agentId: 'agent-1',
+      request: { sessionId: 's1', questions: [{ id: 'confirm', question: 'Continue?' }] },
+    })).toEqual({
+      rpcId: 'question-1',
+      payload: {
+        type: 'question/requested', event: 'user-questions/request', eventId: 'question-1', agentId: 'agent-1',
+        sessionId: 's1', questions: [{ id: 'confirm', question: 'Continue?' }],
+      },
+    })
+  })
+
   it('adapts current Typert Remote session calls without the legacy ApiProxy', async () => {
     const calls: Array<{ namespace: string; method: string; args: Record<string, unknown> }> = []
     let listed = false

@@ -43,6 +43,46 @@ interface SessionSummary {
 
 interface RpcResponse<T> { result: { ok: boolean; value?: T; error?: { message: string; code?: string } } }
 
+interface NormalizedEventFrame {
+  rpcId: string
+  payload: { type: string; [key: string]: unknown }
+}
+
+export function normalizeEventFrame(frame: unknown): NormalizedEventFrame | undefined {
+  if (typeof frame !== 'object' || frame === null) return undefined
+  const value = frame as Record<string, unknown>
+  if (typeof value.rpcId === 'string' && typeof value.payload === 'object' && value.payload !== null) {
+    const payload = value.payload as Record<string, unknown>
+    if (typeof payload.type === 'string') return { rpcId: value.rpcId, payload: payload as NormalizedEventFrame['payload'] }
+  }
+  if (value.type === 'ready') return undefined
+  if (value.type === 'emit' && typeof value.event === 'string' && Array.isArray(value.args)) {
+    return {
+      rpcId: rpcId(),
+      payload: { type: value.event, args: value.args },
+    }
+  }
+  if (value.type === 'waterfall' && typeof value.event === 'string' && typeof value.eventId === 'string') {
+    const payloadType = value.event === 'user-questions/request' ? 'question/requested'
+      : value.event === 'approval/request' ? 'approval/requested'
+        : value.event
+    return {
+      rpcId: value.eventId,
+      payload: {
+        type: payloadType,
+        event: value.event,
+        eventId: value.eventId,
+        agentId: value.agentId,
+        ...(typeof value.request === 'object' && value.request !== null ? value.request as Record<string, unknown> : { request: value.request }),
+      },
+    }
+  }
+  if (value.type === 'cancel' && typeof value.eventId === 'string') {
+    return { rpcId: value.eventId, payload: { type: 'event/cancel', eventId: value.eventId } }
+  }
+  return undefined
+}
+
 function SessionId(value: string): string { return value }
 
 function rpcId(value?: string): string { return value ?? randomBytes(18).toString('base64url') }
@@ -847,7 +887,8 @@ export class HubConnector {
     const consumeMux = async () => {
       for await (const frame of mux) {
         if (signal.aborted) return
-        const event = frame as { rpcId: string; payload: { type: string; [key: string]: unknown } }
+        const event = normalizeEventFrame(frame)
+        if (event === undefined) continue
         this.webMuxFrameSequence += 1
         await this.send({ type: 'ipc.hub-body', body: {
           type: 'stream.frame',
@@ -874,7 +915,8 @@ export class HubConnector {
     const consumeHost = async () => {
       for await (const frame of host) {
         if (signal.aborted) return
-        const event = frame as { rpcId: string; payload: { type: string; [key: string]: unknown } }
+        const event = normalizeEventFrame(frame)
+        if (event === undefined) continue
         this.webHostFrameSequence += 1
         await this.send({ type: 'ipc.hub-body', body: {
           type: 'stream.frame',
