@@ -26,6 +26,7 @@ type TestApiProxy = {
 
 type TestGateway = {
   dispatch?: (...args: any[]) => Promise<unknown>
+  dispatchRpc?: (...args: any[]) => Promise<unknown>
   invoke?: (...args: any[]) => Promise<unknown>
   stream?: (...args: any[]) => Promise<AsyncIterable<unknown>>
   wireStream?: { open: (...args: any[]) => Promise<AsyncIterable<unknown>> }
@@ -69,6 +70,76 @@ describe('Hub Connector coexistence', () => {
         sessionId: 's1', questions: [{ id: 'confirm', question: 'Continue?' }],
       },
     })
+  })
+
+  it('answers a current Remote waterfall through $events/result', async () => {
+    const calls: unknown[][] = []
+    const connector = new HubConnector(undefined, {
+      dispatchRpc: async (...args: unknown[]) => {
+        calls.push(args)
+        return { ok: true, value: undefined }
+      },
+    }, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.6-alpha.2', reconnectMaximumMs: 1_000,
+    })
+    ;(connector as unknown as { remoteEventClientId: string }).remoteEventClientId = 'event-client-1'
+    const invokeSessions = (connector as unknown as {
+      invokeSessions(operation: string, value: unknown, commandId: string): Promise<unknown>
+    }).invokeSessions.bind(connector)
+    await expect(invokeSessions('interaction.respond', {
+      sessionId: 'session-1', requestId: 'event-1', response: { answers: [{ id: 'continue', selected: ['Yes'] }] },
+    }, 'answer-1')).resolves.toEqual({ ok: true })
+    expect(calls).toEqual([['$events/result', { args: {
+      clientId: 'event-client-1', eventId: 'event-1',
+      outcome: { kind: 'result', value: { answers: [{ id: 'continue', selected: ['Yes'] }] } },
+    } }, expect.any(AbortSignal)]])
+  })
+
+  it('captures the current event client id before forwarding a question', async () => {
+    const frames: HubIpcFrame[] = []
+    const resultCalls: unknown[][] = []
+    const connector = new HubConnector(undefined, {
+      dispatchRpc: async (...args: unknown[]) => {
+        resultCalls.push(args)
+        return { ok: true, value: undefined }
+      },
+      wireStream: {
+        open: async (_endpoint: string, _payload: unknown, signal: AbortSignal) => (async function* () {
+          yield { type: 'ready', clientId: 'client-from-gateway', host: { home: '/workspace' } }
+          yield {
+            type: 'waterfall', event: 'user-questions/request', eventId: 'question-from-gateway', agentId: 'agent-1',
+            request: { sessionId: 'session-1', questions: [{ id: 'continue', question: 'Continue?' }] },
+          }
+          await new Promise<void>((resolve) => {
+            // The real Gateway closes this iterator when the Connector stream lifetime ends.
+            // Mirror that cancellation in the functional test.
+            signal.addEventListener('abort', () => { resolve() }, { once: true })
+          })
+        })(),
+      },
+    }, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.6-alpha.2', reconnectMaximumMs: 1_000,
+    })
+    ;(connector as unknown as { send: (frame: HubIpcFrame) => Promise<void> }).send = async (frame) => { frames.push(frame) }
+    ;(connector as unknown as { publishIndex: () => Promise<void> }).publishIndex = async () => undefined
+    const controller = new AbortController()
+    const pumping = (connector as unknown as { pumpStreams(signal: AbortSignal): Promise<void> }).pumpStreams(controller.signal)
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(frames).toHaveLength(1)
+    expect(frames[0]).toMatchObject({
+      type: 'ipc.hub-body', body: { type: 'stream.frame', payload: {
+        type: 'server-request', rpcId: 'question-from-gateway', method: 'question/requested',
+      } },
+    })
+    const invokeSessions = (connector as unknown as {
+      invokeSessions(operation: string, value: unknown, commandId: string): Promise<unknown>
+    }).invokeSessions.bind(connector)
+    await expect(invokeSessions('interaction.respond', {
+      sessionId: 'session-1', requestId: 'question-from-gateway', response: { answers: [{ id: 'continue', selected: ['Yes'] }] },
+    }, 'answer-2')).resolves.toEqual({ ok: true })
+    expect(resultCalls[0]?.[0]).toBe('$events/result')
+    controller.abort(new Error('test complete'))
+    await pumping
   })
 
   it('adapts current Typert Remote session calls without the legacy ApiProxy', async () => {

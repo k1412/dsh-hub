@@ -28,6 +28,8 @@ interface RuntimeApi {
 
 interface RuntimeGateway {
   dispatch?: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>
+  /** Current Typert Gateway's carrier-aware dispatch hook for $events/result. */
+  dispatchRpc?: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>
   invoke?: (request: { namespace: string; method: string; args: Record<string, unknown>; signal?: AbortSignal }) => Promise<unknown>
   stream?: (request: { namespace: string; method: string; args: Record<string, unknown>; signal?: AbortSignal }) => Promise<AsyncIterable<unknown>>
   wireStream?: { open: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<AsyncIterable<unknown>> }
@@ -382,6 +384,7 @@ export class HubConnector {
   private webMuxFrameSequence = 0
   private webHostFrameSequence = 0
   private detectedDshVersion: string | undefined
+  private remoteEventClientId: string | undefined
 
   public constructor(
     private readonly api: RuntimeApi | undefined,
@@ -575,7 +578,8 @@ export class HubConnector {
   /** Invoke a current Typert Remote endpoint, or the legacy compatibility dispatcher. */
   private async remote(endpoint: string, payload: Record<string, unknown>, signal = new AbortController().signal): Promise<unknown> {
     if (this.gateway.dispatch !== undefined) {
-      const result = await this.gateway.dispatch(endpoint, payload, signal) as RpcResponse<unknown> | { ok?: boolean; value?: unknown; error?: { message?: string } }
+      const dispatchEndpoint = endpoint.includes('.') ? endpoint.replace('.', '/') : endpoint
+      const result = await this.gateway.dispatch(dispatchEndpoint, payload, signal) as RpcResponse<unknown> | { ok?: boolean; value?: unknown; error?: { message?: string } }
       if ('result' in result) return unwrap(result)
       if (result.ok === true) return result.value
       throw new Error(result.error?.message ?? 'Remote endpoint failed')
@@ -756,6 +760,16 @@ export class HubConnector {
     if (operation === 'interaction.respond') {
       if (this.api?.respond !== undefined) {
         await this.api.respond({ type: 'client-response', rpcId: rpcId(String(input.requestId)), result: { ok: true, value: input.response } })
+      } else if (this.gateway.dispatchRpc !== undefined && this.remoteEventClientId !== undefined) {
+        const result = await this.gateway.dispatchRpc('$events/result', { args: {
+          clientId: this.remoteEventClientId,
+          eventId: String(input.requestId),
+          outcome: { kind: 'result', value: input.response },
+        } }, new AbortController().signal)
+        if (typeof result === 'object' && result !== null && 'ok' in result && (result as { ok?: unknown }).ok === false) {
+          const error = (result as { error?: { message?: string } }).error
+          throw new Error(error?.message ?? 'Remote event response failed')
+        }
       } else {
         await this.remote('respond', { rpcId: rpcId(String(input.requestId)), result: { ok: true, value: input.response } })
       }
@@ -915,6 +929,10 @@ export class HubConnector {
     const consumeHost = async () => {
       for await (const frame of host) {
         if (signal.aborted) return
+        if (typeof frame === 'object' && frame !== null && (frame as Record<string, unknown>).type === 'ready'
+          && typeof (frame as Record<string, unknown>).clientId === 'string') {
+          this.remoteEventClientId = (frame as Record<string, unknown>).clientId as string
+        }
         const event = normalizeEventFrame(frame)
         if (event === undefined) continue
         this.webHostFrameSequence += 1
