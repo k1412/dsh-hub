@@ -59,8 +59,9 @@ try {
     || agent.bin?.['dsh-hub-node'] !== 'lib/bin.js' || agent.dependencies?.['node-pty'] !== '1.1.0') {
     throw new Error('packed Node Agent identity or executable is incorrect')
   }
-  if (connector.peerDependencies?.['@deepseek-ai/dsh-host-apiproxy'] !== '0.1.0-rc.7') {
-    throw new Error('packed Connector must pin its supported DSH Host gateway version')
+  if (connector.peerDependencies?.['@deepseek-ai/dsh-host-apiproxy'] !== undefined
+    || connector.peerDependencies?.['@deepseek-ai/dsh-session'] !== undefined) {
+    throw new Error('packed Connector must not require removed legacy DSH Host packages')
   }
   const connectorPatch = await readFile(join(connectorRoot, 'cordis.patch.yml'), 'utf8')
   if (!connectorPatch.includes("name: './node_modules/@k1412/dsh-hub-connector/lib/index.js'")) {

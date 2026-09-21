@@ -7,7 +7,6 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { TypertGateway } from '@deepseek-ai/dsh-api-gateway/types'
 import {
   runtimeCapability, sessionsCapability, settingsCapability, webCapability,
   resolveHubOperation,
@@ -17,18 +16,42 @@ import {
   type HubIpcFrame,
 } from '@k1412/dsh-hub-node-ipc'
 import { HubMessageId, type HubEnvelopeBody, type HubJson } from '@k1412/dsh-hub-protocol'
-import {
-  RpcId, toFetchHandler,
-  type ApiProxy, type RpcResponse, type SessionSummary,
-} from '@deepseek-ai/dsh-host-apiproxy'
-import { clientRequestSchema, serverResponseSchema } from '@deepseek-ai/dsh-host-apiproxy/api'
-import { SessionId } from '@deepseek-ai/dsh-session/types'
+import { classifyDshCompatibility } from './dsh-compatibility.ts'
 
-declare module '@deepseek-ai/dsh-api-gateway/types' {
-  interface TypertGateway {
-    /** Compatibility dispatch exposed by the reviewed DSH Web/Host contract. */
-    dispatch(endpoint: string, payload: unknown, signal: AbortSignal): Promise<unknown>
-  }
+interface RuntimeApi {
+  sessions?: Record<string, (request: unknown, signal?: AbortSignal) => Promise<unknown>>
+  settings?: Record<string, (request: unknown, signal?: AbortSignal) => Promise<unknown>>
+  host?: Record<string, (request: unknown, signal?: AbortSignal) => Promise<unknown>>
+  events?: Record<string, (request: unknown, signal: AbortSignal) => AsyncIterable<unknown>>
+  respond?: (request: unknown) => Promise<unknown>
+}
+
+interface RuntimeGateway {
+  dispatch?: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>
+  invoke?: (request: { namespace: string; method: string; args: Record<string, unknown>; signal?: AbortSignal }) => Promise<unknown>
+  stream?: (request: { namespace: string; method: string; args: Record<string, unknown>; signal?: AbortSignal }) => Promise<AsyncIterable<unknown>>
+  wireStream?: { open: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<AsyncIterable<unknown>> }
+}
+
+interface SessionSummary {
+  sessionId: string
+  updatedAt: number
+  running: boolean
+  cwd?: string
+  projections?: { values?: unknown; asOfSeq?: number }
+}
+
+interface RpcResponse<T> { result: { ok: boolean; value?: T; error?: { message: string; code?: string } } }
+
+function SessionId(value: string): string { return value }
+
+function rpcId(value?: string): string { return value ?? randomBytes(18).toString('base64url') }
+
+function parseClientRequest(value: unknown): { rpcId: string; method: string; payload: unknown } | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const candidate = value as Record<string, unknown>
+  if (typeof candidate.rpcId !== 'string' || typeof candidate.method !== 'string') return undefined
+  return { rpcId: candidate.rpcId, method: candidate.method, payload: candidate.payload }
 }
 
 /** Connector release sent in the authenticated local baseline. */
@@ -103,7 +126,7 @@ export const Config: z<Config> = z.object({
   reconnectMaximumMs: z.number().step(1).min(1_000).max(120_000).default(30_000),
 })
 
-export const inject = ['apiProxy', 'typertGateway']
+export const inject = ['typertGateway']
 
 interface ActiveIpc {
   socket: Socket
@@ -193,14 +216,11 @@ function invocationPriority(body: Extract<HubEnvelopeBody, { type: 'capability.i
   return BULK_WEB_ENDPOINTS.has(endpoint) ? 'bulk' : 'interactive'
 }
 
-function rpcId(value?: string): ReturnType<typeof RpcId> {
-  return RpcId(value ?? randomBytes(18).toString('base64url'))
-}
-
 function unwrap<T>(response: RpcResponse<T>): T {
-  if (response.result.ok) return response.result.value
-  const error = new Error(response.result.error.message)
-  error.name = response.result.error.code
+  if (response.result.ok && response.result.value !== undefined) return response.result.value
+  const failure = response.result.error ?? { message: 'Remote endpoint failed', code: 'remote-error' }
+  const error = new Error(failure.message)
+  error.name = failure.code ?? 'remote-error'
   throw error
 }
 
@@ -324,8 +344,8 @@ export class HubConnector {
   private detectedDshVersion: string | undefined
 
   public constructor(
-    private readonly api: ApiProxy,
-    private readonly gateway: TypertGateway,
+    private readonly api: RuntimeApi | undefined,
+    private readonly gateway: RuntimeGateway,
     private readonly config: ResolvedConfig,
   ) {}
 
@@ -512,6 +532,40 @@ export class HubConnector {
     throw new Error('capability is not implemented by the Connector')
   }
 
+  /** Invoke a current Typert Remote endpoint, or the legacy compatibility dispatcher. */
+  private async remote(endpoint: string, payload: Record<string, unknown>, signal = new AbortController().signal): Promise<unknown> {
+    if (this.gateway.dispatch !== undefined) {
+      const result = await this.gateway.dispatch(endpoint, payload, signal) as RpcResponse<unknown> | { ok?: boolean; value?: unknown; error?: { message?: string } }
+      if ('result' in result) return unwrap(result)
+      if (result.ok === true) return result.value
+      throw new Error(result.error?.message ?? 'Remote endpoint failed')
+    }
+    if (this.gateway.invoke === undefined) throw new Error('DSH runtime has no Remote gateway')
+    const separator = endpoint.indexOf('.')
+    const namespace = separator === -1 ? endpoint : endpoint.slice(0, separator)
+    const method = separator === -1 ? 'invoke' : endpoint.slice(separator + 1)
+    return this.gateway.invoke({ namespace, method, args: payload, signal })
+  }
+
+  private async apiCall(namespace: keyof RuntimeApi, method: string, endpoint: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<any> {
+    const service = this.api?.[namespace] as Record<string, ((request: unknown, signal?: AbortSignal) => Promise<unknown>)> | undefined
+    const legacy = service?.[method]
+    if (legacy !== undefined) return unwrap(await legacy({ rpcId: rpcId(), payload }, signal) as RpcResponse<unknown>)
+    return this.remote(endpoint, payload, signal)
+  }
+
+  private async webRemote(endpoint: string, payload: unknown): Promise<unknown> {
+    const parts = endpoint.split(/[./]/u)
+    if (parts.length === 2) {
+      const [name, method] = parts
+      const namespace = name === 'session' ? 'sessions' : name as keyof RuntimeApi
+      if (method !== undefined && (namespace === 'sessions' || namespace === 'host' || namespace === 'settings')) {
+        return this.apiCall(namespace, method, `${name}.${method}`, (payload ?? {}) as Record<string, unknown>)
+      }
+    }
+    return this.remote(endpoint, (payload ?? {}) as Record<string, unknown>)
+  }
+
   private async invokeWeb(operation: string, value: unknown): Promise<unknown> {
     if (operation !== 'fetch') throw new Error(`unsupported Web operation ${operation}`)
     const input = value as {
@@ -521,15 +575,8 @@ export class HubConnector {
       body?: string
     }
     const url = new URL(input.path, 'http://dsh.internal')
-    const request = new Request(url, {
-      method: input.method,
-      headers: input.headers,
-      ...(input.body === undefined || input.method === 'GET' || input.method === 'HEAD'
-        ? {}
-        : { body: input.body }),
-    })
     let remoteResponse: Response | undefined
-    let parsedBody: ReturnType<typeof clientRequestSchema.safeParse> | undefined
+    let parsedBody: { rpcId: string; method: string; payload: unknown } | undefined
     if (input.method === 'POST' && url.pathname.startsWith('/api/')) {
       const endpoint = url.pathname.slice('/api/'.length)
       let body: unknown
@@ -538,34 +585,25 @@ export class HubConnector {
       } catch {
         return { status: 400, headers: [['content-type', 'text/plain; charset=utf-8']], encoding: 'utf8', body: 'body is not JSON' }
       }
-      parsedBody = clientRequestSchema.safeParse(body)
+      parsedBody = parseClientRequest(body)
       // Generic Typert Remote endpoints contain a namespace/method slash and
       // are claimed ahead of ApiProxy by the ordinary node Connection route.
       // Preserve that order in this in-process carrier: ApiProxy treats an
       // unknown method as its own error response, so waiting for a 404 loses
       // the Remote endpoint before the Gateway can see it.
-      if (endpoint.includes('/') && parsedBody.success && parsedBody.data.method === endpoint) {
-        const result = await this.gateway.dispatch(
-          endpoint, parsedBody.data.payload, new AbortController().signal,
-        ).catch(remoteFailure)
-        const envelope = serverResponseSchema.parse({
-          type: 'server-response',
-          rpcId: parsedBody.data.rpcId,
-          result,
-        })
-        remoteResponse = Response.json(envelope)
+      if (parsedBody !== undefined && parsedBody.method === endpoint) {
+        const result = await this.webRemote(this.gateway.dispatch === undefined ? endpoint.replace('/', '.') : endpoint,
+          parsedBody.payload).then(value => ({ ok: true, value })).catch(remoteFailure)
+        remoteResponse = Response.json({ type: 'server-response', rpcId: parsedBody.rpcId, result })
       }
     }
-    let response = remoteResponse ?? await toFetchHandler(this.api).fetch(request)
-    if (response.status === 404 && parsedBody?.success === true) {
+    let response = remoteResponse ?? new Response('DSH Web endpoint is unavailable', { status: 404 })
+    if (response.status === 404 && parsedBody !== undefined) {
       const endpoint = url.pathname.slice('/api/'.length)
-      if (parsedBody.data.method === endpoint) {
-        const result = await this.gateway.dispatch(
-          endpoint, parsedBody.data.payload, new AbortController().signal,
-        ).catch(remoteFailure)
-        response = Response.json(serverResponseSchema.parse({
-          type: 'server-response', rpcId: parsedBody.data.rpcId, result,
-        }))
+      if (parsedBody.method === endpoint) {
+        const result = await this.webRemote(this.gateway.dispatch === undefined ? endpoint.replace('/', '.') : endpoint,
+          parsedBody.payload).then(value => ({ ok: true, value })).catch(remoteFailure)
+        response = Response.json({ type: 'server-response', rpcId: parsedBody.rpcId, result })
       }
     }
     const bytes = Buffer.from(await response.arrayBuffer())
@@ -583,15 +621,19 @@ export class HubConnector {
   }
 
   private async listSessions(): Promise<SessionView[]> {
-    const listed = unwrap(await this.api.sessions.list({ rpcId: rpcId(), payload: {} }))
+    const listed = await this.apiCall('sessions', 'list', 'session.list', {}) as { items: SessionSummary[] }
     return listed.items.map(sessionView)
   }
 
   private async history(sessionId: string, maximum = 2_000): Promise<unknown[]> {
-    const history = unwrap(await this.api.sessions.history({
-      rpcId: rpcId(), payload: { sessionId: SessionId(sessionId), maxMessages: maximum },
-    }))
-    return history.events.map(entry => entry.event)
+    if (this.api?.sessions?.history !== undefined) {
+      const history = unwrap(await this.api.sessions.history({ rpcId: rpcId(), payload: { sessionId: SessionId(sessionId), maxMessages: maximum } }) as RpcResponse<{ events: Array<{ event: unknown }> }>)
+      return history.events.map(entry => entry.event)
+    }
+    const page = await this.apiCall('sessions', 'history', 'session.page', {
+      address: { kind: 'session', sessionId: SessionId(sessionId) }, throughSeq: Number.MAX_SAFE_INTEGER, maxMessages: maximum,
+    }) as { records?: Array<{ event: unknown }> }
+    return (page.records ?? []).map(entry => entry.event)
   }
 
   private async hasMutation(sessionId: string, mutationId: string): Promise<boolean> {
@@ -608,7 +650,7 @@ export class HubConnector {
     }
   }
 
-  private async invokeSessions(operation: string, value: unknown, commandId: string): Promise<unknown> {
+  private async invokeSessions(operation: string, value: unknown, _commandId: string): Promise<unknown> {
     const input = value as Record<string, unknown>
     if (operation === 'list') {
       const sessions = (await this.listSessions()).slice(0, Number(input.limit))
@@ -630,33 +672,24 @@ export class HubConnector {
       const requestedSessionId = SessionId(`hub-${jsonHash(mutationId).slice(0, 32)}`)
       const existing = (await this.listSessions()).find(session => session.sessionId === requestedSessionId)
       const sessionId = existing === undefined
-        ? unwrap(await this.api.sessions.create({
-          rpcId: rpcId(mutationId),
-          payload: {
+        ? (await this.apiCall('sessions', 'create', 'session.create', {
             sessionId: requestedSessionId,
             ...(typeof input.workspacePath === 'string' ? { cwd: input.workspacePath } : {}),
             ...(typeof input.preset === 'string' ? { agentPreset: input.preset } : {}),
-          },
-        })).sessionId
+          }) as { sessionId: string }).sessionId
         : requestedSessionId
       if (typeof input.model === 'string' && input.model.includes('/')) {
         const [provider, ...modelParts] = input.model.split('/')
-        unwrap(await this.api.sessions.selectModel({
-          rpcId: rpcId(`${mutationId}-model`),
-          payload: { sessionId, provider: provider as string, model: modelParts.join('/') },
-        }))
+        await this.apiCall('sessions', 'selectModel', 'session.selectModel', { sessionId, provider, model: modelParts.join('/') })
       }
       if (typeof input.title === 'string') {
-        unwrap(await this.api.sessions.rename({
-          rpcId: rpcId(`${mutationId}-title`), payload: { sessionId, title: input.title },
-        }))
+        await this.apiCall('sessions', 'rename', 'session.rename', { sessionId, title: input.title })
       }
       if (typeof input.initialMessage === 'string'
         && !await this.hasMutation(sessionId, `${mutationId}-initial`)) {
-        unwrap(await this.api.sessions.prompt({
-          rpcId: rpcId(`${mutationId}-initial`),
-          payload: { sessionId, mode: 'queue', content: [{ type: 'text', text: input.initialMessage }] },
-        }))
+        await this.apiCall('sessions', 'prompt', 'session.prompt', {
+          requestId: `${mutationId}-initial`, sessionId, mode: 'queue', content: [{ type: 'text', text: input.initialMessage }],
+        })
       }
       return this.currentSession(sessionId)
     }
@@ -664,14 +697,12 @@ export class HubConnector {
       const sessionId = String(input.sessionId)
       const mutationId = String(input.clientMutationId)
       if (!await this.hasMutation(sessionId, mutationId)) {
-        unwrap(await this.api.sessions.prompt({
-          rpcId: rpcId(mutationId),
-          payload: {
+        await this.apiCall('sessions', 'prompt', 'session.prompt', {
+            requestId: mutationId,
             sessionId: SessionId(sessionId),
             mode: operation === 'message.steer' ? 'steer' : 'queue',
             content: [{ type: 'text', text: String(input.text) }],
-          },
-        }))
+          })
       }
       const session = await this.currentSession(sessionId)
       return operation === 'message.steer'
@@ -679,31 +710,35 @@ export class HubConnector {
         : { accepted: true, eventSequence: session.eventSequence }
     }
     if (operation === 'cancel') {
-      unwrap(await this.api.sessions.cancel({
-        rpcId: rpcId(commandId), payload: { sessionId: SessionId(String(input.sessionId)) },
-      }))
+      await this.apiCall('sessions', 'cancel', 'session.cancel', { sessionId: SessionId(String(input.sessionId)) })
       return { ok: true }
     }
     if (operation === 'interaction.respond') {
-      await this.api.respond({
-        type: 'client-response',
-        rpcId: rpcId(String(input.requestId)),
-        result: { ok: true, value: input.response },
-      })
+      if (this.api?.respond !== undefined) {
+        await this.api.respond({ type: 'client-response', rpcId: rpcId(String(input.requestId)), result: { ok: true, value: input.response } })
+      } else {
+        await this.remote('respond', { rpcId: rpcId(String(input.requestId)), result: { ok: true, value: input.response } })
+      }
       return { ok: true }
     }
     throw new Error(`unsupported sessions operation ${operation}`)
   }
 
-  private async invokeRuntime(operation: string, _value: unknown, commandId: string): Promise<unknown> {
+  private async invokeRuntime(operation: string, _value: unknown, _commandId: string): Promise<unknown> {
     if (operation === 'health') {
-      const host = unwrap(await this.api.host.describe({ rpcId: rpcId(commandId), payload: {} }))
+      const host = this.api?.host?.describe !== undefined
+        ? await this.apiCall('host', 'describe', 'host.describe', {}) as { cwd?: string; attachedSessions?: number; version?: string }
+        : { cwd: process.cwd(), attachedSessions: (await this.listSessions()).length }
       return {
         status: 'healthy',
         startedAt: Math.max(0, Date.now() - Math.round(process.uptime() * 1_000)),
         dshVersion: await this.resolveDshVersion(),
         connectorVersion: HUB_CONNECTOR_VERSION,
-        details: { cwd: host.cwd, attachedSessions: host.attachedSessions },
+        details: {
+          cwd: host.cwd,
+          attachedSessions: host.attachedSessions,
+          compatibility: classifyDshCompatibility(await this.resolveDshVersion()),
+        },
       }
     }
     throw new Error(`unsupported runtime operation ${operation}`)
@@ -717,18 +752,24 @@ export class HubConnector {
       this.detectedDshVersion = packageVersion
       return packageVersion
     }
-    const host = unwrap(await this.api.host.describe({ rpcId: rpcId(), payload: {} }))
-    this.detectedDshVersion = host.version
+    if (this.api?.host?.describe === undefined) {
+      this.detectedDshVersion = 'unknown'
+      return this.detectedDshVersion
+    }
+    const host = await this.apiCall('host', 'describe', 'host.describe', {}) as { version?: string }
+    this.detectedDshVersion = host.version ?? 'unknown'
     return this.detectedDshVersion
   }
 
-  private async settingsView(commandId: string): Promise<{
+  private async settingsView(_commandId: string): Promise<{
     revision: string
     schema: HubJson
     values: HubJson
     redactedPaths: string[]
   }> {
-    const described = unwrap(await this.api.settings.describe({ rpcId: rpcId(commandId), payload: {} }))
+    const described = await this.apiCall('settings', 'describe', 'settings.describe', {}) as {
+      namespaces: Array<{ ns: string; schema: unknown; value: unknown; secrets: Array<{ path: string[] }> }>
+    }
     const schema = Object.fromEntries(described.namespaces.map(namespace => [namespace.ns, namespace.schema])) as HubJson
     const values = Object.fromEntries(described.namespaces.map(namespace => [namespace.ns, namespace.value])) as HubJson
     const redactedPaths = described.namespaces.flatMap(namespace =>
@@ -754,14 +795,11 @@ export class HubConnector {
         || typeof values !== 'object' || values === null || Array.isArray(values)) {
         throw new Error('settings patch must contain namespace and object values')
       }
-      const updated = unwrap(await this.api.settings.update({
-        rpcId: rpcId(commandId),
-        payload: {
+      const updated = await this.apiCall('settings', 'update', 'settings.update', {
           ns: namespace,
           patch: values,
           ...(typeof namespaceRevision === 'number' ? { expectedRevision: namespaceRevision } : {}),
-        },
-      }))
+        }) as { applies?: string }
       const after = await this.settingsView(`${commandId}-after`)
       await this.send({ type: 'ipc.hub-body', body: {
         type: 'stream.frame', runtimeId: this.config.runtimeId, capability: 'dsh.settings',
@@ -796,11 +834,20 @@ export class HubConnector {
   }
 
   private async pumpStreams(signal: AbortSignal): Promise<void> {
-    const mux = this.api.events.mux({ rpcId: rpcId(), payload: {} }, signal)
-    const host = this.api.events.host({ rpcId: rpcId(), payload: {} }, signal)
+    const mux = this.api?.events?.mux !== undefined
+      ? this.api.events.mux({ rpcId: rpcId(), payload: {} }, signal)
+      : this.gateway.stream === undefined
+        ? (async function* () {})()
+        : await this.gateway.stream({ namespace: 'session', method: 'control', args: {}, signal })
+    const host = this.api?.events?.host !== undefined
+      ? this.api.events.host({ rpcId: rpcId(), payload: {} }, signal)
+      : this.gateway.wireStream === undefined
+        ? (async function* () {})()
+        : await this.gateway.wireStream.open('$events', { args: {} }, signal)
     const consumeMux = async () => {
       for await (const frame of mux) {
         if (signal.aborted) return
+        const event = frame as { rpcId: string; payload: { type: string; [key: string]: unknown } }
         this.webMuxFrameSequence += 1
         await this.send({ type: 'ipc.hub-body', body: {
           type: 'stream.frame',
@@ -811,12 +858,12 @@ export class HubConnector {
           frameSequence: this.webMuxFrameSequence,
           payload: {
             type: 'server-request',
-            rpcId: frame.rpcId,
-            method: frame.payload.type,
-            payload: frame.payload,
+            rpcId: event.rpcId,
+            method: event.payload.type,
+            payload: event.payload,
           } as unknown as HubJson,
         } })
-        if (frame.payload.type !== 'session/event') continue
+        if (event.payload.type !== 'session/event') continue
         // dsh.web:mux is the official UI's canonical live event lane. Sending
         // the same session event again through dsh.sessions:events doubles the
         // reliable queue and its SQLite/ack work without serving a consumer.
@@ -827,6 +874,7 @@ export class HubConnector {
     const consumeHost = async () => {
       for await (const frame of host) {
         if (signal.aborted) return
+        const event = frame as { rpcId: string; payload: { type: string; [key: string]: unknown } }
         this.webHostFrameSequence += 1
         await this.send({ type: 'ipc.hub-body', body: {
           type: 'stream.frame',
@@ -837,12 +885,12 @@ export class HubConnector {
           frameSequence: this.webHostFrameSequence,
           payload: {
             type: 'server-request',
-            rpcId: frame.rpcId,
-            method: frame.payload.type,
-            payload: frame.payload,
+            rpcId: event.rpcId,
+            method: event.payload.type,
+            payload: event.payload,
           } as unknown as HubJson,
         } })
-        if (frame.payload.type === 'stream/error') continue
+        if (event.payload.type === 'stream/error') continue
         await this.publishIndex()
       }
     }
@@ -850,10 +898,11 @@ export class HubConnector {
   }
 }
 
-/** Mount one Connector into the same Context as ApiProxy and every local client surface. */
+/** Mount one Connector into the same Context as the current DSH Remote gateway. */
 export function apply(ctx: Context, config: Config): () => Promise<void> {
   const controller = new AbortController()
-  const connector = new HubConnector(ctx.apiProxy, ctx.typertGateway, {
+  const runtime = ctx as Context & { apiProxy?: RuntimeApi; typertGateway: RuntimeGateway }
+  const connector = new HubConnector(runtime.apiProxy, runtime.typertGateway, {
     ipcEndpoint: config.ipcEndpoint ?? defaultIpcEndpoint,
     secretFile: config.secretFile ?? join(defaultStateDirectory, 'connector.secret'),
     runtimeId: config.runtimeId ?? (process.env.DSH_HUB_RUNTIME_ID?.trim() || 'default'),

@@ -77,9 +77,6 @@ try {
     external: [
       'node:*',
       '@deepseek-ai/cordis',
-      '@deepseek-ai/dsh-host-apiproxy',
-      '@deepseek-ai/dsh-session',
-      '@deepseek-ai/dsh-session/*',
       '@deepseek-ai/schemastery',
     ],
   })
@@ -99,8 +96,6 @@ try {
     dsh: connectorManifest.dsh,
     peerDependencies: {
       '@deepseek-ai/cordis': '4.0.1',
-      '@deepseek-ai/dsh-host-apiproxy': '0.1.0-rc.7',
-      '@deepseek-ai/dsh-session': '0.1.0-rc.7',
       '@deepseek-ai/schemastery': '3.18.1',
     },
   }, null, 2)}\n`)

@@ -1,0 +1,23 @@
+# DSH version compatibility
+
+The Hub Connector is an adapter to the DSH Host/Remote surface. DSH releases are not automatically wire-compatible: the upstream project has changed the Host API, Session persistence API, plugin loading model, and Web composition during the 0.1.x series.
+
+## Current release line
+
+Hub 1.0.4 was originally built and tested against the `0.1.0-rc.7` Host API family. The current Connector no longer packages the removed legacy Host ApiProxy/Session dependencies: it keeps the old in-process path for existing nodes and has a Typert Remote fallback for current Session and Settings endpoints.
+
+The latest upstream release line is newer than the current adapter:
+
+| DSH line | Upstream state | Hub status |
+| --- | --- | --- |
+| `0.1.0-rc.7` | legacy Host API / ApiProxy surface | supported by Hub 1.0.4 |
+| `0.1.5-rc.2` | Remote gateway and Session API changes | Connector Remote fallback; Web/event compatibility still under verification |
+| `0.1.6-alpha.2` | latest pre-release; plugin manager and Session changes | Connector Remote fallback; full Web/event compatibility still under verification |
+
+Do not install a newer DSH profile into a node running the 1.0.4 Connector and assume that the Web page is enough to prove compatibility. The Node settings page must show the DSH version, Connector version, and negotiated capabilities. A node upgrade is complete only after a canary session passes the functional checks in [operations](operations.md).
+
+## Upgrade policy
+
+Each Hub release records the exact DSH package family used to build and test the Connector. A future release may support more than one family, but each family must have its own adapter tests for session listing, history, answer submission, tool/skill execution, questions, cancellation, settings, and event streams. When an upstream release removes an imported package or changes a Remote method, the release is incompatible until those tests pass.
+
+The version shown by a node is informational; capability negotiation remains authoritative. The Hub must reject a capability descriptor whose contract version or schema hash is not supported, even when the DSH version string looks newer.

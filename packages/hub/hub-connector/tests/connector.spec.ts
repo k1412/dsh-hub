@@ -41,6 +41,42 @@ function testGateway(): TypertGateway {
 }
 
 describe('Hub Connector coexistence', () => {
+  it('adapts current Typert Remote session calls without the legacy ApiProxy', async () => {
+    const calls: Array<{ namespace: string; method: string; args: Record<string, unknown> }> = []
+    let listed = false
+    const gateway = {
+      invoke: async (request: { namespace: string; method: string; args: Record<string, unknown> }) => {
+        calls.push(request)
+        if (request.namespace === 'session' && request.method === 'list') {
+          return { items: listed ? [{ sessionId: 'new-session', updatedAt: 10, running: true, cwd: '/workspace' }] : [] }
+        }
+        if (request.namespace === 'session' && request.method === 'create') {
+          listed = true
+          return { sessionId: 'new-session' }
+        }
+        if (request.namespace === 'session' && request.method === 'page') return { records: [], hasMore: false }
+        if (request.namespace === 'session' && request.method === 'prompt') return { accepted: true }
+        throw new Error(`unexpected Remote ${request.namespace}.${request.method}`)
+      },
+    }
+    const connector = new HubConnector(undefined, gateway, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.5-rc.2', reconnectMaximumMs: 1_000,
+    })
+    const invokeSessions = (connector as unknown as {
+      invokeSessions(operation: string, value: unknown, commandId: string): Promise<unknown>
+    }).invokeSessions.bind(connector)
+    await expect(invokeSessions('create', {
+      clientMutationId: 'new-session-mutation', workspacePath: '/workspace', initialMessage: 'run the skill',
+    }, 'command-1')).resolves.toMatchObject({ sessionId: 'new-session', running: true })
+    await expect(invokeSessions('message.append', {
+      clientMutationId: 'answer-mutation', sessionId: 'new-session', text: 'answer this',
+    }, 'command-2')).resolves.toMatchObject({ accepted: true })
+    expect(calls.map(call => `${call.namespace}.${call.method}`)).toEqual([
+      'session.list', 'session.create', 'session.page', 'session.prompt', 'session.list', 'session.page',
+      'session.page', 'session.prompt', 'session.list', 'session.page',
+    ])
+  })
+
   it('rejects a queued write when IPC closes before the write reaches the socket', async () => {
     const connector = new HubConnector({} as ApiProxy, testGateway(), {
       ipcEndpoint: '/unused',
