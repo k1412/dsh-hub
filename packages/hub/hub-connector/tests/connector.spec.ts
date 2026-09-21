@@ -77,6 +77,30 @@ describe('Hub Connector coexistence', () => {
     ])
   })
 
+  it('forwards current Remote command endpoints used by tools and skills', async () => {
+    const calls: Array<{ namespace: string; method: string; args: Record<string, unknown> }> = []
+    const connector = new HubConnector(undefined, {
+      invoke: async (request: { namespace: string; method: string; args: Record<string, unknown> }) => {
+        calls.push(request)
+        return { completed: true, output: 'skill-result' }
+      },
+    }, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.6-alpha.2', reconnectMaximumMs: 1_000,
+    })
+    const invokeWeb = (connector as unknown as { invokeWeb(operation: string, value: unknown): Promise<unknown> }).invokeWeb.bind(connector)
+    const result = await invokeWeb('fetch', {
+      method: 'POST', path: '/api/commands/execute', headers: [['content-type', 'application/json']],
+      body: JSON.stringify({ type: 'client-request', rpcId: 'tool-rpc-1', method: 'commands/execute', payload: {
+        agentId: 'session-1', line: '/skill run-check', submittedAttachments: [],
+      } }),
+    }) as { body: string; status: number }
+    expect(result.status).toBe(200)
+    expect(JSON.parse(result.body)).toMatchObject({ rpcId: 'tool-rpc-1', result: { ok: true, value: { completed: true } } })
+    expect(calls).toEqual([expect.objectContaining({ namespace: 'commands', method: 'execute', args: {
+      agentId: 'session-1', line: '/skill run-check', submittedAttachments: [],
+    } })])
+  })
+
   it('rejects a queued write when IPC closes before the write reaches the socket', async () => {
     const connector = new HubConnector({} as ApiProxy, testGateway(), {
       ipcEndpoint: '/unused',
