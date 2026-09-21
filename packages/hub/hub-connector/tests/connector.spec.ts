@@ -6,8 +6,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
-import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
-import type { TypertGateway } from '@deepseek-ai/dsh-api-gateway'
 import { generateHubIpcSecret, type HubIpcFrame } from '@k1412/dsh-hub-node-ipc'
 import { HubConnectorServer } from '../../hub-node-agent/src/ipc-server.ts'
 import type { HubEnvelopeBody } from '@k1412/dsh-hub-protocol'
@@ -17,6 +15,21 @@ import * as HubConnectorPlugin from '../src/index.ts'
 const roots: string[] = []
 const servers: HubConnectorServer[] = []
 const contexts: Context[] = []
+
+type TestApiProxy = {
+  sessions?: Record<string, (...args: any[]) => Promise<unknown>>
+  settings?: Record<string, (...args: any[]) => Promise<unknown>>
+  host?: Record<string, (...args: any[]) => Promise<unknown>>
+  events?: Record<string, (...args: any[]) => AsyncIterable<unknown>>
+  respond?: (...args: any[]) => Promise<unknown>
+}
+
+type TestGateway = {
+  dispatch?: (...args: any[]) => Promise<unknown>
+  invoke?: (...args: any[]) => Promise<unknown>
+  stream?: (...args: any[]) => Promise<AsyncIterable<unknown>>
+  wireStream?: { open: (...args: any[]) => Promise<AsyncIterable<unknown>> }
+}
 
 afterEach(async () => {
   await Promise.allSettled(contexts.splice(0).map(context => context.fiber.dispose()))
@@ -30,7 +43,7 @@ async function* idle(signal: AbortSignal): AsyncGenerator<never> {
   })
 }
 
-function testGateway(): TypertGateway {
+function testGateway(): TestGateway {
   return {
     invoke: async () => { throw new Error('unexpected test Gateway invocation') },
     dispatch: async () => ({
@@ -102,7 +115,7 @@ describe('Hub Connector coexistence', () => {
   })
 
   it('rejects a queued write when IPC closes before the write reaches the socket', async () => {
-    const connector = new HubConnector({} as ApiProxy, testGateway(), {
+    const connector = new HubConnector({} as TestApiProxy, testGateway(), {
       ipcEndpoint: '/unused',
       secretFile: '/unused',
       runtimeId: 'default',
@@ -158,7 +171,7 @@ describe('Hub Connector coexistence', () => {
         mux: (_request: unknown, signal: AbortSignal) => idle(signal),
         host: (_request: unknown, signal: AbortSignal) => idle(signal),
       },
-    } as unknown as ApiProxy
+    } as unknown as TestApiProxy
 
     let slowStartedResolve: (() => void) | undefined
     const slowStarted = new Promise<void>((resolve) => { slowStartedResolve = resolve })
@@ -305,7 +318,7 @@ describe('Hub Connector coexistence', () => {
         host: (_request: unknown, signal: AbortSignal) => idle(signal),
       },
       respond: async () => ({ accepted: true as const }),
-    } as unknown as ApiProxy
+    } as unknown as TestApiProxy
 
     let baselineResolve: (() => void) | undefined
     const baseline = new Promise<void>((resolve) => { baselineResolve = resolve })
@@ -456,7 +469,7 @@ describe('Hub Connector coexistence', () => {
         host: (_request: unknown, signal: AbortSignal) => idle(signal),
       },
       respond: async () => ({ accepted: true as const }),
-    } as unknown as ApiProxy
+    } as unknown as TestApiProxy
 
     calls.push({ surface: 'local-web', text: 'existing local action' })
     calls.push({ surface: 'desktop', text: 'existing desktop action' })
@@ -661,7 +674,7 @@ describe('Hub Connector coexistence', () => {
         host: (_request: unknown, signal: AbortSignal) => idle(signal),
       },
       respond: async () => ({ accepted: true as const }),
-    } as unknown as ApiProxy
+    } as unknown as TestApiProxy
 
     let baselineResolve: (() => void) | undefined
     const baseline = new Promise<void>((resolve) => { baselineResolve = resolve })
@@ -752,7 +765,7 @@ describe('Hub Connector coexistence', () => {
         host: (_request: unknown, signal: AbortSignal) => idle(signal),
       },
       respond: async () => ({ accepted: true as const }),
-    } as unknown as ApiProxy
+    } as unknown as TestApiProxy
 
     let connections = 0
     const bodies: HubEnvelopeBody[] = []
