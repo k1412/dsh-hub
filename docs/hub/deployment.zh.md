@@ -2,7 +2,21 @@
 
 [English](deployment.md) | 中文
 
-本教程使用 Docker Compose 安装一个 Hub，将其置于 Cloudflare Access 和受信任反向代理之后，并注册一个现有 DSH Profile。示例只使用通用名称和路径；环境特定的主机名、地址、Token 和邮箱地址必须保存在仓库之外。
+完成本教程后，你会得到一个可以登录的 HTTPS Hub，并能从浏览器继续某台电脑上已有的 DSH 会话。先让第一台节点完成共存验证，再按同样步骤添加 NAS 或其他电脑。
+
+本教程使用已实现的 Cloudflare Access 登录路径。**想了解主推的 Tailcat 设备配对？** 先读[接入方案](access-options.zh.md)：脚本已能建立按公钥放行的隧道，但设备免登录 Hub 仍待实现，不需要为试用它更改现有公网认证。
+
+## 先知道每一步在哪里做
+
+| 阶段 | 在哪里操作 | 做完应该看到什么 |
+|---|---|---|
+| 配置入口（第 1–2 步） | Cloudflare 与反向代理主机 | 域名受 Access 保护，代理能到达私有 Origin |
+| 启动 Hub（第 3 步） | Docker 主机，可与代理同机 | 容器正常，域名登录后可以打开 Hub |
+| 创建注册（第 4 步） | Hub 浏览器界面 | 一次性注册码与安装命令 |
+| 安装并重启（第 5–6 步） | 已经运行 DSH 的那台机器 | Node Agent 与 Runtime 都上线 |
+| 验证共存（第 7 步） | 本地 DSH 与 Hub | 两个入口继续同一会话 |
+
+示例使用通用名称和路径。真实 Token、邮箱、私网地址和部署配置应留在仓库之外。
 
 ## 先选择拓扑
 
@@ -32,7 +46,7 @@ Tunnel 和 Overlay Network 都只解决 Origin 可达性。Cloudflare 官方将 
 - 一台安装 Docker Engine 和 Compose v2 的 Linux Docker 主机。
 - 一个通过 Cloudflare Access 路由到受信任反向代理的 HTTPS 主机名。
 - 一个同时配置人员策略和 Service Token 策略的 Cloudflare Access Self-hosted Application。
-- 每个节点安装 Node.js 22.19 或更高版本、`npm` 和 DSH。目标 DSH 组合必须提供与传输无关的 `@deepseek-ai/dsh-host-apiproxy` Service；标准 Web Profile 已提供该 Service。安装 Node Agent 前，还应安装 `node-pty` 在该平台所需的 C/C++ 构建工具链和 Python。
+- 每个节点安装 Node.js 22.19+（22 系列）或 24+、`npm` 和 DSH。目标 DSH 组合必须提供与传输无关的 `@deepseek-ai/dsh-host-apiproxy` Service；标准 Web Profile 已提供该 Service。安装 Node Agent 前，还应安装 `node-pty` 在该平台所需的 C/C++ 构建工具链和 Python。
 - 反向代理到 Hub Origin 的私有路径，可以是回环、私有网络或经过认证的 Overlay Network。
 
 ## 1. 配置 Cloudflare Access
@@ -102,6 +116,20 @@ docker compose ps
 
 在隐私浏览器窗口中验证公共主机名。Cloudflare Access 必须在 Hub UI 加载前完成认证。直接向 Origin 发送且不含注入 Header 的请求不得公开 `/healthz`、UI、REST、SSE 或 WebSocket Upgrade。
 
+### 镜像、主分支和节点制品要对应
+
+`docker compose pull` 获取 `.env` 中指定的镜像，不会构建你刚拉取的源码。`releases/latest` 的节点安装器也只使用已发布制品，不能自动包含主分支修复。
+
+若要部署当前源码，保留仓库目录结构，在仓库根目录先运行 `pnpm install --frozen-lockfile`、`pnpm run check` 与 `pnpm run build`；再到 `deploy/hub` 执行：
+
+```bash
+# 在 .env 为此构建填写独立的 DSH_HUB_IMAGE 标签，并记录源提交。
+docker compose build hub
+docker compose up -d --no-build hub
+```
+
+源码构建会在 `dist/hub-release` 生成对应节点制品；这不等于发布了新的 GitHub Release。需要同步升级节点时按[运维步骤](operations.zh.md)使用同一构建来源，并核对兼容性，不要把旧 Release 的安装器误当作新源码的节点版本。
+
 ## 4. 创建节点注册
 
 打开 **设置 → Hub 节点**，输入稳定的节点 ID 和清晰的显示名称，然后生成短期注册授权。一次性注册代码只返回一次，Hub 仅保存其哈希。页面会立即生成 Linux／macOS 和 Windows 两种一键安装命令；选择目标系统并复制对应命令。
@@ -129,7 +157,7 @@ docker compose up -d hub
 4. 把 Connector 作为 DSH Bundle 插件安装进现有 `web` Profile；它只增加一条 Cordis 配置项，不修改 Web 监听器、前端 Bundle 或会话存储。
 5. 在 Linux 上安装 systemd User Service，在 macOS 上安装 LaunchAgent，在 Windows 上安装当前用户登录任务，并立即启动 Node Agent。
 
-安装器会普通提示输入该节点的 Cloudflare Access Client ID，并隐藏输入 Client Secret。长期 Service Token Secret 不会出现在复制命令、进程参数或 Shell 历史中。如果 DSH 使用的 Profile 不是 `web`，可在 Linux／macOS 命令末尾增加 `--profile <name>`；高级或自定义进程管理器安装可使用 `--no-service`，并参照[节点服务指南](node-services.md)。
+安装器会普通提示输入该节点的 Cloudflare Access Client ID，并隐藏输入 Client Secret。长期 Service Token Secret 不会出现在复制命令、进程参数或 Shell 历史中。如果 DSH 使用的 Profile 不是 `web`，可在 Linux／macOS 命令末尾增加 `--profile <name>`；高级或自定义进程管理器安装可使用 `--no-service`，并参照[节点服务指南](node-services.zh.md)。
 
 Connector 已经是客户端安装的 DSH 插件。Node Agent 刻意保留为同账户 Sidecar：它在 DSH Profile 重启或暂时停止时仍持有唯一节点身份、WSS 重连和可靠命令 Journal，也能让同一机器上的多个 Profile 共享一条节点连接。它不启动第二个 DSH Runtime，也不开放入站端口。
 

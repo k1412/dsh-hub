@@ -6,96 +6,95 @@
 [![Release](https://img.shields.io/github/v/release/k1412/dsh-hub?display_name=tag)](https://github.com/k1412/dsh-hub/releases)
 [![License](https://img.shields.io/github/license/k1412/dsh-hub)](LICENSE)
 
-**一个浏览器，继续你所有电脑上的 DSH 会话。**
+**把电脑、NAS 和服务器上的 DSH，放进一个浏览器。**
 
-DSH Hub 是面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 的自托管多节点控制面。电脑、NAS 和云主机继续在本地运行自己的 DSH Runtime、保存会话与文件；每台机器只需主动连接 Hub，就能在同一个官方风格 Web 界面里按文件夹汇总项目和会话，并在新建会话时直接选择节点与工作区。
+在电脑上开始的任务，出门后用手机继续；让 NAS 执行长任务，同时在另一台机器的项目里写代码。DSH Hub 为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 提供统一入口：查看各台机器的工作区和会话，选择任务在哪台机器运行，并从同一处管理节点、插件和恢复点。
 
-![DSH Hub 多节点会话总览](docs/assets/overview.png)
+会话和文件留在原机器上。本地 DSH Web、桌面客户端和 Hub 复用同一个 Runtime，不需要复制项目，也不会为远程访问再启动一套 DSH。
 
-## 它解决什么问题
+[开始部署](#快速开始) · [Tailcat 设备配对](#主推接入方向tailcat-设备配对) · [怎么使用](docs/hub/console.zh.md) · [版本兼容](docs/hub/compatibility.zh.md)
 
-- **会话不再困在一台电脑上**：本地 Web、桌面客户端和 Hub 使用同一个 DSH Runtime 与会话存储，可以从任何入口继续同一个工作。
-- **真正的机群视图**：项目按工作区文件夹分组，每条会话同时标明所属节点；切换默认节点不会过滤整页会话。
-- **节点只出站连接**：节点无需公网 IP、端口映射或 SSH 暴露，Node Agent 通过签名 WSS 主动连接 Hub，并在断线后可靠恢复。
-- **不是阉割版 Web UI**：Hub 组装固定版本的官方 DSH Web 组件，只把节点、工作区和运维能力加入官方设置与会话流程。
-- **节点运维可回退**：查看插件清单和版本，按哈希暂存制品，执行更新事务，保留上一个可恢复版本，并管理节点本地快照。
-- **手机可以真正使用**：会话、Composer、Runtime 选择器、侧栏和全屏设置均有 390px 浏览器回归测试。
+![DSH Hub：按工作区汇总多台机器的会话](docs/assets/overview.png)
+
+## 用起来方便在哪里
+
+| 你想做什么 | 在 Hub 里怎么做 |
+|---|---|
+| 接着另一台电脑上的任务做 | 在总览中打开原会话，消息仍交给它所属的节点；不用搬运历史记录 |
+| 决定代码在哪台机器运行 | 新建会话时先选节点，再浏览这台机器的工作目录 |
+| 同时照看几台机器 | 总览汇总所有节点的会话；切换默认节点不会把其他机器藏起来 |
+| 从手机查看进度、回答提问 | 浏览器中继续同一会话；移动端侧栏和设置支持窄屏布局 |
+| 接入家里的 NAS 或笔记本 | 每台节点主动连接 Hub，不要求节点公网 IP、端口转发或公开本地 DSH Web |
+| 更新插件后恢复到原来状态 | 在“节点插件”检查更新、查看更新记录；受管更新自动保留回退点 |
+| 清理不用的机器留下的列表 | 离线节点可以直接“清理 Hub 缓存”；吊销节点也会清除它的发现索引 |
+
+Hub 面向**个人或单一可信操作员**。登录后可以使用 Node Agent 账户的全部权限，包括文件、终端和插件管理；它不提供多人分权的工作区。
+
+## 主推接入方向：Tailcat 设备配对
+
+**我们希望个人 Hub 的私有接入像配对设备一样简单：笔记本生成密钥，Hub 登记公钥，之后运行连接脚本。** Tailcat 是我们主推的轻量接入方向，仓库已提供三个配对与连接脚本。
+
+它适合“一台 Hub + 少量自己的电脑”：配对发生在浏览器所在设备和 Hub 主机之间，不需要逐一为每台 DSH 节点建立隧道。Tailcat 可以在 NAS 宿主机上运行，转发容器发布到宿主机回环地址的端口，无需往 Hub 容器安装 Tailscale 或修改镜像。Tailcat 与 Tailscale 是不同工具；已安装 Tailscale 不代表已有 `tailcat`。
+
+| 一次配置 | 以后使用 |
+|---|---|
+| 操作员设备运行 `enroll-client.sh`，生成并保存客户端密钥 | 使用同一密钥运行 `connect-hub.sh`，建立本地转发 |
+| Hub 主机在 `serve-hub.sh` 中允许该设备的公开 `nodekey` | 只有持有获准私钥的客户端能够建立该隧道 |
+| 服务端使用保存的密钥 | 重启时复用身份；停止服务即可中断当前隧道 |
+
+> **当前状态：设备隧道脚本已提供，设备免登录 Hub 尚未实现。** 现有 Hub 仍验证 Cloudflare Access JWT、操作员邮箱和 Origin Secret。直接把原始 Hub 端口转发到 `localhost`，不会自动获得一个可用的登录入口。我们推荐 Tailcat 作为少量可信设备的接入方向；今天部署可用的浏览器入口，请按下面的 Cloudflare Access 路径完成。详见 [Tailcat 配对步骤、验证方法与认证方案](docs/hub/access-options.zh.md)。
+
+Tailcat 的便利在于无需 Tailscale 账号或控制面即可建立加密隧道；项目脚本进一步要求客户端公钥白名单。这里的“设备绑定”是**绑定设备持有的私钥**，不是硬件不可复制的身份。底层能力与安装方法见 [Tailcat 官方介绍](https://tailscale.com/tailcat)和[安装说明](https://github.com/tailscale/tailcat/blob/main/INSTALL.md)。
+
+## 日常使用：选机器，选目录，继续工作
+
+1. **第一次接入**：打开“设置 → Hub 节点”，生成注册码，在目标机器运行页面给出的安装命令，重启原来的 DSH Profile 一次。
+2. **开始新任务**：在新建会话的输入区域选择节点／Runtime，再用工作区选择器浏览该节点的目录，发送第一条消息。
+3. **继续旧任务**：直接打开总览里的会话。它会回到原来的节点，与你当前选择的新会话默认节点无关。
+4. **调整模型或权限**：先检查设置页顶部的“当前 Runtime”。模型、权限、Agent 预设属于该 Runtime；语言和外观属于当前浏览器。
+
+同一台机器可以运行多个 Profile，每个独立 Runtime 使用不同 ID。Hub 会显示明确的管理目标，方便区分同机上的不同配置。完整步骤见[控制台指南](docs/hub/console.zh.md)。
 
 <table>
   <tr>
-    <td width="64%"><img src="docs/assets/nodes.png" alt="节点注册、Runtime 与双向可靠队列监控"></td>
-    <td width="36%"><img src="docs/assets/mobile.png" alt="DSH Hub 手机界面"></td>
+    <td width="64%"><img src="docs/assets/nodes.png" alt="节点列表、Runtime 和连接状态"></td>
+    <td width="36%"><img src="docs/assets/mobile.png" alt="手机上的会话界面"></td>
   </tr>
   <tr>
-    <td align="center">节点注册、Runtime、插件与传输健康</td>
-    <td align="center">390px 手机界面</td>
+    <td align="center">集中查看节点和运行状态</td>
+    <td align="center">手机继续同一会话</td>
   </tr>
 </table>
 
-## 从会话到设置，怎么使用
+### 节点离线了，列表怎么办
 
-首页始终是 **Fleet 视图**：它汇总全部节点的项目和会话，不会因为当前 Runtime 改变而过滤。新建会话时，先在输入框上方选择节点／Runtime，再用紧邻的官方 Workspace 选择器挑选或浏览该节点的文件夹；会话建立后，编码后的 Workspace 身份会让后续消息、Goal、提问和审批自动回到所属节点。
+临时离线时，Hub 保留最小会话索引，让你知道任务原来在哪台机器上；读取正文、继续执行或删除节点上的真实会话仍需要该节点在线。
 
-管理入口统一在左下角 **设置**。顶部的“当前 Runtime”用于提示官方 Host 设置的所有者，但并非所有设置都在节点上：
+如果只想清理首页残留，进入“设置 → Hub 节点”，对离线节点点击 **清理 Hub 缓存**。这一步由 Hub 本地完成，不用等节点恢复，也不会删除节点文件或原始会话。节点重新上线后，仍存在的会话会再次同步。对不再使用的机器选择 **吊销**，会断开接入并移除其会话发现索引；Cloudflare Service Token 需要另行撤销。
 
-| 设置页／设置项 | 保存位置与作用域 | 切换方法 |
-|---|---|---|
-| 通用设置：权限、默认 Agent、发送行为 | 当前 Runtime | 设置顶部“当前 Runtime” |
-| 通用设置：语言、外观 | 当前浏览器 Origin；Storage 不可用时退化为当前标签页 | 与节点无关 |
-| 模型、可配置插件、Agent 预设 | 当前 Runtime | 设置顶部“当前 Runtime” |
-| Hub 节点 | Hub 全局 | 无需切换节点 |
-| 节点插件、更新历史、受管范围快照 | 页面中明确选择的 Runtime | “节点插件”页的“管理目标” |
+### 插件更新与恢复
 
-切换 Runtime 不会刷新整个设置页；Hub 会同时失效官方的 Schema 设置、插件清单和模型／权限／Agent 等直接 Host 控制器，并隔离旧节点晚到的响应，避免把 A 节点数据保存到 B 节点。语言和外观不会随节点跳变。完整操作说明见[控制台指南](docs/hub/console.zh.md)。
+“设置 → 节点插件”先让你选择要管理的 Runtime，再显示实际安装版本、来源和可用更新。受管更新会保留更新前配置与依赖状态；失败自动恢复，成功后也可从历史中回退。本地、Git 等外部来源会单独标明，一个包查不到更新不会拖垮整页。
 
-## 插件更新、自动回退和快照
+![查看插件状态、执行受管更新并回退](docs/assets/plugins.png)
 
-“设置 → 节点插件”不是一个只有按钮的版本列表。它先读取节点真实 Profile，再逐插件区分 npm Registry 管理、外部管理和暂时无法查询；一个私有或本地插件的 404 不会拖垮整页。
-
-![节点插件安全更新与一键回退](docs/assets/plugins.png)
-
-上图同时展示运行状态、来源分类、可用更新和每次更新留下的可操作回退点；切换“管理目标”会重新读取目标节点，不复用上一节点的清单。
-
-每次由 Hub 发起的更新都会核对依赖锁、下载精确版本、校验 SHA-256，并在节点本地自动保存旧 Manifest、锁文件、Cordis 配置和受管制品。安装或组合验证失败会立即自动恢复；成功后仍保留“一键回退到更新前”。外部文件、Workspace、Git 或独立 Release 安装的插件只展示状态，Hub 不会擅自改写来源。
-
-“受管范围快照”是另一层显式保护：它只包含选定的 Profile 配置、依赖或 Node Agent 配置中获准的数据目录，**不是操作系统整机镜像**；恢复前还会自动保存当前状态。插件日常更新不需要手工创建快照。
-
-![受管范围快照与恢复](docs/assets/snapshots.png)
-
-快照页会直接说明收集范围、节点本地保存边界和恢复前保护点，不要求用户记住哈希或内部快照 ID。
-
-## 核心设计
-
-```mermaid
-flowchart LR
-  Browser["浏览器 / 手机"] -->|"Cloudflare Access"| Proxy["HTTPS 入口"]
-  Proxy -->|"Origin Secret"| Hub["DSH Hub"]
-  Hub <-->|"签名 WSS · 仅出站"| AgentA["Node Agent · NAS"]
-  Hub <-->|"签名 WSS · 仅出站"| AgentB["Node Agent · Workstation"]
-  AgentA <-->|"本地 IPC"| RuntimeA["DSH + Connector"]
-  AgentB <-->|"本地 IPC"| RuntimeB["DSH + Connector"]
-  Local["本地 Web / Desktop"] --> RuntimeB
-```
-
-Hub **不是**另一个 DSH Runtime，也没有特殊的“本地执行模式”。它负责身份、路由、最小会话索引、可靠交付、节点管理和审计；模型调用、会话正文、工作区、插件和快照仍由节点负责。想让 VPS 本机也执行任务，就在同一台 VPS 上按普通节点方式部署 DSH、Connector 和 Node Agent。
-
-Connector 是安装进现有 DSH Profile 的 Cordis 插件，复用本地 Web 和桌面端已经使用的 Host API。Node Agent 是同账户 Sidecar，负责节点身份、出站 WSS、断线 Journal 和机器级管理；它不会启动第二套 DSH Runtime，也不会开放入站端口。
+需要保存更大范围的配置或获准数据时，可以使用**受管范围快照**。快照留在节点上，范围由节点配置决定，不是整机备份。操作说明见[插件与快照指南](docs/hub/console.zh.md#插件状态更新与回退)。
 
 ## 快速开始
 
-### 1. 准备安全入口
+下面是**当前已实现的完整部署路径**。准备一台 Docker 主机、一个 Cloudflare Access 保护的 HTTPS 域名，以及至少一台已经运行 DSH 的机器。节点需要 Node.js 22.19+（22 系列）或 24+、npm 和平台构建工具；先阅读[版本兼容表](docs/hub/compatibility.zh.md)，不要把 Hub 版本和 DSH 版本混为一谈。
 
-推荐准备一个域名，例如 `hub.example.com`，用 Cloudflare Access 保护浏览器登录，并让反向代理把流量转发到仅绑定回环或私有网络的 Hub Origin。反向代理必须删除外部传入的 `X-DSH-Origin-Secret`，再注入自己持有的随机值。
+### 1. 为 Hub 准备入口
 
-最低安全配置包括：
+配置 Cloudflare Access 的操作员登录和节点 Service Token 策略。受信任反向代理负责注入独立的 `X-DSH-Origin-Secret`，再转发给 Hub。Hub Origin 只绑定回环或受限私网。
 
-- Cloudflare Access Self-hosted Application，人员策略只允许你的账号；
-- Hub 内再配置精确邮箱白名单，不能只依赖 Cloudflare 登录成功；
-- Origin 端口只绑定回环或私有接口，公网只开放 HTTPS 入口；
-- 每个节点使用独立的 Cloudflare Service Token；
-- Hub 与 Node Agent 均使用非特权账户和仅所有者可读的状态目录。
+| 你的环境 | 推荐完整部署方式 |
+|---|---|
+| NAS、家庭网络，没有公网入站 | Cloudflare Tunnel → 本机反向代理 → Hub |
+| 有公网入口的服务器 | Cloudflare Access → HTTPS 反向代理 → Hub |
+| VPS 做入口，Hub 在 NAS | Cloudflare Access → VPS 代理 → Tailscale/WireGuard 私网 → Hub |
 
-完整配置见[部署指南](docs/hub/deployment.zh.md)和[安全模型](docs/hub/security.zh.md)。如果不希望服务器接受任何公网入站连接，可以使用文档中的 **Cloudflare Tunnel 模式**；Hub、反向代理与 NAS 都可只留在内网。
+具体代理配置与验证方法见[部署指南](docs/hub/deployment.zh.md)。Tailcat 和 Tailscale 方案的就绪状态见[接入方式选择](docs/hub/access-options.zh.md)。
 
 ### 2. 启动 Hub
 
@@ -104,76 +103,59 @@ git clone https://github.com/k1412/dsh-hub.git
 cd dsh-hub/deploy/hub
 cp .env.example .env
 chmod 600 .env
-# 填写公共 Origin、Cloudflare Access 参数、操作员邮箱和独立 Origin Secret
+# 编辑 .env：填写 HTTPS Origin、Access 参数、操作员邮箱和独立 Origin Secret。
+# 生产部署把 DSH_HUB_IMAGE 固定为所选 Release 的镜像 Digest。
+mkdir -p backups
+sudo chown 10001:10001 backups
 docker compose pull
 docker compose up -d
 docker compose ps
 ```
 
-生产环境建议把 `DSH_HUB_IMAGE` 固定到 Release 对应的不可变 Digest，而不是长期使用 `latest`。随附 Compose 默认以 UID 10001、只读根文件系统、移除全部 Linux Capability、`no-new-privileges` 和回环端口运行。
+打开已配置的 HTTPS 域名，登录后应进入 Hub。直接访问原始端口收到 `404` 是预期的 Origin 保护行为，不代表服务没有启动。镜像与源码获取方式见[部署指南](docs/hub/deployment.zh.md#3-启动-hub)。
 
-### 3. 一条命令接入节点
+### 3. 接入现有 DSH
 
-在 Hub 打开 **设置 → Hub 节点**，填写显示名称和节点 ID，生成 15 分钟有效的一次性注册码。页面会给出 Linux／macOS 或 Windows 的安装命令。典型 Unix 命令如下；实际使用时请直接复制页面生成的版本：
+打开 **设置 → Hub 节点 → 生成注册码**，复制页面提供的 Linux／macOS 或 Windows 安装命令，在运行 DSH 的同一个操作系统账户下执行。
 
-```bash
-curl -fsSL https://github.com/k1412/dsh-hub/releases/latest/download/install-node.sh \
-  | DSH_HUB_ENROLLMENT_CODE='一次性注册码' bash -s -- \
-      --hub 'https://hub.example.com' --node 'workstation'
+安装器下载并校验 Node Agent 与 Connector，把 Connector 安装到现有 Profile，配置当前用户的后台服务，并交互读取该节点专属的 Cloudflare Service Token。注册码有效期为 15 分钟、只能用一次。最后重启现有 DSH Profile，让 Connector 生效。
+
+**完成标志**：节点与 Runtime 都在线；本地 DSH 创建的会话能在 Hub 找到；两边可以交替继续同一会话。增加第二台机器时重复注册，为它使用独立 Service Token。详细说明见[节点安装与服务](docs/hub/node-services.zh.md)。
+
+## 数据在哪里，任务在哪里执行
+
+```mermaid
+flowchart LR
+  Browser["浏览器 / 手机"] --> Access["Access + 受信任代理"]
+  Access --> Hub["Hub：入口、路由、索引"]
+  AgentA["NAS · Node Agent"] -->|"主动建立签名 WSS"| Hub
+  AgentB["电脑 · Node Agent"] -->|"主动建立签名 WSS"| Hub
+  AgentA <--> RuntimeA["NAS 的 DSH + Connector"]
+  AgentB <--> RuntimeB["电脑的 DSH + Connector"]
+  Local["本地 Web / 桌面端"] --> RuntimeB
 ```
 
-安装器会校验 Release 的 SHA-256，安装 Connector 插件与当前用户的 Node Agent 服务，并通过交互式隐藏输入读取节点专属 Service Token Secret。重启一次现有 DSH Profile 后，本地 Web、桌面端和 Hub 就能同时使用同一组会话。
+Hub 保存节点身份、最小发现索引、可靠投递状态和审计记录。完整会话、工作区文件、模型调用、插件制品和快照由节点处理。断开 Hub 不会停止本地 DSH；Hub 自身也不执行节点任务。备份时应分别考虑 Hub 状态、DSH 数据和 Node Agent 状态，详见[运维手册](docs/hub/operations.zh.md)。
 
-## 部署方式
+## 版本与能力边界
 
-| 模式 | 入口 | Origin 暴露 | 适合场景 |
-|---|---|---:|---|
-| 域名 + Access + 反向代理 | 公网 HTTPS | 回环或私网 | 最通用，手机和异地电脑直接访问 |
-| Cloudflare Tunnel | Cloudflare 出站隧道 | 不开放入站端口 | NAS、家庭网络、无法做端口映射 |
-| Access + Overlay Network | VPS 入口转发到 Tailscale/WireGuard 内的 Hub | 仅 Overlay | Hub 在 NAS，VPS 只做网页入口 |
+仓库主分支可能包含尚未发布的修复；`releases/latest` 的安装器和镜像不会因为合并代码自动更新。选择安装来源时请核对 Release、源码提交与 Connector 版本。
 
-纯 `IP:端口`、没有 Access 与 Origin Secret 的直接公网暴露不是受支持的生产拓扑。Tailscale 只能解决可达性，若仍通过浏览器使用 Hub，认证、精确操作员授权和 Origin 隔离依然需要保留。
+当前主分支包含面向 `0.1.7-alpha.1` 等 DSH 版本的 Connector 适配，但内置官方 Web 快照仍基于 `0.1.0-rc.7` 家族。**传输适配通过，不等于已经包含新版 DSH 的全部界面与功能。** 升级前查看[兼容说明](docs/hub/compatibility.zh.md)，升级后验证会话、工具、提问、取消和设置流程。
 
-## 权限与数据边界
+## 按你要做的事阅读
 
-本项目采用明确的单操作员模型：**Hub 操作员拥有节点账户可以执行的全部权限**。节点不会为每条命令再次弹出本地确认。请用能够访问目标 DSH Profile 和工作区的最低权限账户运行 Node Agent；如果用 `root` 运行，就等于主动把该节点的 Root 权限交给 Hub。
+| 下一步 | 文档 |
+|---|---|
+| 了解 Tailcat 配对、Tailscale 与公网入口的区别 | [接入方案](docs/hub/access-options.zh.md) |
+| 部署第一个 Hub 并接入节点 | [部署指南](docs/hub/deployment.zh.md) |
+| 新建会话、切换设置目标、更新插件 | [控制台指南](docs/hub/console.zh.md) |
+| 安装或排查节点后台服务 | [节点服务](docs/hub/node-services.zh.md) |
+| 升级、备份、恢复、清理和吊销 | [运维手册](docs/hub/operations.zh.md) |
+| 判断某个 DSH 版本能否升级 | [兼容说明](docs/hub/compatibility.zh.md) |
+| 理解权限、认证和数据保护 | [安全模型](docs/hub/security.zh.md) |
+| 理解代码边界或排查速度 | [架构](docs/hub/architecture.zh.md) · [性能](docs/hub/performance.zh.md) |
 
-Hub 保存节点、公钥、Runtime、最小会话发现索引、命令状态、可靠交付 Journal 和审计记录；它不缓存会话全文和节点文件。插件制品与快照保留在节点本地。详细备份、恢复、吊销、队列监控与故障处理见[运维手册](docs/hub/operations.zh.md)。
+开发者从[贡献指南](CONTRIBUTING.md)开始：`pnpm install --frozen-lockfile`，然后执行 `pnpm run check` 与 `pnpm run build`。CI 还独立验证多节点并发、移动端与桌面浏览器、性能预算和 Linux 容器。
 
-## 功能一览
-
-- 多节点项目与会话聚合，新建会话可选节点和浏览工作区；
-- 官方会话、消息、思考、工具、提问、审批、Goal 和队列交互；
-- 浏览器、桌面端与本地 Web 的会话共存；
-- 节点注册、吊销、在线状态、Runtime 与能力清单；
-- 双向可靠队列、心跳、压力、抑制流量和控制请求监控；
-- 节点插件盘点、版本锁定、更新、回退与恢复事务；
-- 节点文件、终端和快照操作；
-- Ed25519 节点身份、连接代次隔离、断线重放和审计哈希链；
-- 桌面、手机、多节点并发、容器与跨平台 CI。
-
-## 文档
-
-- [部署指南](docs/hub/deployment.zh.md)：三种网络拓扑、Cloudflare、反向代理、Docker 和节点接入；
-- [架构设计](docs/hub/architecture.zh.md)：Hub、Node Agent、Connector、官方 Web 与存储边界；
-- [安全模型](docs/hub/security.zh.md)：完整权限、人员／节点认证、Origin 隔离和机密处理；
-- [运维手册](docs/hub/operations.zh.md)：升级、备份、恢复、撤销、监控和故障排查；
-- [节点服务](docs/hub/node-services.zh.md)：systemd User、launchd 与 Windows 当前用户任务；
-- [性能与多节点](docs/hub/performance.zh.md)：并发、背压和测试保证；
-- [控制台说明](docs/hub/console.zh.md)：终端、文件、插件与快照的用途和风险。
-
-## 开发与贡献
-
-仓库只保留 Hub 自有代码、经过 Review 的官方 Web 构建快照及其可复现源码补丁、部署文件、测试和双语文档。Hub 包位于 `packages/hub`，浏览器入口位于 `apps/hub-web`。
-
-```bash
-pnpm install --frozen-lockfile
-pnpm run check
-pnpm run build
-```
-
-提交、Issue、兼容性和不允许修改的安全原则见 [CONTRIBUTING.md](CONTRIBUTING.md)。个人维护者可以直接维护自己的分支；如果未来有多位贡献者，功能变更通过 PR、必需检查和明确 Review 合并。改变“Hub 拥有节点账户全部权限”这一产品原则的提案应先在自己的 Fork 中验证，不会直接改变本项目默认模型。
-
-## 上游、独立性与许可证
-
-DSH Hub 使用 DeepSeek Harness 的公开插件 API，并复用固定提交构建的官方 Web 交互层；它由社区独立维护，不是 DeepSeek 官方项目。上游组件和本项目均按 MIT License 使用；详见 [LICENSE](LICENSE)、[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)和[上游归属说明](docs/upstream.md)。项目不会把 DeepSeek 名称、图标或其他商标用作官方背书。
+DSH Hub 是独立社区项目，不是 DeepSeek 官方产品。使用固定版本的官方 Web 组件与公开插件接口；许可证和来源见 [LICENSE](LICENSE)、[第三方声明](THIRD_PARTY_NOTICES.md)和[上游归属](docs/upstream.md)。

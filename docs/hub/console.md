@@ -2,7 +2,17 @@
 
 English | [中文](console.zh.md)
 
-This guide explains what Hub adds to official DSH Web. Sessions, project groups, working-directory selection, message streaming, tool rendering, scrolling, and mobile interactions come from official Web. Hub adds one node/Runtime selector to the official new-session row; management entries live under Settings in the lower-left menu.
+Use the overview to find work and Settings in the lower-left menu to manage machines. The three everyday actions are continuing an existing session, choosing a machine for new work, and checking the management target before changing settings.
+
+| What you want to do | Start here |
+|---|---|
+| Continue existing work | Workspace/session in the overview; requests return to its owner |
+| Run a new task on another machine | Node/Runtime selector beside the new-session input |
+| Change models, permissions, or Agents | Select Current Runtime at the top of Settings first |
+| Add or revoke a machine, clear offline listings | Settings → Hub nodes |
+| Inspect plugin versions, update, or recover | Settings → Node plugins; select Management target first |
+
+These steps use Hub's pinned official Web components. Interface changes in newer DSH releases may not yet be included; see [compatibility](compatibility.md).
 
 ## Start a session on a node and folder
 
@@ -12,6 +22,17 @@ This guide explains what Hub adds to official DSH Web. Sessions, project groups,
 4. Send the first message. The Workspace identity becomes authoritative and every later request routes to its owner automatically.
 
 Changing the node before the first message clears the previous blank-session selection so a prompt cannot be sent to the old node by mistake. Choosing an existing Workspace from the fleet list synchronizes the node selector to its owner. No visit to Settings is required.
+
+## Continue a session or clear offline listings
+
+Open an existing session in the overview to continue it. Its owner does not change when you select a different default node for new sessions. Local DSH and Hub use the same node data; no history import is needed.
+
+An offline node may still have previously discovered workspaces in the list. This minimal index helps you locate work, but cannot provide full history or execute commands in place of the node.
+
+- **Temporarily offline:** retain the entries and resume after DSH and Node Agent reconnect.
+- **Only want stale listings gone:** find the offline node in Settings → Hub nodes and select Clear Hub cache (`清理 Hub 缓存`). Hub clears it locally without contacting the node; entries can synchronize again after reconnection.
+- **Retiring the machine:** revoke it. Hub disconnects it and clears its discovery index; revoke its Access Service Token separately.
+- **Permanently deleting an actual session:** bring the node online and use the session deletion action. Clearing the index and revoking a node both preserve the node's original data.
 
 ## Check Current Runtime before changing Settings
 

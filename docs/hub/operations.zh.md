@@ -6,7 +6,7 @@
 
 ## 注册节点
 
-以操作员身份认证后创建短期注册授权，签发不同的 Cloudflare Access Service Token，并在目标节点运行 `dsh-hub-node init`。无人值守场景可使用[部署指南](deployment.md)中的离线 `create-enrollment` 命令，但必须先停止 Hub，避免两个进程并发写入状态 Volume。只有 Hub 已记录节点公钥和 Service Token 身份，且一次性代码已从仅所有者可读的 Node Agent 配置中消失，注册才算完成。
+以操作员身份认证后创建短期注册授权，签发不同的 Cloudflare Access Service Token，并在目标节点运行 `dsh-hub-node init`。无人值守场景可使用[部署指南](deployment.zh.md)中的离线 `create-enrollment` 命令，但必须先停止 Hub，避免两个进程并发写入状态 Volume。只有 Hub 已记录节点公钥和 Service Token 身份，且一次性代码已从仅所有者可读的 Node Agent 配置中消失，注册才算完成。
 
 在机群视图中验证节点、Runtime、DSH 版本、Connector 版本和声明能力。启用插件、文件、快照或终端工作流前，先测试读取操作。
 
@@ -15,6 +15,14 @@
 在 Hub 中吊销节点，并删除或禁用其 Cloudflare Access Service Token。Hub 会隔离活动连接并拒绝后续代际。只有在确认调查不再需要该身份和排队结果后，才停止 Node Agent 并删除其私有状态。
 
 吊销不会删除节点上的会话或工作区数据，也不会删除 Hub 审计历史。除非有意复用与 Hub 记录匹配的已保留仅所有者可读状态，否则重新注册同一台机器会创建新的节点身份。
+
+## 清理离线节点的工作区与会话列表
+
+在“设置 → Hub 节点”选择离线节点并点击“清理 Hub 缓存”。此操作只删除该节点在 Hub SQLite 中的最小发现索引，并记录审计；不向离线节点发命令，所以不用等待重连，也不会影响其他节点。
+
+节点恢复后，发现刷新会以节点返回的完整列表替换旧索引；仍存在的会话会重新出现。吊销节点也会自动清除其索引，并将其排除在后续发现目标之外。清理与吊销都不删除节点工作区文件、DSH 会话正文或 Hub 审计记录。
+
+Tailcat 配对设备和 Hub 执行节点是两套身份：撤销一个隧道公钥不会自动吊销 Node Agent，反之亦然。操作方法见[接入方案](access-options.zh.md)。
 
 ## 备份 Hub
 

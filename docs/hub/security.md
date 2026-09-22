@@ -18,6 +18,12 @@ The implementation follows Cloudflare's [JWT validation contract](https://develo
 
 Cloudflare Access is not the only authorization layer. The operator allowlist is mandatory and contains no wildcard, domain suffix, or group expansion. Same-origin checks protect browser mutations, and the browser terminal WebSocket requires the exact public Origin.
 
+## Tailcat and Tailscale authentication boundaries
+
+The Tailcat pairing scripts restrict tunnel establishment by client public key and bind the client listener to loopback. They do not currently issue Hub login sessions or replace Access JWTs, operator email, the Origin Secret, or node enrollment. Tailscale Serve identity headers are likewise not integrated into Hub operator authentication.
+
+The featured device-trust proposal would map verified device keys to the single operator while preserving independent public authentication. It is a design awaiting implementation; see [access options](access-options.md). A localhost source or self-reported HTTP header must not grant authority. Device private keys are copyable software identities, not hardware binding, and tunnel revocation does not revoke an existing public login.
+
 ## Node authentication
 
 Each node receives a distinct Cloudflare Access Service Token and a short-lived one-time enrollment code. The Node Agent generates an Ed25519 identity locally and proves possession through a signed challenge. Hub stores only the enrollment-code hash and binds the node ID, node public key, and Service Token identity at first acceptance.

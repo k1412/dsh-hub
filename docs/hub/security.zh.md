@@ -18,6 +18,12 @@ Cloudflare Access 通过选定的身份提供方认证浏览器。Hub 随后根�
 
 Cloudflare Access 不是唯一授权层。操作员白名单是必需项，不支持通配符、域名后缀或组扩展。同源检查保护浏览器变更，浏览器终端 WebSocket 还要求精确的公共 Origin。
 
+## Tailcat 与 Tailscale 的认证边界
+
+Tailcat 配对脚本通过客户端公钥白名单控制隧道建立，并把客户端监听限制在回环地址。它们目前不签发 Hub 登录会话，也不替代 Access JWT、操作员邮箱、Origin Secret 或节点注册。Tailscale Serve 身份 Header 同样尚未接入 Hub 操作员认证。
+
+主推的设备信任方案将把经验证的设备公钥映射到单一操作员，并保持公网认证独立；这是待实现的设计，详见[接入方案](access-options.zh.md)。不能仅凭 localhost 来源或自报 HTTP Header 授权。设备私钥是可复制的软件身份，不等于硬件绑定；撤销隧道也不能视为撤销已有公网登录。
+
 ## 节点认证
 
 每个节点获得不同的 Cloudflare Access Service Token 和短期一次性注册代码。Node Agent 在本地生成 Ed25519 身份，并通过签名挑战证明持有密钥。Hub 仅保存注册代码哈希，并在首次接受时绑定节点 ID、节点公钥和 Service Token 身份。

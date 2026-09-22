@@ -2,7 +2,21 @@
 
 English | [中文](deployment.zh.md)
 
-This tutorial installs one Hub with Docker Compose, places it behind Cloudflare Access and a trusted reverse proxy, and enrolls one existing DSH profile. It uses generic names and paths; keep environment-specific hostnames, addresses, tokens, and email addresses outside the repository.
+By the end of this guide you will have an HTTPS Hub you can sign into and use to continue an existing DSH session on another machine. Verify coexistence with one node before adding a NAS or more computers.
+
+This guide uses the implemented Cloudflare Access login path. **Interested in our featured Tailcat pairing direction?** Start with [access options](access-options.md): the scripts provide a public-key-allowlisted tunnel, but device-only Hub login is not implemented. Evaluating it does not require changing public authentication.
+
+## Know where each step happens
+
+| Stage | Where | Expected result |
+|---|---|---|
+| Configure ingress (steps 1–2) | Cloudflare and the reverse-proxy host | Access protects the domain; the proxy reaches the private Origin |
+| Start Hub (step 3) | Docker host, possibly the same machine | Container runs and the domain opens Hub after login |
+| Create enrollment (step 4) | Hub browser interface | Single-use enrollment code and installation command |
+| Install and restart (steps 5–6) | Machine already running DSH | Both Node Agent and Runtime become online |
+| Verify coexistence (step 7) | Local DSH and Hub | Both interfaces continue the same session |
+
+Examples use generic names and paths. Keep real tokens, emails, private addresses, and deployment configuration outside the repository.
 
 ## Choose a topology first
 
@@ -32,7 +46,7 @@ These six controls are the production baseline, not optional enhancements:
 - A Linux Docker host with Docker Engine and Compose v2.
 - An HTTPS hostname routed through Cloudflare Access to a trusted reverse proxy.
 - A Cloudflare Access self-hosted application with one human policy and one Service Token policy.
-- Node.js 22.19 or later, `npm`, and DSH on every node. The target DSH composition must provide the transport-independent `@deepseek-ai/dsh-host-apiproxy` service; the standard Web profile already provides it. Install the platform C/C++ build toolchain and Python required by `node-pty` before installing the Node Agent.
+- Node.js 22.19+ in the 22 line or 24+, `npm`, and DSH on every node. The target DSH composition must provide the transport-independent `@deepseek-ai/dsh-host-apiproxy` service; the standard Web profile already provides it. Install the platform C/C++ build toolchain and Python required by `node-pty` before installing the Node Agent.
 - A private route from the reverse proxy to the Hub origin, either loopback, a private network, or an authenticated overlay network.
 
 ## 1. Configure Cloudflare Access
@@ -101,6 +115,20 @@ docker compose ps
 The supplied Compose definition binds to loopback. When the reverse proxy runs on another trusted host, bind the published port to a private interface address and allow only the proxy address in the host firewall. Never publish the origin port as an unrestricted Internet service.
 
 Verify the public hostname in a private browser window. Cloudflare Access must authenticate before the Hub UI loads. A request sent directly to the origin without the injected header must not expose `/healthz`, the UI, REST, SSE, or WebSocket upgrades.
+
+### Match the image, source branch, and node artifacts
+
+`docker compose pull` retrieves the image named in `.env`; it does not build your newly checked-out source. The `releases/latest` node installer also uses published artifacts and does not automatically include fixes from the main branch.
+
+To deploy current source, retain the repository directory structure and run `pnpm install --frozen-lockfile`, `pnpm run check`, and `pnpm run build` at the repository root. Then in `deploy/hub` run:
+
+```bash
+# Set a distinct DSH_HUB_IMAGE tag for this build in .env and record its source commit.
+docker compose build hub
+docker compose up -d --no-build hub
+```
+
+Source builds produce matching node artifacts in `dist/hub-release`; this does not publish a GitHub Release. For node upgrades, follow [operations](operations.md) using the same artifact source and check compatibility. An older Release installer does not install a new source build's node version.
 
 ## 4. Create a node enrollment
 

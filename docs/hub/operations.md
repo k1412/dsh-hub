@@ -16,6 +16,14 @@ Revoke the node in Hub and delete or disable its Cloudflare Access Service Token
 
 Revocation does not delete sessions or workspace data from the node. It also does not delete Hub audit history. Re-enrolling the same machine creates a new node identity unless the preserved owner-only state is deliberately reused with a matching Hub record.
 
+## Clear an offline node's workspace and session listings
+
+In Settings → Hub nodes, select the offline node and choose Clear Hub cache (`清理 Hub 缓存`). This removes only that node's minimal discovery index from Hub SQLite and records an audit event. It sends no command to the offline node, waits for no reconnection, and does not affect other nodes.
+
+After reconnection, discovery replaces old entries with the node's complete returned list; sessions that still exist reappear. Revoking a node also clears its index and excludes it from subsequent discovery targets. Neither action deletes workspace files, DSH session bodies, or Hub audit records.
+
+A paired Tailcat device and a Hub execution node are separate identities. Revoking a tunnel key does not revoke Node Agent, or vice versa. See [access options](access-options.md).
+
 ## Back up Hub
 
 The production image creates an online SQLite backup without stopping Hub. The destination must be a new directory on the mounted backup volume.
