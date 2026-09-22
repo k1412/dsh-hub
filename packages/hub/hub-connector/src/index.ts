@@ -39,7 +39,16 @@ interface RuntimeGateway {
   dispatchRpc?: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<unknown>
   invoke?: (request: { namespace: string; method: string; args: Record<string, unknown>; signal?: AbortSignal }) => Promise<unknown>
   stream?: (request: { namespace: string; method: string; args: Record<string, unknown>; signal?: AbortSignal }) => Promise<AsyncIterable<unknown>>
-  wireStream?: { open: (endpoint: string, payload: unknown, signal: AbortSignal) => Promise<AsyncIterable<unknown>> }
+  /**
+   * DSH 0.1.7's in-process wire stream carrier accepts the full carrier
+   * signature (uplink, peer, signal). Older runtimes exposed a compact
+   * three-argument helper, so the connector keeps both shapes here.
+   */
+  wireStream?: {
+    open: (...args: [endpoint: string, payload: unknown, signal: AbortSignal]
+      | [endpoint: string, payload: unknown, uplink: unknown, peer: unknown, signal: AbortSignal])
+      => Promise<AsyncIterable<unknown>>
+  }
 }
 
 interface SessionSummary {
@@ -940,7 +949,9 @@ export class HubConnector {
       ? this.api.events.host({ rpcId: rpcId(), payload: {} }, signal)
       : this.gateway.wireStream === undefined
         ? (async function* () {})()
-        : await this.gateway.wireStream.open('$events', { args: {} }, signal)
+        : this.gateway.wireStream.open.length >= 5
+          ? await this.gateway.wireStream.open('$events', { args: {} }, undefined, undefined, signal)
+          : await this.gateway.wireStream.open('$events', { args: {} }, signal)
     const consumeMux = async () => {
       for await (const frame of mux) {
         if (signal.aborted) return
@@ -1004,8 +1015,13 @@ export class HubConnector {
 /** Mount one Connector into the same Context as the current DSH Remote gateway. */
 export function apply(ctx: Context, config: Config): () => Promise<void> {
   const controller = new AbortController()
-  const runtime = ctx as Context & { apiProxy?: RuntimeApi; typertGateway: RuntimeGateway }
-  const connector = new HubConnector(runtime.apiProxy, runtime.typertGateway, {
+  // DSH 0.1.7 removes the legacy apiProxy service. Read it through Cordis'
+  // optional service accessor so the Remote-only runtime does not throw while
+  // preserving the in-process ApiProxy fallback for older DSH profiles.
+  const api = ctx.get('apiProxy') as RuntimeApi | undefined
+  const gateway = ctx.get('typertGateway') as RuntimeGateway | undefined
+  if (gateway === undefined) throw new Error('DSH Hub Connector requires the Typert Gateway service')
+  const connector = new HubConnector(api, gateway, {
     ipcEndpoint: config.ipcEndpoint ?? defaultIpcEndpoint,
     secretFile: config.secretFile ?? join(defaultStateDirectory, 'connector.secret'),
     runtimeId: config.runtimeId ?? (process.env.DSH_HUB_RUNTIME_ID?.trim() || 'default'),

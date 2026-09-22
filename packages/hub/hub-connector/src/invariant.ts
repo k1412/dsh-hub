@@ -12,9 +12,9 @@ export const name = 'hub-connector-invariant'
 export const inject = ['invariants']
 
 /**
- * No runtime invariant: the Connector's live contract is its required
- * `apiProxy` injection, while repository runtime-closure gates enforce its
- * forbidden Web dependencies.
+ * No runtime invariant: the Connector consumes the optional legacy `apiProxy`
+ * service and the required Typert Gateway, while repository runtime-closure
+ * gates enforce its forbidden Web dependencies.
  */
 const install: InvariantInstaller = () => {}
 
