@@ -94,3 +94,16 @@ When a queue is full, keep the Node Agent service running and restore the Hub WS
 Confirm recovery with all four signals: the Node Agent process is not restart-looping, both queue record counts continue to fall, the runtime returns online, and an existing session remains usable from local Web or desktop and Hub. Pressure recovery writes a `transport.pressure` audit record, while the cumulative suppressed-frame count remains available for diagnosis.
 
 A sequence gap requests a runtime resynchronization. An `outcome-unknown` command requires inspection of node-authoritative state before another mutation. Do not convert it to success or retry solely from the Hub command record.
+
+## Troubleshoot browser startup failures
+
+Record the failing URL, HTTP status, and browser `net::ERR_*` before deciding which layer failed. A browser plugin load failure does not establish that a DSH plugin is missing on a node; do not start by reinstalling nodes.
+
+| Browser symptom | What to check |
+|---|---|
+| `Failed to load plugins` with `ERR_CONNECTION_CLOSED 200` | 200 only proves response headers arrived; inspect transfer completeness, proxy and edge connections, then retry the page |
+| Manifest redirects to Access login and CSP blocks it | The manifest link needs `crossorigin="use-credentials"` to send login cookies; signing in again can rule out an expired session |
+| EventSource receives `text/html` | Inspect the exact URL and redirects: neither a login page nor SPA fallback is an event stream. The fixed snapshot's `/plugins/events` is a development hot-reload path; Hub returns 204 to stop it |
+| CSP blocks injected third-party analytics or inline scripts | Check edge injection and disable unnecessary injection for the site; do not relax Hub's `script-src` for analytics |
+
+A source file that exists, a correct hash, and a proxy status of 200 do not individually prove the browser received a complete script. Verify recovery on the affected access path by reopening the page, using a session, and switching Settings targets. Remove cookies, Access tokens, and credential parameters in login redirect URLs before sharing logs.

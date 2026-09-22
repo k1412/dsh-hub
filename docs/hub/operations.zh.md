@@ -94,3 +94,16 @@ Queue 满载时先保持 Node Agent 服务运行并恢复 Hub WSS 路径。Node 
 确认恢复时同时验证四项：Node Agent 进程没有重启循环；双向队列记录数持续下降；Runtime 重新变为在线；本地 Web 或桌面端原有会话与 Hub 中同一会话均可继续。压力等级恢复会写入 `transport.pressure` 审计记录，累计被抑制 Frame 仍保留为诊断计数。
 
 序列缺口会请求 Runtime 重新同步。`outcome-unknown` 命令要求在再次变更前检查节点权威状态。不得只依据 Hub 命令记录把它改为成功或直接重试。
+
+## 浏览器启动报错怎么排查
+
+先记录失败的具体 URL、HTTP 状态和浏览器 `net::ERR_*`，再判断是哪一层出错。不要将一个插件的加载失败当成节点 DSH 插件没安装，也不要直接重装节点。
+
+| 浏览器现象 | 应检查什么 |
+|---|---|
+| `Failed to load plugins`，同时出现 `ERR_CONNECTION_CLOSED 200` | 200 只表明收到响应头；检查资源是否完整传输、反向代理与边缘链路，再刷新重试 |
+| manifest 请求跳转到 Access 登录，被 CSP 拦截 | 页面中的 manifest link 应带 `crossorigin="use-credentials"`，让浏览器携带登录 Cookie；重新登录可排除会话过期 |
+| EventSource 收到 `text/html` | 检查实际 URL 与重定向；登录页或 SPA fallback 都不是事件流。固定 Web 快照的 `/plugins/events` 是开发热更新路径，Hub 返回 204 终止它 |
+| 第三方统计脚本或注入的 inline script 被 CSP 阻止 | 核查边缘层自动注入，按站点关闭不需要的注入；不要为统计脚本放宽 Hub 的 `script-src` |
+
+源站文件存在、哈希正确、代理记录 200，都不能单独证明浏览器收到了完整脚本。确认故障修复还需要在发生问题的访问路径上重新打开页面、建立会话并切换设置目标。分享日志时删除 Cookie、Access Token 和登录跳转 URL 中的凭据参数。

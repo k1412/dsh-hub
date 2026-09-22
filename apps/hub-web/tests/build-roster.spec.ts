@@ -89,6 +89,7 @@ describe('reviewed official Web snapshot', () => {
       index.indexOf('<script src="/boot.js"></script>'),
     )
     expect(index).toContain('<title>DSH Hub</title>')
+    expect(index).toContain('<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />')
     expect(index).toContain('<meta name="dsh-settings-access" content="authenticated-control-plane" />')
   })
 })

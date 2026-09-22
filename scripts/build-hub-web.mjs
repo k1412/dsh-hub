@@ -127,6 +127,9 @@ export function renderHubDocument(officialHtml) {
   ].join('')
   return officialHtml
     .replace('<title>DeepSeek Harness</title>', '<title>DSH Hub</title>')
+    // Protected manifests need cookies even when fetched from the same origin.
+    .replace('<link rel="manifest" href="/manifest.webmanifest" />',
+      '<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />')
     .replace('</head>', `${additions}</head>`)
 }
 

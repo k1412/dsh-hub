@@ -70,6 +70,11 @@ const server = createServer((request, response) => {
   void (async () => {
     headers(response)
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+    if (url.pathname === '/manifest.webmanifest' && !request.headers.cookie?.includes('hub-fixture=authenticated')) {
+      response.statusCode = 401
+      response.end('manifest requires the browser login cookie')
+      return
+    }
     if (request.method === 'GET' && url.pathname === '/hub/v1/nodes') {
       response.statusCode = 200
       response.setHeader('Content-Type', 'application/json; charset=utf-8')
@@ -122,6 +127,8 @@ let browser
 try {
   browser = await chromium.launch({ headless: true })
   const page = await browser.newPage()
+  const loginCookie = { name: 'hub-fixture', value: 'authenticated', url: `http://127.0.0.1:${address.port}` }
+  await page.context().addCookies([loginCookie])
   const pageErrors = []
   page.on('pageerror', error => pageErrors.push(error.message))
   await page.addInitScript(() => {
@@ -148,6 +155,17 @@ try {
   await page.locator('#root').waitFor({ state: 'attached' })
   await page.waitForFunction(() => document.querySelector('#root')?.childElementCount !== 0)
   recordTiming('desktopBootMs', startedAt)
+  // Ask Chromium to fetch the actual manifest, exercising its distinct cookie rules.
+  const cdp = await page.context().newCDPSession(page)
+  try {
+    const manifest = await cdp.send('Page.getAppManifest')
+    if (!manifest.data || !manifest.url.endsWith('/manifest.webmanifest')) {
+      throw new Error('authenticated browser could not fetch its same-origin manifest')
+    }
+    JSON.parse(manifest.data)
+  } finally {
+    await cdp.detach()
+  }
   const policyErrors = await page.evaluate(() => globalThis.__hubCspViolations)
   if (pageErrors.length > 0 || policyErrors.length > 0) {
     throw new Error(`Hub Web failed under strict CSP:\n${[
@@ -158,6 +176,7 @@ try {
   process.stdout.write('Hub Web: strict CSP boot and directory flow verified\n')
 
   const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' })
+  await mobile.context().addCookies([loginCookie])
   const mobileErrors = []
   mobile.on('pageerror', error => mobileErrors.push(error.message))
   startedAt = performance.now()
