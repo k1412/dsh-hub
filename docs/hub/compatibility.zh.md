@@ -14,7 +14,7 @@ Hub 1.0.4 最初基于 `0.1.0-rc.7` Host API 家族构建并测试。当前 Conn
 | `0.1.5-rc.2` / `0.1.5-rc.3` | Remote 网关和 Session API 已变化 | 已覆盖 Connector Remote 适配、事件桥接和 `$events/result` 回答路径；内置 Web UI 仍是 rc.7 组合 |
 | `0.1.6-alpha.2` / `0.1.7-alpha.1` | 当前 alpha，包含插件管理器和 Session 变化 | 已覆盖 Connector Remote 适配、工具/Skill 路由、问题/取消、事件桥接和 `$events/result` 回答路径；内置 Web UI 仍是 rc.7 组合 |
 
-不要把新版 DSH Profile 安装到运行 1.0.4 Connector 的节点后，就认为 Web 页面能打开代表兼容。Connector 当前 Remote 路径已经独立于内置 rc.7 Web artifact 完成测试；最新 DSH Web 组合更换了客户端包名，仍需要单独迁移 bundle。节点设置页必须同时显示 DSH 版本、Connector 版本和已协商能力。升级节点后，只有通过[运维文档](operations.zh.md)中的金丝雀功能检查才算完成。
+不要把新版 DSH Profile 安装到运行 1.0.4 Connector 的节点后，就认为 Web 页面能打开代表兼容。Connector 当前 Remote 路径已经独立于内置 rc.7 Web artifact 完成测试；最新 DSH Web 组合更换了客户端包名，仍需要单独执行 [bundle 迁移](https://github.com/k1412/dsh-hub/issues/40)。节点设置页必须同时显示 DSH 版本、Connector 版本和已协商能力。升级节点后，只有通过[运维文档](operations.zh.md)中的金丝雀功能检查才算完成。
 
 ## 升级策略
 
