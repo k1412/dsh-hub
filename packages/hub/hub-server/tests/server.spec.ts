@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -30,7 +30,7 @@ const access: HubAccessVerifier = {
   },
 }
 
-async function fixture(options: { commandTimeoutMs?: number; reportError?: (error: unknown) => void } = {}) {
+async function fixture(options: { commandTimeoutMs?: number; reportError?: (error: unknown) => void; staticDirectory?: string } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'dsh-hub-server-'))
   roots.push(root)
   const storage = await HubStorage.open(join(root, 'hub.db'))
@@ -56,6 +56,29 @@ function requestHeaders(kind: 'human' | 'service', mutation = false): Record<str
 }
 
 describe('Hub HTTP server', () => {
+  it('ends the snapshot development HMR stream without serving HTML or bypassing authentication', async () => {
+    const { base } = await fixture()
+    expect((await fetch(`${base}/plugins/events`)).status).toBe(404)
+    expect((await fetch(`${base}/plugins/events`, { headers: requestHeaders('service') })).status).toBeGreaterThanOrEqual(400)
+    for (const method of ['GET', 'HEAD']) {
+      const response = await fetch(`${base}/plugins/events`, { method, headers: requestHeaders('human') })
+      expect(response.status).toBe(204)
+      expect(response.headers.get('cache-control')).toBe('no-store')
+      expect(await response.text()).toBe('')
+    }
+  })
+
+  it('serves an authenticated web manifest with its browser media type', async () => {
+    const staticDirectory = await mkdtemp(join(tmpdir(), 'dsh-hub-static-'))
+    roots.push(staticDirectory)
+    await writeFile(join(staticDirectory, 'manifest.webmanifest'), JSON.stringify({ name: 'DSH Hub' }))
+    const { base } = await fixture({ staticDirectory })
+    const response = await fetch(`${base}/manifest.webmanifest`, { headers: requestHeaders('human') })
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('application/manifest+json; charset=utf-8')
+    await expect(response.json()).resolves.toEqual({ name: 'DSH Hub' })
+  })
+
   it('records sanitized command timeout telemetry without terminating the pending command', async () => {
     const reported: unknown[] = []
     const { storage, server } = await fixture({

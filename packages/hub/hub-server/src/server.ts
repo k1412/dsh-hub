@@ -179,6 +179,7 @@ const MIME_TYPES: Readonly<Record<string, string>> = {
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.webp': 'image/webp',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.woff2': 'font/woff2',
 }
 
@@ -384,6 +385,15 @@ export class HubServer {
     }
     const human = await this.options.access.verifyHuman(headers(request))
     if (method !== 'GET' && method !== 'HEAD') this.requireSameOrigin(request)
+
+    // The reviewed production snapshot is immutable: its development HMR client
+    // must stop reconnecting instead of receiving the SPA document as an SSE stream.
+    if ((method === 'GET' || method === 'HEAD') && url.pathname === '/plugins/events') {
+      securityHeaders(response)
+      response.statusCode = 204
+      response.end()
+      return
+    }
 
     if ((method === 'GET' || method === 'HEAD' || method === 'POST') && url.pathname.startsWith('/api/')) {
       await this.proxyOfficialRequest(request, response, url, human, method)
