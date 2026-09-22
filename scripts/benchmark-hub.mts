@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-import { performance } from 'node:perf_hooks'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { monitorEventLoopDelay, performance } from 'node:perf_hooks'
+import { mkdir, mkdtemp, rm, statfs, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { webCapability } from '@k1412/dsh-hub-capabilities'
@@ -16,7 +16,12 @@ const FLEET_SAMPLES = Number(process.env.DSH_HUB_BENCHMARK_FLEET_SAMPLES ?? '40'
 const BENCHMARK_ROUNDS = Number(process.env.DSH_HUB_BENCHMARK_ROUNDS ?? '3')
 const DIRECT_P95_BUDGET_MS = Number(process.env.DSH_HUB_BENCHMARK_DIRECT_P95_MS ?? '500')
 const FLEET_P95_BUDGET_MS = Number(process.env.DSH_HUB_BENCHMARK_FLEET_P95_MS ?? '400')
+const enforceBudgets = process.env.DSH_HUB_BENCHMARK_ENFORCE_BUDGETS ?? '1'
 const originSecret = 'benchmark-private-origin-secret-at-least-32-chars'
+
+if (enforceBudgets !== '0' && enforceBudgets !== '1') {
+  throw new Error('DSH_HUB_BENCHMARK_ENFORCE_BUDGETS must be 0 or 1')
+}
 
 if (!Number.isSafeInteger(BENCHMARK_ROUNDS) || BENCHMARK_ROUNDS < 1 || BENCHMARK_ROUNDS > 9 || BENCHMARK_ROUNDS % 2 === 0) {
   throw new Error('DSH_HUB_BENCHMARK_ROUNDS must be an odd integer from 1 through 9')
@@ -102,6 +107,17 @@ const access: HubAccessVerifier = {
 
 async function main(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'dsh-hub-benchmark-'))
+  const filesystem = await statfs(root)
+  const loopDelay = monitorEventLoopDelay({ resolution: 10 })
+  const writeDurations: number[] = []
+  function measureWrite<T>(operation: () => T): T {
+    const startedAt = performance.now()
+    try {
+      return operation()
+    } finally {
+      writeDurations.push(performance.now() - startedAt)
+    }
+  }
   let server: HubServer | undefined
   try {
     const storage = await HubStorage.open(join(root, 'hub.db'))
@@ -154,7 +170,7 @@ async function main(): Promise<void> {
         rpcId: string
         method: string
       }
-      const command = storage.control.createCommand({
+      const command = measureWrite(() => storage.control.createCommand({
         commandId: HubCommandId(`benchmark-command-${String(commandSequence).padStart(10, '0')}`),
         nodeId,
         runtimeId,
@@ -164,8 +180,8 @@ async function main(): Promise<void> {
         idempotency: 'read',
         payload: payload as never,
         createdAt: Date.now(),
-      })
-      storage.control.transitionCommand(command.commandId, 'sent', undefined)
+      }))
+      measureWrite(() => storage.control.transitionCommand(command.commandId, 'sent', undefined))
       setImmediate(() => {
         const value = request.method === 'session.list'
           ? { items: [{
@@ -176,14 +192,14 @@ async function main(): Promise<void> {
               blank: false,
             }] }
           : { version: 'benchmark', cwd: `/workspace/${nodeId}`, attachedSessions: 1, canOpenPath: true }
-        storage.control.transitionCommand(command.commandId, 'ok', {
+        measureWrite(() => storage.control.transitionCommand(command.commandId, 'ok', {
           status: 200,
           headers: [['content-type', 'application/json; charset=utf-8']],
           encoding: 'utf8',
           body: JSON.stringify({
             type: 'server-response', rpcId: request.rpcId, result: { ok: true, value },
           }),
-        })
+        }))
         events.publish('command.result', {
           commandId: command.commandId, nodeId, status: 'ok', result: {},
         } as never)
@@ -233,26 +249,45 @@ async function main(): Promise<void> {
 
     await measure(20, 4, direct)
     await measure(4, 1, fleet)
+    writeDurations.length = 0
+    loopDelay.enable()
     const rssBefore = process.memoryUsage().rss
     const directMetrics = await measureStable(DIRECT_SAMPLES, 16, direct)
     const fleetMetrics = await measureStable(FLEET_SAMPLES, 4, fleet)
+    loopDelay.disable()
+    const sortedWrites = [...writeDurations].sort((left, right) => left - right)
+    const ms = (value: number): number => Number(value.toFixed(2))
     const result = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       environment: {
         node: process.version,
         platform: `${process.platform}-${process.arch}`,
         nodes: NODE_COUNT,
         sqlite: 'WAL',
+        sqliteSynchronous: 'FULL',
+        filesystemType: `0x${filesystem.type.toString(16)}`,
+        storage: process.platform === 'linux' && filesystem.type === 0x01021994 ? 'tmpfs' : 'filesystem',
         transport: 'loopback HTTP; signed-node transport excluded',
       },
       directControl: directMetrics,
       fleetRead: fleetMetrics,
+      commandStorageWrites: {
+        scope: 'createCommand and sent/ok transitions; warmup excluded',
+        samples: sortedWrites.length,
+        p50Ms: ms(percentile(sortedWrites, 0.5)),
+        p95Ms: ms(percentile(sortedWrites, 0.95)),
+        p99Ms: ms(percentile(sortedWrites, 0.99)),
+        maxMs: ms(sortedWrites.at(-1) ?? 0),
+        totalMs: ms(sortedWrites.reduce((sum, value) => sum + value, 0)),
+      },
+      eventLoopDelay: { p99Ms: ms(loopDelay.percentile(99) / 1_000_000), maxMs: ms(loopDelay.max / 1_000_000) },
       process: {
         rssBeforeBytes: rssBefore,
         rssAfterBytes: process.memoryUsage().rss,
         commands: commandSequence,
       },
       budgets: {
+        enforced: enforceBudgets === '1',
         directP95Ms: DIRECT_P95_BUDGET_MS,
         fleetP95Ms: FLEET_P95_BUDGET_MS,
       },
@@ -265,13 +300,14 @@ async function main(): Promise<void> {
       await mkdir(dirname(target), { recursive: true })
       await writeFile(target, output)
     }
-    if (directMetrics.p95Ms > DIRECT_P95_BUDGET_MS) {
+    if (enforceBudgets === '1' && directMetrics.p95Ms > DIRECT_P95_BUDGET_MS) {
       throw new Error(`direct p95 ${String(directMetrics.p95Ms)} ms exceeds ${String(DIRECT_P95_BUDGET_MS)} ms`)
     }
-    if (fleetMetrics.p95Ms > FLEET_P95_BUDGET_MS) {
+    if (enforceBudgets === '1' && fleetMetrics.p95Ms > FLEET_P95_BUDGET_MS) {
       throw new Error(`Fleet p95 ${String(fleetMetrics.p95Ms)} ms exceeds ${String(FLEET_P95_BUDGET_MS)} ms`)
     }
   } finally {
+    loopDelay.disable()
     await server?.close()
     await rm(root, { recursive: true, force: true })
   }

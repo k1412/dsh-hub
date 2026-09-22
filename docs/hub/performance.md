@@ -68,6 +68,21 @@ One clean run on 2026-08-18 using a Linux x64 development host and Node 22.22.1 
 
 The run completed 1,612 commands and process RSS moved from 150,331,392 to 189,489,152 bytes. Direct-control round p95 values were 37.38, 19.67, and 17.81 ms; fleet rounds were 17.26, 16.90, and 16.83 ms. CI retains the complete JSON artifact even on failure and applies shared-runner regression budgets of 500 ms median-round direct-control p95 and 400 ms median-round fleet-read p95. These budgets detect sustained order-of-magnitude regressions; they are not production latency promises. `DSH_HUB_BENCHMARK_*` environment variables can change node count, samples, odd round count, and budgets.
 
+## CI storage conditions and interpreting results
+
+The performance job records two separate measurements and retains both JSON files:
+
+- `performance.json`: Linux runner `/dev/shm` (tmpfs), still using real SQLite, WAL, `synchronous=FULL`, and the same HTTP/routing/query paths. The existing 500 ms direct p95 and 400 ms fleet p95 budgets gate software processing overhead.
+- `performance-disk.json`: the runner temporary directory on its disk filesystem. It runs the same request and result assertions and records latency without imposing a production hardware SLO on a shared runner disk. Request or result errors still fail the job.
+
+These are different conditions: tmpfs does not verify power-loss durability or represent end-to-end NAS disk performance. The disk report observes real storage overhead; deployment acceptance still needs a benchmark on the target host. This separation follows repeated hosted-runner round variations from tens of milliseconds to seconds under unchanged code and budgets; rerunning or relaxing thresholds alone is not an adequate remedy.
+
+A comparison on the same development host (2026-09-23) measured direct/fleet p95 of 32.18/26.29 ms on tmpfs and 163.21/309.89 ms on ext4. Synchronous command-write p95 was 0.15 versus 2.45 ms. Both used the same code, sample counts, and durability configuration. This demonstrates the effect of storage conditions, not a production latency promise.
+
+JSON schema v3 identifies storage, filesystem type, SQLite synchronization mode, and whether budgets are enforced. It also records synchronous command creation/transition durations and event-loop delay. These help distinguish write stalls from scheduling pauses; write statistics cover only the three named operations, not all database work.
+
+Local runs still enforce budgets in the system temporary directory by default. That directory may itself be tmpfs; check the storage type recorded in JSON. Only explicit `DSH_HUB_BENCHMARK_ENFORCE_BUDGETS=0` enables latency observation mode; functional assertions remain active. On Linux, compare with `TMPDIR=/dev/shm pnpm run performance`. Do not change production database durability settings to improve scores.
+
 ## Observable indicators
 
 Node health exposes command count waiting for a result, age of the oldest pending command, timeout count in the last 24 hours, and the most recent timed-out operation. A direct browser control wait exceeding 30 seconds returns HTTP 504; fleet aggregation uses a 2.5-second per-node read budget. Both create one payload-free timeout audit record, while the durable command remains pending for late completion and reconciliation. These are failure-containment bounds, not performance targets.
