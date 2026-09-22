@@ -506,6 +506,22 @@ export class HubServer {
       json(response, 200, { cancelled: true })
       return
     }
+    const clearDiscovery = /^\/hub\/v1\/nodes\/([^/]+)\/clear-discovery$/.exec(url.pathname)
+    if (method === 'POST' && clearDiscovery !== null) {
+      const nodeId = HubNodeId(decodeURIComponent(clearDiscovery[1] as string))
+      await jsonBody(request)
+      if (this.options.storage.control.getNode(nodeId) === undefined) throw new HttpProblem(404, 'node not found')
+      if (this.agents.isOnline(nodeId)
+        && this.options.storage.control.listRuntimes(nodeId).some(runtime => runtime.online)) {
+        throw new HttpProblem(409, '节点在线，请通过节点归档会话；清理缓存仅用于离线节点。')
+      }
+      const removedSessions = this.options.storage.control.clearSessionIndex(nodeId, `human:${human.email}`)
+      for (const runtime of this.options.storage.control.listRuntimes(nodeId)) {
+        this.workspaceSnapshots.delete(this.workspaceTargetKey(runtime))
+      }
+      json(response, 200, { removedSessions, scope: 'hub-cache-only' })
+      return
+    }
     const revoke = /^\/hub\/v1\/nodes\/([^/]+)\/revoke$/.exec(url.pathname)
     if (method === 'POST' && revoke !== null) {
       const nodeId = HubNodeId(decodeURIComponent(revoke[1] as string))
@@ -1325,10 +1341,12 @@ export class HubServer {
 
   private officialRuntimes(includeOffline = false): FleetWebTarget[] {
     const displayNames = new Map(
-      this.options.storage.control.listNodes().map(node => [String(node.nodeId), node.displayName]),
+      this.options.storage.control.listNodes().filter(node => node.status === 'active')
+        .map(node => [String(node.nodeId), node.displayName]),
     )
     return this.options.storage.control.listRuntimes().filter((runtime) => {
-      if ((!includeOffline && (!runtime.online || !this.agents.isOnline(runtime.nodeId)))
+      if (!displayNames.has(String(runtime.nodeId))
+        || (!includeOffline && (!runtime.online || !this.agents.isOnline(runtime.nodeId)))
         || !Array.isArray(runtime.capabilities)) return false
       return runtime.capabilities.some((capability) => {
         if (typeof capability !== 'object' || capability === null

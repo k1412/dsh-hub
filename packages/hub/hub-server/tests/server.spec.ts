@@ -224,7 +224,7 @@ describe('Hub HTTP server', () => {
   })
 
   it('keeps cached project groups and sessions visible while their node is offline', async () => {
-    const { base, storage } = await fixture()
+    const { base, storage, server } = await fixture()
     const grant = storage.control.createEnrollment(HubNodeId('offline-node'), 'Home Mac', Date.now() + 60_000)
     const node = storage.control.consumeEnrollment(grant.code, 'offline-public-key', 'offline-service')
     const runtimeId = HubRuntimeId('default')
@@ -283,6 +283,46 @@ describe('Hub HTTP server', () => {
         title: 'project · Home Mac（离线）',
       }] } },
     })
+
+    const clear = (headers: Record<string, string>) => fetch(`${base}/hub/v1/nodes/offline-node/clear-discovery`, {
+      method: 'POST', headers, body: '{}',
+    })
+    expect((await clear(requestHeaders('service', true))).ok).toBe(false)
+    expect(storage.control.listSessionIndex(node.nodeId)).toHaveLength(1)
+
+    const original = storage.control.listSessionIndex(node.nodeId)[0]!
+    const runtime = storage.control.listRuntimes(node.nodeId)[0]!
+    const online = vi.spyOn(server.agents, 'isOnline').mockReturnValue(true)
+    storage.control.upsertRuntime({ ...runtime, online: true })
+    expect((await clear(requestHeaders('human', true))).status).toBe(409)
+    expect(storage.control.listSessionIndex(node.nodeId)).toHaveLength(1)
+    online.mockRestore()
+
+    const cleared = await clear(requestHeaders('human', true))
+    expect(cleared.status).toBe(200)
+    await expect(cleared.json()).resolves.toEqual({ removedSessions: 1, scope: 'hub-cache-only' })
+    expect(storage.control.listSessionIndex(node.nodeId)).toEqual([])
+    expect(storage.control.listAudit(1)[0]).toMatchObject({ action: 'node.discovery.cleared' })
+    storage.control.verifyAuditChain()
+
+    const list = async (method: string) => {
+      const response = await fetch(`${base}/api/${method}`, {
+        method: 'POST', headers: requestHeaders('human', true),
+        body: JSON.stringify({ type: 'client-request', rpcId: 'after-cleanup', method, payload: {} }),
+      })
+      expect(response.status).toBe(200)
+      return response.json()
+    }
+    await expect(list('workspace.list')).resolves.toMatchObject({ result: { value: { items: [] } } })
+    await expect(list('session.list')).resolves.toMatchObject({ result: { value: { items: [] } } })
+
+    // A live node may sync its authoritative baseline again after cache cleanup.
+    storage.control.replaceSessionIndex(node.nodeId, runtimeId, [original])
+    storage.control.revokeNode(node.nodeId)
+    // Simulate legacy revoked-node residue; aggregation must exclude it too.
+    storage.control.upsertSessionIndex(original)
+    await expect(list('workspace.list')).resolves.toMatchObject({ result: { value: { items: [] } } })
+    await expect(list('session.list')).resolves.toMatchObject({ result: { value: { items: [] } } })
   })
 
   it('routes nested Goal identities and returns signed node failures as RPC errors instead of opaque 502s', async () => {

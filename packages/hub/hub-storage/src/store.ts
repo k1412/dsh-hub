@@ -340,7 +340,10 @@ export class HubControlStore {
       `).run(now, now, nodeId)
       if (Number(result.changes) !== 1) throw new Error('active node not found')
       this.database.prepare('UPDATE runtimes SET online = 0 WHERE node_id = ?').run(nodeId)
-      this.database.prepare('UPDATE session_index SET stale = 1 WHERE node_id = ?').run(nodeId)
+      // A revoked node can never reconcile again. Its discovery rows are
+      // cache-only projections, so retaining them would surface workspaces
+      // that can no longer be archived through the source runtime.
+      this.database.prepare('DELETE FROM session_index WHERE node_id = ?').run(nodeId)
     })
   }
 
@@ -464,10 +467,27 @@ export class HubControlStore {
    */
   public replaceSessionIndex(nodeId: HubNodeIdType, runtimeId: HubRuntimeIdType, sessions: readonly HubSessionIndexInput[]): void {
     hubTransaction(this.database, () => {
+      this.requireActiveNode(nodeId)
+      if (sessions.some(input => input.nodeId !== nodeId || input.runtimeId !== runtimeId)) {
+        throw new Error('session baseline ownership mismatch')
+      }
       this.database.prepare(`
-        UPDATE session_index SET stale = 1 WHERE node_id = ? AND runtime_id = ?
+        DELETE FROM session_index WHERE node_id = ? AND runtime_id = ?
       `).run(nodeId, runtimeId)
       for (const input of sessions) this.upsertSessionIndex(input)
+    })
+  }
+
+  /** Clear one node's discovery cache without sending commands to its runtime. */
+  public clearSessionIndex(nodeId: HubNodeIdType, actor: string): number {
+    return hubTransaction(this.database, () => {
+      this.requireNode(nodeId)
+      const removed = Number(this.database.prepare('DELETE FROM session_index WHERE node_id = ?').run(nodeId).changes)
+      this.appendAuditRecord({
+        occurredAt: Date.now(), actor, action: 'node.discovery.cleared', nodeId,
+        outcome: 'ok', details: { removedSessions: removed, scope: 'hub-cache-only' },
+      })
+      return removed
     })
   }
 
@@ -618,35 +638,37 @@ export class HubControlStore {
    * @returns persisted record with sequence and hashes.
    */
   public appendAudit(input: HubAuditInput): HubAuditRecord {
-    return hubTransaction(this.database, () => {
-      const prior = this.database.prepare(`
-        SELECT record_hash FROM audit_log ORDER BY sequence DESC LIMIT 1
-      `).get()
-      const previousHash = prior === undefined ? '0'.repeat(43) : String(prior.record_hash)
-      const detailsJson = canonicalHubJson(input.details)
-      const hashInput: HubJson = {
-        occurredAt: input.occurredAt,
-        actor: input.actor,
-        action: input.action,
-        nodeId: input.nodeId ?? null,
-        runtimeId: input.runtimeId ?? null,
-        resourceId: input.resourceId ?? null,
-        outcome: input.outcome,
-        details: input.details,
-        previousHash,
-      }
-      const recordHash = hubJsonHash(hashInput)
-      const result = this.database.prepare(`
-        INSERT INTO audit_log (
-          occurred_at, actor, action, node_id, runtime_id, resource_id,
-          outcome, details_json, previous_hash, record_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        input.occurredAt, input.actor, input.action, input.nodeId ?? null, input.runtimeId ?? null,
-        input.resourceId ?? null, input.outcome, detailsJson, previousHash, recordHash,
-      )
-      return { ...input, sequence: Number(result.lastInsertRowid), previousHash, recordHash }
-    })
+    return hubTransaction(this.database, () => this.appendAuditRecord(input))
+  }
+
+  private appendAuditRecord(input: HubAuditInput): HubAuditRecord {
+    const prior = this.database.prepare(`
+      SELECT record_hash FROM audit_log ORDER BY sequence DESC LIMIT 1
+    `).get()
+    const previousHash = prior === undefined ? '0'.repeat(43) : String(prior.record_hash)
+    const detailsJson = canonicalHubJson(input.details)
+    const hashInput: HubJson = {
+      occurredAt: input.occurredAt,
+      actor: input.actor,
+      action: input.action,
+      nodeId: input.nodeId ?? null,
+      runtimeId: input.runtimeId ?? null,
+      resourceId: input.resourceId ?? null,
+      outcome: input.outcome,
+      details: input.details,
+      previousHash,
+    }
+    const recordHash = hubJsonHash(hashInput)
+    const result = this.database.prepare(`
+      INSERT INTO audit_log (
+        occurred_at, actor, action, node_id, runtime_id, resource_id,
+        outcome, details_json, previous_hash, record_hash
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      input.occurredAt, input.actor, input.action, input.nodeId ?? null, input.runtimeId ?? null,
+      input.resourceId ?? null, input.outcome, detailsJson, previousHash, recordHash,
+    )
+    return { ...input, sequence: Number(result.lastInsertRowid), previousHash, recordHash }
   }
 
   /**

@@ -138,6 +138,22 @@ if (process.argv[2] === 'create-enrollment') {
   }
   process.exit(0)
 }
+if (process.argv[2] === 'clear-revoked-discovery') {
+  const cleanupStorage = await HubStorage.open(databasePath)
+  try {
+    cleanupStorage.control.verifyAuditChain()
+    let removedSessions = 0
+    for (const node of cleanupStorage.control.listNodes()) {
+      if (node.status !== 'revoked' || cleanupStorage.control.listSessionIndex(node.nodeId).length === 0) continue
+      removedSessions += cleanupStorage.control.clearSessionIndex(node.nodeId, 'local-admin')
+    }
+    cleanupStorage.control.verifyAuditChain()
+    process.stdout.write(`${JSON.stringify({ removedSessions, scope: 'revoked-node-cache-only' })}\n`)
+  } finally {
+    cleanupStorage.close()
+  }
+  process.exit(0)
+}
 if (process.argv[2] === 'backup') {
   const destinationIndex = process.argv.indexOf('--destination')
   const destinationValue = destinationIndex < 0 ? undefined : process.argv[destinationIndex + 1]

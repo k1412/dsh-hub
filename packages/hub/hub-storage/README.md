@@ -16,6 +16,10 @@ Hub has no file cache or object directory. Conversation transcripts, workspace f
 
 ## Backup boundary
 
+Complete runtime discovery baselines replace the previous index, including removing sessions absent from the new baseline. Temporary disconnects keep the last baseline marked stale. Revocation removes that node's discovery cache and excludes its runtimes from workspace aggregation while retaining its identity and audit history. In Hub node settings, **Clear Hub cache** removes an offline node's cached session and workspace listings without deleting source sessions; reconnecting synchronizes them again. Source-side archive and delete operations still require a reachable runtime.
+
+For caches left by older releases, run `node /app/hub-server.mjs clear-revoked-discovery` on the Hub host after backing up. This local administrative command only clears revoked nodes and records an audit entry.
+
 `HubControlStore.backupTo()` uses SQLite online backup for a transactionally consistent database copy. An operational backup contains only `hub.db` and its checksum manifest. Node-side plugin rollback transactions and snapshots belong to a separate failure domain and require a separate node-state backup.
 
 ## Model Experience

@@ -190,6 +190,11 @@ export async function revokeNode(nodeId: string): Promise<void> {
   await requestJson(`/hub/v1/nodes/${encodeURIComponent(nodeId)}/revoke`, mutation({}))
 }
 
+/** Remove an offline node's Hub discovery cache; source sessions stay on the node. */
+export async function clearNodeDiscovery(nodeId: string): Promise<void> {
+  await requestJson(`/hub/v1/nodes/${encodeURIComponent(nodeId)}/clear-discovery`, mutation({}))
+}
+
 function operationOf(runtime: HubRuntime, capability: string, operation: string): HubCapabilityDescriptor {
   const descriptor = runtime.capabilities.find(candidate => candidate.name === capability)
   if (descriptor === undefined || !descriptor.operations.some(candidate => candidate.name === operation)) {

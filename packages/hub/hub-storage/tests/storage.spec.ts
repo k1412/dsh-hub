@@ -80,8 +80,61 @@ describe('Hub control storage', () => {
     const { storage, nodeId } = await enrolledStore()
     expect(storage.control.beginConnection(nodeId, 2_000)).toBe(1)
     expect(storage.control.beginConnection(nodeId, 2_001)).toBe(2)
+    storage.control.upsertRuntime({
+      nodeId,
+      runtimeId: HubRuntimeId('default-runtime'),
+      bootId: randomBytes(16).toString('base64url'),
+      dshVersion: '0.1.0-rc.5',
+      connectorVersion: '0.1.0-rc.5',
+      capabilities: [],
+      online: false,
+      lastSeenAt: 2_001,
+    })
+    storage.control.upsertSessionIndex({
+      hubSessionId: 'revoked-session',
+      nodeId,
+      runtimeId: HubRuntimeId('default-runtime'),
+      sourceId: 'revoked-source-session',
+      title: 'Revoked node cache',
+      workspacePath: '/revoked/workspace',
+      updatedAt: 2_001,
+      running: false,
+      stale: true,
+    })
     storage.control.revokeNode(nodeId, 2_002)
     expect(() => storage.control.beginConnection(nodeId, 2_003)).toThrow(/revoked/)
+    expect(storage.control.listSessionIndex(nodeId)).toEqual([])
+    storage.close()
+  })
+
+  it('replaces complete baselines and scopes cache cleanup to the owning node', async () => {
+    const { storage, nodeId } = await enrolledStore()
+    const secondId = HubNodeId('second-node')
+    const grant = storage.control.createEnrollment(secondId, 'Second', 9_000, 3_000)
+    storage.control.consumeEnrollment(grant.code, 'second-key', 'second-token', 3_001)
+    const runtimeId = HubRuntimeId('default')
+    const entries = [nodeId, secondId].map((owner, index) => ({
+      nodeId: owner, runtimeId, hubSessionId: `hub-${index}`, sourceId: `source-${index}`,
+      updatedAt: 3_001, running: false, stale: false,
+    }))
+    for (const entry of entries) {
+      storage.control.upsertRuntime({ nodeId: entry.nodeId, runtimeId, bootId: 'boot',
+        dshVersion: 'test', connectorVersion: 'test', capabilities: [], online: true, lastSeenAt: 3_001 })
+      storage.control.replaceSessionIndex(entry.nodeId, runtimeId, [entry])
+    }
+    storage.control.markNodeDisconnected(nodeId)
+    expect(storage.control.listSessionIndex(nodeId)).toHaveLength(1)
+    expect(() => storage.control.replaceSessionIndex(nodeId, runtimeId, [entries[1]!])).toThrow(/ownership/)
+    expect(storage.control.listSessionIndex(nodeId)).toHaveLength(1)
+    storage.control.replaceSessionIndex(nodeId, runtimeId, [])
+    expect(storage.control.listSessionIndex(nodeId)).toEqual([])
+    expect(storage.control.listSessionIndex(secondId)).toHaveLength(1)
+    storage.control.replaceSessionIndex(nodeId, runtimeId, [entries[0]!])
+    expect(storage.control.clearSessionIndex(nodeId, 'operator:test')).toBe(1)
+    expect(storage.control.clearSessionIndex(nodeId, 'operator:test')).toBe(0)
+    expect(storage.control.listSessionIndex(secondId)).toHaveLength(1)
+    storage.control.verifyAuditChain()
+    expect(storage.control.getNode(nodeId)?.status).toBe('active')
     storage.close()
   })
 

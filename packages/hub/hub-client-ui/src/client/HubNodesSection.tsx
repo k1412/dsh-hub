@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import {
-  cancelEnrollment, createEnrollment, readFleet, readPerformance, revokeNode,
+  cancelEnrollment, clearNodeDiscovery, createEnrollment, readFleet, readPerformance, revokeNode,
   type EnrollmentGrant, type FleetSnapshot, type HubNode, type HubOutboxHealth,
   type HubPerformanceSnapshot, type HubRuntime,
 } from './api.ts'
@@ -169,6 +169,16 @@ export function HubNodesSection({ refreshNodeSettings = () => undefined }: HubNo
       .finally(() => { setBusy(undefined) })
   }
 
+  const clearDiscovery = (node: HubNode): void => {
+    if (!globalThis.confirm(`清理“${node.displayName}”在 Hub 中的会话和工作区缓存？节点上的原始会话保留，重新上线后会再次同步。`)) return
+    setBusy(`clear:${node.nodeId}`)
+    setError(undefined)
+    void clearNodeDiscovery(node.nodeId)
+      .then(() => { globalThis.location.reload() })
+      .catch((reason: unknown) => { setError(messageOf(reason)) })
+      .finally(() => { setBusy(undefined) })
+  }
+
   return (
     <div className={css.section}>
       <header className={css.pageHeader}>
@@ -315,6 +325,12 @@ export function HubNodesSection({ refreshNodeSettings = () => undefined }: HubNo
                     ))}
                   </ul>
                 )}
+                {!node.online || !runtimes.some(runtime => runtime.online) ? (
+                  <div className={css.dangerRow}>
+                    <button className={css.secondaryButton} disabled={busy !== undefined} type="button" onClick={() => { clearDiscovery(node) }}>{busy === `clear:${node.nodeId}` ? '清理中…' : '清理 Hub 缓存'}</button>
+                    <small>移除离线会话和工作区的缓存；节点上线后重新同步。</small>
+                  </div>
+                ) : null}
                 {node.status === 'active' ? (
                   <div className={css.dangerRow}>
                     <button className={css.dangerButton} disabled={busy !== undefined} type="button" onClick={() => { revoke(node) }}>{busy === `revoke:${node.nodeId}` ? '撤销中…' : '撤销节点身份'}</button>
