@@ -6,17 +6,31 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
-import type { ApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
-import type { TypertGateway } from '@deepseek-ai/dsh-api-gateway'
 import { generateHubIpcSecret, type HubIpcFrame } from '@k1412/dsh-hub-node-ipc'
 import { HubConnectorServer } from '../../hub-node-agent/src/ipc-server.ts'
 import type { HubEnvelopeBody } from '@k1412/dsh-hub-protocol'
-import { detectDshVersion, HubConnector } from '../src/index.ts'
+import { detectDshVersion, HubConnector, normalizeEventFrame } from '../src/index.ts'
 import * as HubConnectorPlugin from '../src/index.ts'
 
 const roots: string[] = []
 const servers: HubConnectorServer[] = []
 const contexts: Context[] = []
+
+type TestApiProxy = {
+  sessions?: Record<string, (...args: unknown[]) => Promise<unknown>>
+  settings?: Record<string, (...args: unknown[]) => Promise<unknown>>
+  host?: Record<string, (...args: unknown[]) => Promise<unknown>>
+  events?: Record<string, (...args: unknown[]) => AsyncIterable<unknown>>
+  respond?: (...args: unknown[]) => Promise<unknown>
+}
+
+type TestGateway = {
+  dispatch?: (...args: unknown[]) => Promise<unknown>
+  dispatchRpc?: (...args: unknown[]) => Promise<unknown>
+  invoke?: (...args: unknown[]) => Promise<unknown>
+  stream?: (...args: unknown[]) => Promise<AsyncIterable<unknown>>
+  wireStream?: { open: (...args: unknown[]) => Promise<AsyncIterable<unknown>> }
+}
 
 afterEach(async () => {
   await Promise.allSettled(contexts.splice(0).map(context => context.fiber.dispose()))
@@ -30,7 +44,7 @@ async function* idle(signal: AbortSignal): AsyncGenerator<never> {
   })
 }
 
-function testGateway(): TypertGateway {
+function testGateway(): TestGateway {
   return {
     invoke: async () => { throw new Error('unexpected test Gateway invocation') },
     dispatch: async () => ({
@@ -41,8 +55,201 @@ function testGateway(): TypertGateway {
 }
 
 describe('Hub Connector coexistence', () => {
+  it('normalizes current Gateway event frames for the legacy Web stream envelope', () => {
+    expect(normalizeEventFrame({ type: 'ready', clientId: 'client-1', host: { home: '/workspace' } })).toBeUndefined()
+    expect(normalizeEventFrame({ type: 'emit', event: 'api-session/status', args: [{ sessionId: 's1', running: true }] })).toMatchObject({
+      payload: { type: 'api-session/status', args: [{ sessionId: 's1', running: true }] },
+    })
+    expect(normalizeEventFrame({
+      type: 'waterfall', event: 'user-questions/request', eventId: 'question-1', agentId: 'agent-1',
+      request: { sessionId: 's1', questions: [{ id: 'confirm', question: 'Continue?' }] },
+    })).toEqual({
+      rpcId: 'question-1',
+      payload: {
+        type: 'question/requested', event: 'user-questions/request', eventId: 'question-1', agentId: 'agent-1',
+        sessionId: 's1', questions: [{ id: 'confirm', question: 'Continue?' }],
+      },
+    })
+  })
+
+  it('answers a current Remote waterfall through $events/result', async () => {
+    const calls: unknown[][] = []
+    const connector = new HubConnector(undefined, {
+      dispatchRpc: async (...args: unknown[]) => {
+        calls.push(args)
+        return { ok: true, value: undefined }
+      },
+    }, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.6-alpha.2', reconnectMaximumMs: 1_000,
+    })
+    ;(connector as unknown as { remoteEventClientId: string }).remoteEventClientId = 'event-client-1'
+    const invokeSessions = (connector as unknown as {
+      invokeSessions(operation: string, value: unknown, commandId: string): Promise<unknown>
+    }).invokeSessions.bind(connector)
+    await expect(invokeSessions('interaction.respond', {
+      sessionId: 'session-1', requestId: 'event-1', response: { answers: [{ id: 'continue', selected: ['Yes'] }] },
+    }, 'answer-1')).resolves.toEqual({ ok: true })
+    expect(calls).toEqual([['$events/result', { args: {
+      clientId: 'event-client-1', eventId: 'event-1',
+      outcome: { kind: 'result', value: { answers: [{ id: 'continue', selected: ['Yes'] }] } },
+    } }, expect.any(AbortSignal)]])
+  })
+
+  it('forwards the official Web /api/respond envelope to current Remote events', async () => {
+    const calls: unknown[][] = []
+    const connector = new HubConnector(undefined, {
+      dispatchRpc: async (...args: unknown[]) => {
+        calls.push(args)
+        return { ok: true, value: undefined }
+      },
+    }, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.6-alpha.2', reconnectMaximumMs: 1_000,
+    })
+    ;(connector as unknown as { remoteEventClientId: string }).remoteEventClientId = 'event-client-web'
+    const invokeWeb = (connector as unknown as { invokeWeb(operation: string, value: unknown): Promise<unknown> }).invokeWeb.bind(connector)
+    const result = await invokeWeb('fetch', {
+      method: 'POST', path: '/api/respond', headers: [['content-type', 'application/json']],
+      body: JSON.stringify({ type: 'client-response', rpcId: 'event-web-1', result: {
+        ok: true, value: { sessionId: 'session-1', answer: { answers: [{ id: 'continue', selected: ['Yes'] }] } },
+      } }),
+    }) as { body: string; status: number }
+    expect(result.status).toBe(200)
+    expect(JSON.parse(result.body)).toEqual({ accepted: true })
+    expect(calls[0]).toEqual(['$events/result', { args: {
+      clientId: 'event-client-web', eventId: 'event-web-1', outcome: { kind: 'result', value: {
+        sessionId: 'session-1', answer: { answers: [{ id: 'continue', selected: ['Yes'] }] },
+      } },
+    } }, expect.any(AbortSignal)])
+  })
+
+  it.each(['legacy', 'remote', 'disconnected'] as const)('reports rejected answers through both carriers (%s)', async (kind) => {
+    const receipt = { accepted: false, reason: kind === 'legacy' ? 'not-pending' : kind === 'remote' ? 'response-rejected' : 'response-unavailable' }
+    const connector = new HubConnector(kind === 'legacy' ? { respond: async () => receipt } : undefined, {
+      dispatchRpc: async () => ({ ok: false, error: { message: 'event expired' } }),
+    }, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: 'test', reconnectMaximumMs: 1_000,
+    })
+    if (kind !== 'disconnected') (connector as unknown as { remoteEventClientId: string }).remoteEventClientId = 'event-client'
+    const invokeWeb = (connector as unknown as { invokeWeb(operation: string, value: unknown): Promise<{ body: string }> }).invokeWeb.bind(connector)
+    const result = await invokeWeb('fetch', {
+      method: 'POST', path: '/api/respond', headers: [['content-type', 'application/json']],
+      body: JSON.stringify({ type: 'client-response', rpcId: 'expired-question', result: { ok: true, value: {} } }),
+    })
+    expect(JSON.parse(result.body)).toEqual(receipt)
+    const invokeSessions = (connector as unknown as { invokeSessions(operation: string, value: unknown, id: string): Promise<unknown> }).invokeSessions.bind(connector)
+    await expect(invokeSessions('interaction.respond', { requestId: 'expired-question', response: {} }, 'answer')).rejects.toThrow(receipt.reason)
+  })
+
+  it('captures the current event client id before forwarding a question', async () => {
+    const frames: HubIpcFrame[] = []
+    const resultCalls: unknown[][] = []
+    const connector = new HubConnector(undefined, {
+      dispatchRpc: async (...args: unknown[]) => {
+        resultCalls.push(args)
+        return { ok: true, value: undefined }
+      },
+      wireStream: {
+        open: async (_endpoint: string, _payload: unknown, signal: AbortSignal) => (async function* () {
+          yield { type: 'ready', clientId: 'client-from-gateway', host: { home: '/workspace' } }
+          yield {
+            type: 'waterfall', event: 'user-questions/request', eventId: 'question-from-gateway', agentId: 'agent-1',
+            request: { sessionId: 'session-1', questions: [{ id: 'continue', question: 'Continue?' }] },
+          }
+          await new Promise<void>((resolve) => {
+            // The real Gateway closes this iterator when the Connector stream lifetime ends.
+            // Mirror that cancellation in the functional test.
+            signal.addEventListener('abort', () => { resolve() }, { once: true })
+          })
+        })(),
+      },
+    }, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.6-alpha.2', reconnectMaximumMs: 1_000,
+    })
+    ;(connector as unknown as { send: (frame: HubIpcFrame) => Promise<void> }).send = async (frame) => { frames.push(frame) }
+    ;(connector as unknown as { publishIndex: () => Promise<void> }).publishIndex = async () => undefined
+    const controller = new AbortController()
+    const pumping = (connector as unknown as { pumpStreams(signal: AbortSignal): Promise<void> }).pumpStreams(controller.signal)
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(frames).toHaveLength(1)
+    expect(frames[0]).toMatchObject({
+      type: 'ipc.hub-body', body: { type: 'stream.frame', payload: {
+        type: 'server-request', rpcId: 'question-from-gateway', method: 'question/requested',
+      } },
+    })
+    const invokeSessions = (connector as unknown as {
+      invokeSessions(operation: string, value: unknown, commandId: string): Promise<unknown>
+    }).invokeSessions.bind(connector)
+    await expect(invokeSessions('interaction.respond', {
+      sessionId: 'session-1', requestId: 'question-from-gateway', response: { answers: [{ id: 'continue', selected: ['Yes'] }] },
+    }, 'answer-2')).resolves.toEqual({ ok: true })
+    expect(resultCalls[0]?.[0]).toBe('$events/result')
+    controller.abort(new Error('test complete'))
+    await pumping
+  })
+
+  it('adapts current Typert Remote session calls without the legacy ApiProxy', async () => {
+    const calls: Array<{ namespace: string; method: string; args: Record<string, unknown> }> = []
+    let listed = false
+    const gateway = {
+      invoke: async (request: { namespace: string; method: string; args: Record<string, unknown> }) => {
+        calls.push(request)
+        expect(Object.keys(request.args)).toEqual([request.method === 'list' ? '_request' : 'request'])
+        if (request.namespace === 'session' && request.method === 'list') {
+          return { items: listed ? [{ sessionId: 'new-session', updatedAt: 10, running: true, cwd: '/workspace' }] : [] }
+        }
+        if (request.namespace === 'session' && request.method === 'create') {
+          listed = true
+          return { sessionId: 'new-session' }
+        }
+        if (request.namespace === 'session' && request.method === 'page') return { records: [], hasMore: false }
+        if (request.namespace === 'session' && request.method === 'prompt') return { accepted: true }
+        throw new Error(`unexpected Remote ${request.namespace}.${request.method}`)
+      },
+    }
+    const connector = new HubConnector(undefined, gateway, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.5-rc.2', reconnectMaximumMs: 1_000,
+    })
+    const invokeSessions = (connector as unknown as {
+      invokeSessions(operation: string, value: unknown, commandId: string): Promise<unknown>
+    }).invokeSessions.bind(connector)
+    await expect(invokeSessions('create', {
+      clientMutationId: 'new-session-mutation', workspacePath: '/workspace', initialMessage: 'run the skill',
+    }, 'command-1')).resolves.toMatchObject({ sessionId: 'new-session', running: true })
+    await expect(invokeSessions('message.append', {
+      clientMutationId: 'answer-mutation', sessionId: 'new-session', text: 'answer this',
+    }, 'command-2')).resolves.toMatchObject({ accepted: true })
+    expect(calls.map(call => `${call.namespace}.${call.method}`)).toEqual([
+      'session.list', 'session.create', 'session.page', 'session.prompt', 'session.list', 'session.page',
+      'session.page', 'session.prompt', 'session.list', 'session.page',
+    ])
+  })
+
+  it('forwards current Remote command endpoints used by tools and skills', async () => {
+    const calls: Array<{ namespace: string; method: string; args: Record<string, unknown> }> = []
+    const connector = new HubConnector(undefined, {
+      invoke: async (request: { namespace: string; method: string; args: Record<string, unknown> }) => {
+        calls.push(request)
+        return { completed: true, output: 'skill-result' }
+      },
+    }, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.6-alpha.2', reconnectMaximumMs: 1_000,
+    })
+    const invokeWeb = (connector as unknown as { invokeWeb(operation: string, value: unknown): Promise<unknown> }).invokeWeb.bind(connector)
+    const result = await invokeWeb('fetch', {
+      method: 'POST', path: '/api/commands/execute', headers: [['content-type', 'application/json']],
+      body: JSON.stringify({ type: 'client-request', rpcId: 'tool-rpc-1', method: 'commands/execute', payload: { args: {
+        agentId: 'session-1', line: '/skill run-check', submittedAttachments: [],
+      } } }),
+    }) as { body: string; status: number }
+    expect(result.status).toBe(200)
+    expect(JSON.parse(result.body)).toMatchObject({ rpcId: 'tool-rpc-1', result: { ok: true, value: { completed: true } } })
+    expect(calls).toEqual([expect.objectContaining({ namespace: 'commands', method: 'execute', args: {
+      agentId: 'session-1', line: '/skill run-check', submittedAttachments: [],
+    } })])
+  })
+
   it('rejects a queued write when IPC closes before the write reaches the socket', async () => {
-    const connector = new HubConnector({} as ApiProxy, testGateway(), {
+    const connector = new HubConnector({} as TestApiProxy, testGateway(), {
       ipcEndpoint: '/unused',
       secretFile: '/unused',
       runtimeId: 'default',
@@ -98,7 +305,7 @@ describe('Hub Connector coexistence', () => {
         mux: (_request: unknown, signal: AbortSignal) => idle(signal),
         host: (_request: unknown, signal: AbortSignal) => idle(signal),
       },
-    } as unknown as ApiProxy
+    } as unknown as TestApiProxy
 
     let slowStartedResolve: (() => void) | undefined
     const slowStarted = new Promise<void>((resolve) => { slowStartedResolve = resolve })
@@ -117,6 +324,7 @@ describe('Hub Connector coexistence', () => {
       if (method === 'commands/execute') return { ok: true, value: { completed: 'created' } } as never
       if (method === 'settings/update') return { ok: true, value: { completed: 'settings' } } as never
       if (method === 'respond') return { ok: true, value: { completed: 'answer' } } as never
+      if (method === 'session/cancel') return { ok: true, value: { accepted: true } } as never
       throw new Error(`unexpected Gateway method ${method}`)
     })
 
@@ -171,6 +379,7 @@ describe('Hub Connector coexistence', () => {
         server.send('default', webCommand('command-priority-create-0001', 'commands/execute')),
         server.send('default', webCommand('command-priority-settings-0001', 'settings/update')),
         server.send('default', webCommand('command-priority-answer-0001', 'respond')),
+        server.send('default', webCommand('command-priority-cancel-0001', 'session/cancel')),
       ])
       await vi.waitFor(() => { expect(bodies).toContainEqual(expect.objectContaining({
         type: 'capability.result', commandId: 'command-priority-goal-0001', status: 'ok',
@@ -184,6 +393,11 @@ describe('Hub Connector coexistence', () => {
       await vi.waitFor(() => { expect(bodies).toContainEqual(expect.objectContaining({
         type: 'capability.result', commandId: 'command-priority-answer-0001', status: 'ok',
       })) })
+      await vi.waitFor(() => { expect(bodies).toContainEqual(expect.objectContaining({
+        type: 'capability.result', commandId: 'command-priority-cancel-0001', status: 'ok',
+      })) })
+      const cancelled = bodies.find(body => body.type === 'capability.result' && body.commandId === 'command-priority-cancel-0001')
+      expect(cancelled).toMatchObject({ value: { body: expect.stringContaining('"accepted":true') } })
       expect(bodies.some(body => body.type === 'capability.result'
         && body.commandId.startsWith('command-priority-slow-'))).toBe(false)
       releaseSlow?.()
@@ -245,7 +459,7 @@ describe('Hub Connector coexistence', () => {
         host: (_request: unknown, signal: AbortSignal) => idle(signal),
       },
       respond: async () => ({ accepted: true as const }),
-    } as unknown as ApiProxy
+    } as unknown as TestApiProxy
 
     let baselineResolve: (() => void) | undefined
     const baseline = new Promise<void>((resolve) => { baselineResolve = resolve })
@@ -396,7 +610,7 @@ describe('Hub Connector coexistence', () => {
         host: (_request: unknown, signal: AbortSignal) => idle(signal),
       },
       respond: async () => ({ accepted: true as const }),
-    } as unknown as ApiProxy
+    } as unknown as TestApiProxy
 
     calls.push({ surface: 'local-web', text: 'existing local action' })
     calls.push({ surface: 'desktop', text: 'existing desktop action' })
@@ -601,7 +815,7 @@ describe('Hub Connector coexistence', () => {
         host: (_request: unknown, signal: AbortSignal) => idle(signal),
       },
       respond: async () => ({ accepted: true as const }),
-    } as unknown as ApiProxy
+    } as unknown as TestApiProxy
 
     let baselineResolve: (() => void) | undefined
     const baseline = new Promise<void>((resolve) => { baselineResolve = resolve })
@@ -692,7 +906,7 @@ describe('Hub Connector coexistence', () => {
         host: (_request: unknown, signal: AbortSignal) => idle(signal),
       },
       respond: async () => ({ accepted: true as const }),
-    } as unknown as ApiProxy
+    } as unknown as TestApiProxy
 
     let connections = 0
     const bodies: HubEnvelopeBody[] = []
