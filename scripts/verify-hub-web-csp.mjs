@@ -39,6 +39,15 @@ function recordTiming(name, startedAt) {
 }
 
 const hubDocument = await readFile(resolve(staticRoot, 'index.html'), 'utf8')
+const bridgePosition = hubDocument.indexOf('<script src="/target-bridge.js"></script>')
+const bootPosition = hubDocument.indexOf('<script src="/boot.js"></script>')
+if (bridgePosition < 0 || bootPosition < 0 || bridgePosition >= bootPosition) {
+  throw new Error('Hub target bridge must load before the official boot graph')
+}
+const targetBridge = await readFile(resolve(staticRoot, 'target-bridge.js'), 'utf8')
+for (const marker of ['/api/', 'nodeId', 'runtimeId']) {
+  if (!targetBridge.includes(marker)) throw new Error(`Hub target bridge is missing ${marker}`)
+}
 if (!hubDocument.includes('<meta name="dsh-settings-access" content="authenticated-control-plane" />')) {
   throw new Error('Hub Web is missing its authenticated Host-backed Settings marker')
 }

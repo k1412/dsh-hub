@@ -108,22 +108,26 @@ export async function buildHubWeb() {
   await buildTargetBridge()
   const indexPath = join(outputRoot, 'index.html')
   const officialHtml = await readFile(indexPath, 'utf8')
-  if (!officialHtml.includes('</head>')) throw new Error('official Web artifact has no </head>')
-  const additions = [
-    '<meta name="dsh-settings-access" content="authenticated-control-plane" />',
-    '<script src="/target-bridge.js"></script>',
-    '<script src="/boot.js"></script>',
-  ].join('')
-  const html = officialHtml
-    .replace('<title>DeepSeek Harness</title>', '<title>DSH Hub</title>')
-    .replace('</head>', `${additions}</head>`)
-  await writeFile(indexPath, html)
+  await writeFile(indexPath, renderHubDocument(officialHtml))
   await buildSetupPage()
   await cp(join(hubWebRoot, 'src', 'setup.css'), join(outputRoot, 'setup.css'))
   await cp(join(repositoryRoot, 'LICENSE'), join(outputRoot, 'LICENSE.txt'))
   await cp(join(repositoryRoot, 'THIRD_PARTY_NOTICES.md'), join(outputRoot, 'THIRD_PARTY_NOTICES.md'))
   process.stdout.write(`Hub Web: reviewed official snapshot + ${String(entries.length)} plugins (${graph.rev})\n`)
   return graph
+}
+
+/** Render the boot ordering independently of generated build artifacts. */
+export function renderHubDocument(officialHtml) {
+  if (!officialHtml.includes('</head>')) throw new Error('official Web artifact has no </head>')
+  const additions = [
+    '<meta name="dsh-settings-access" content="authenticated-control-plane" />',
+    '<script src="/target-bridge.js"></script>',
+    '<script src="/boot.js"></script>',
+  ].join('')
+  return officialHtml
+    .replace('<title>DeepSeek Harness</title>', '<title>DSH Hub</title>')
+    .replace('</head>', `${additions}</head>`)
 }
 
 export function renderBootScript(graph) {

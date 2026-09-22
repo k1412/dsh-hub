@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 // Production assembly stays plain ESM so it can run directly under Node.
 // @ts-expect-error -- the intentionally untyped build script exposes this helper.
-import { renderBootScript } from '../../../scripts/build-hub-web.mjs'
+import { renderBootScript, renderHubDocument } from '../../../scripts/build-hub-web.mjs'
 
 const root = resolve(import.meta.dirname, '..', '..', '..')
 
@@ -82,14 +82,13 @@ describe('reviewed official Web snapshot', () => {
   })
 
   it('loads the version-neutral target bridge before the official boot graph', async () => {
-    const index = await readFile(resolve(root, 'apps/hub-web/dist/index.html'), 'utf8')
+    const officialHtml = await readFile(resolve(root, 'third_party/official-web/dist/index.html'), 'utf8')
+    const index = renderHubDocument(officialHtml)
     expect(index).toContain('<script src="/target-bridge.js"></script>')
     expect(index.indexOf('<script src="/target-bridge.js"></script>')).toBeLessThan(
       index.indexOf('<script src="/boot.js"></script>'),
     )
-    const bridge = await readFile(resolve(root, 'apps/hub-web/dist/target-bridge.js'), 'utf8')
-    expect(bridge).toContain('/api/')
-    expect(bridge).toContain('nodeId')
-    expect(bridge).toContain('runtimeId')
+    expect(index).toContain('<title>DSH Hub</title>')
+    expect(index).toContain('<meta name="dsh-settings-access" content="authenticated-control-plane" />')
   })
 })
