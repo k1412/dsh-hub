@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Expose a localhost-only Hub through Tailcat and trust only one enrolled
-# client device. The client private key never leaves that device; this script
-# receives only its public nodekey allowlist entry.
+# Tunnel a localhost port to one allowlisted client key. This controls network
+# access only: Hub still requires its application authentication. The private
+# client key stays on the device; only the public nodekey is configured here.
 tailcat_bin="${TAILCAT_BIN:-tailcat}"
 hub_port="${DSH_HUB_PORT:-3000}"
 tailcat_key="${TAILCAT_SERVER_KEY:-default}"
