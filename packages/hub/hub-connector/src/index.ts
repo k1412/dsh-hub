@@ -22,6 +22,13 @@ interface RuntimeApi {
   sessions?: Record<string, (request: unknown, signal?: AbortSignal) => Promise<unknown>>
   settings?: Record<string, (request: unknown, signal?: AbortSignal) => Promise<unknown>>
   host?: Record<string, (request: unknown, signal?: AbortSignal) => Promise<unknown>>
+  workspace?: Record<string, (request: unknown, signal?: AbortSignal) => Promise<unknown>>
+  skills?: Record<string, (request: unknown, signal?: AbortSignal) => Promise<unknown>>
+  agentPresets?: Record<string, (request: unknown, signal?: AbortSignal) => Promise<unknown>>
+  goals?: Record<string, (request: unknown, signal?: AbortSignal) => Promise<unknown>>
+  subagents?: Record<string, (request: unknown, signal?: AbortSignal) => Promise<unknown>>
+  credentials?: Record<string, (request: unknown, signal?: AbortSignal) => Promise<unknown>>
+  llm?: Record<string, (request: unknown, signal?: AbortSignal) => Promise<unknown>>
   events?: Record<string, (request: unknown, signal: AbortSignal) => AsyncIterable<unknown>>
   respond?: (request: unknown) => Promise<unknown>
 }
@@ -92,7 +99,7 @@ function rpcId(value?: string): string { return value ?? randomBytes(18).toStrin
 function parseClientRequest(value: unknown): { rpcId: string; method: string; payload: unknown } | undefined {
   if (typeof value !== 'object' || value === null) return undefined
   const candidate = value as Record<string, unknown>
-  if (typeof candidate.rpcId !== 'string' || typeof candidate.method !== 'string') return undefined
+  if (candidate.type !== 'client-request' || typeof candidate.rpcId !== 'string' || typeof candidate.method !== 'string') return undefined
   return { rpcId: candidate.rpcId, method: candidate.method, payload: candidate.payload }
 }
 
@@ -250,6 +257,7 @@ function invocationPriority(body: Extract<HubEnvelopeBody, { type: 'capability.i
   }
   if (pathname === '/api/respond') return 'interactive'
   const endpoint = pathname.slice('/api/'.length)
+  if (['session/create', 'session/prompt', 'session/cancel', 'session/rename', 'session/selectModel'].includes(endpoint)) return 'interactive'
   if (endpoint === 'commands/execute'
     || endpoint.startsWith('goals/')
     || endpoint.startsWith('settings/')
@@ -259,7 +267,7 @@ function invocationPriority(body: Extract<HubEnvelopeBody, { type: 'capability.i
 }
 
 function unwrap<T>(response: RpcResponse<T>): T {
-  if (response.result.ok && response.result.value !== undefined) return response.result.value
+  if (response.result.ok) return response.result.value as T
   const failure = response.result.error ?? { message: 'Remote endpoint failed', code: 'remote-error' }
   const error = new Error(failure.message)
   error.name = failure.code ?? 'remote-error'
@@ -591,19 +599,38 @@ export class HubConnector {
     return this.gateway.invoke({ namespace, method, args: payload, signal })
   }
 
-  private async apiCall(namespace: keyof RuntimeApi, method: string, endpoint: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<any> {
+  private async apiCall(namespace: keyof RuntimeApi, method: string, endpoint: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
     const service = this.api?.[namespace] as Record<string, ((request: unknown, signal?: AbortSignal) => Promise<unknown>)> | undefined
     const legacy = service?.[method]
     if (legacy !== undefined) return unwrap(await legacy({ rpcId: rpcId(), payload }, signal) as RpcResponse<unknown>)
-    return this.remote(endpoint, payload, signal)
+    // Typert names each method parameter; Session takes a single request
+    // object, unlike Settings and Commands which take separate named values.
+    const args = namespace === 'sessions'
+      ? method === 'list' ? { _request: payload } : { request: payload }
+      : payload
+    return this.remote(endpoint, args, signal)
   }
 
   private async webRemote(endpoint: string, payload: unknown): Promise<unknown> {
+    if (endpoint.includes('/')) {
+      // The Remote HTTP carrier wraps named arguments in { args }. Dispatch
+      // consumes that carrier payload; direct invoke consumes only its args.
+      if (this.gateway.dispatch !== undefined) return this.remote(endpoint, (payload ?? {}) as Record<string, unknown>)
+      const carrier = payload as { args?: Record<string, unknown> } | null
+      if (carrier?.args === undefined || typeof carrier.args !== 'object' || carrier.args === null || Array.isArray(carrier.args)) {
+        throw new Error('Remote payload requires an args object')
+      }
+      return this.remote(endpoint.replace('/', '.'), carrier.args)
+    }
     const parts = endpoint.split(/[./]/u)
     if (parts.length === 2) {
       const [name, method] = parts
-      const namespace = name === 'session' ? 'sessions' : name as keyof RuntimeApi
-      if (method !== undefined && (namespace === 'sessions' || namespace === 'host' || namespace === 'settings')) {
+      const aliases: Record<string, keyof RuntimeApi> = {
+        session: 'sessions', subagent: 'subagents', skill: 'skills', agentPreset: 'agentPresets', goal: 'goals',
+        host: 'host', workspace: 'workspace', settings: 'settings', credentials: 'credentials', llm: 'llm',
+      }
+      const namespace = name === undefined ? undefined : aliases[name]
+      if (method !== undefined && namespace !== undefined) {
         return this.apiCall(namespace, method, `${name}.${method}`, (payload ?? {}) as Record<string, unknown>)
       }
     }
@@ -623,11 +650,23 @@ export class HubConnector {
     let parsedBody: { rpcId: string; method: string; payload: unknown } | undefined
     if (input.method === 'POST' && url.pathname.startsWith('/api/')) {
       const endpoint = url.pathname.slice('/api/'.length)
+      if (new Headers(input.headers).get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() !== 'application/json') {
+        return { status: 415, headers: [['content-type', 'text/plain; charset=utf-8']], encoding: 'utf8', body: 'content type must be application/json' }
+      }
       let body: unknown
       try {
         body = JSON.parse(input.body ?? '') as unknown
       } catch {
         return { status: 400, headers: [['content-type', 'text/plain; charset=utf-8']], encoding: 'utf8', body: 'body is not JSON' }
+      }
+      if (endpoint === 'respond') {
+        const message = body as { type?: unknown; rpcId?: unknown; result?: { ok?: unknown; error?: unknown } } | null
+        const valid = message?.type === 'client-response' && typeof message.rpcId === 'string'
+          && typeof message.result === 'object' && message.result !== null
+          && (message.result.ok === true || (message.result.ok === false && typeof message.result.error === 'object' && message.result.error !== null))
+        const receipt = !valid ? { accepted: false, reason: 'bad-response' }
+          : await this.forwardInteractionResponse(message as { rpcId: string; result: { ok: boolean; value?: unknown; error?: unknown } })
+        remoteResponse = Response.json(receipt)
       }
       parsedBody = parseClientRequest(body)
       // Generic Typert Remote endpoints contain a namespace/method slash and
@@ -636,20 +675,12 @@ export class HubConnector {
       // unknown method as its own error response, so waiting for a 404 loses
       // the Remote endpoint before the Gateway can see it.
       if (parsedBody !== undefined && parsedBody.method === endpoint) {
-        const result = await this.webRemote(this.gateway.dispatch === undefined ? endpoint.replace('/', '.') : endpoint,
+        const result = await this.webRemote(endpoint,
           parsedBody.payload).then(value => ({ ok: true, value })).catch(remoteFailure)
         remoteResponse = Response.json({ type: 'server-response', rpcId: parsedBody.rpcId, result })
       }
     }
-    let response = remoteResponse ?? new Response('DSH Web endpoint is unavailable', { status: 404 })
-    if (response.status === 404 && parsedBody !== undefined) {
-      const endpoint = url.pathname.slice('/api/'.length)
-      if (parsedBody.method === endpoint) {
-        const result = await this.webRemote(this.gateway.dispatch === undefined ? endpoint.replace('/', '.') : endpoint,
-          parsedBody.payload).then(value => ({ ok: true, value })).catch(remoteFailure)
-        response = Response.json({ type: 'server-response', rpcId: parsedBody.rpcId, result })
-      }
-    }
+    const response = remoteResponse ?? new Response('DSH Web endpoint is unavailable', { status: 404 })
     const bytes = Buffer.from(await response.arrayBuffer())
     const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
     const textual = contentType.startsWith('text/')
@@ -692,6 +723,29 @@ export class HubConnector {
       ...item,
       eventSequence: events.reduce<number>((maximum, event) => Math.max(maximum, eventSequence(event)), 0),
     }
+  }
+
+  private async forwardInteractionResponse(message: { rpcId: string; result: { ok: boolean; value?: unknown; error?: unknown } }): Promise<{ accepted: boolean; reason?: string }> {
+    if (this.api?.respond !== undefined) {
+      return await this.api.respond({ type: 'client-response', ...message }) as { accepted: boolean; reason?: string }
+    }
+    if (this.gateway.dispatchRpc !== undefined && this.remoteEventClientId !== undefined) {
+      const outcome = message.result.ok
+        ? { kind: 'result', value: message.result.value }
+        : { kind: 'rejected', error: message.result.error }
+      const result = await this.gateway.dispatchRpc('$events/result', { args: {
+        clientId: this.remoteEventClientId,
+        eventId: message.rpcId,
+        outcome,
+      } }, new AbortController().signal)
+      if (typeof result === 'object' && result !== null && 'ok' in result && (result as { ok?: unknown }).ok === false) {
+        return { accepted: false, reason: 'response-rejected' }
+      }
+      return { accepted: true }
+    }
+    if (this.gateway.dispatch === undefined) return { accepted: false, reason: 'response-unavailable' }
+    await this.remote('respond', message as unknown as Record<string, unknown>)
+    return { accepted: true }
   }
 
   private async invokeSessions(operation: string, value: unknown, _commandId: string): Promise<unknown> {
@@ -758,21 +812,10 @@ export class HubConnector {
       return { ok: true }
     }
     if (operation === 'interaction.respond') {
-      if (this.api?.respond !== undefined) {
-        await this.api.respond({ type: 'client-response', rpcId: rpcId(String(input.requestId)), result: { ok: true, value: input.response } })
-      } else if (this.gateway.dispatchRpc !== undefined && this.remoteEventClientId !== undefined) {
-        const result = await this.gateway.dispatchRpc('$events/result', { args: {
-          clientId: this.remoteEventClientId,
-          eventId: String(input.requestId),
-          outcome: { kind: 'result', value: input.response },
-        } }, new AbortController().signal)
-        if (typeof result === 'object' && result !== null && 'ok' in result && (result as { ok?: unknown }).ok === false) {
-          const error = (result as { error?: { message?: string } }).error
-          throw new Error(error?.message ?? 'Remote event response failed')
-        }
-      } else {
-        await this.remote('respond', { rpcId: rpcId(String(input.requestId)), result: { ok: true, value: input.response } })
-      }
+      const response = await this.forwardInteractionResponse({
+        rpcId: String(input.requestId), result: { ok: true, value: input.response },
+      })
+      if (!response.accepted) throw new Error(response.reason ?? 'Remote event response failed')
       return { ok: true }
     }
     throw new Error(`unsupported sessions operation ${operation}`)

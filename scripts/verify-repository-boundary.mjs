@@ -29,7 +29,7 @@ const workflows = new Set(['hub-ci.yml', 'hub-release.yml'])
 function allowed(path) {
   if (!path.includes('/')) return rootFiles.has(path)
   if (path.startsWith('apps/hub-web/')) return true
-  if (path.startsWith('deploy/hub/') || path.startsWith('deploy/node/')) return true
+  if (path.startsWith('deploy/hub/') || path.startsWith('deploy/node/') || path.startsWith('deploy/tailcat/')) return true
   if (path.startsWith('packages/hub/')) return true
   if (path === 'patches/node-pty@1.1.0.patch') return true
   if (path.startsWith('third_party/official-web/')) return true

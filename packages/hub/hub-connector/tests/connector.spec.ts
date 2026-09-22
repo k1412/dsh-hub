@@ -17,19 +17,19 @@ const servers: HubConnectorServer[] = []
 const contexts: Context[] = []
 
 type TestApiProxy = {
-  sessions?: Record<string, (...args: any[]) => Promise<unknown>>
-  settings?: Record<string, (...args: any[]) => Promise<unknown>>
-  host?: Record<string, (...args: any[]) => Promise<unknown>>
-  events?: Record<string, (...args: any[]) => AsyncIterable<unknown>>
-  respond?: (...args: any[]) => Promise<unknown>
+  sessions?: Record<string, (...args: unknown[]) => Promise<unknown>>
+  settings?: Record<string, (...args: unknown[]) => Promise<unknown>>
+  host?: Record<string, (...args: unknown[]) => Promise<unknown>>
+  events?: Record<string, (...args: unknown[]) => AsyncIterable<unknown>>
+  respond?: (...args: unknown[]) => Promise<unknown>
 }
 
 type TestGateway = {
-  dispatch?: (...args: any[]) => Promise<unknown>
-  dispatchRpc?: (...args: any[]) => Promise<unknown>
-  invoke?: (...args: any[]) => Promise<unknown>
-  stream?: (...args: any[]) => Promise<AsyncIterable<unknown>>
-  wireStream?: { open: (...args: any[]) => Promise<AsyncIterable<unknown>> }
+  dispatch?: (...args: unknown[]) => Promise<unknown>
+  dispatchRpc?: (...args: unknown[]) => Promise<unknown>
+  invoke?: (...args: unknown[]) => Promise<unknown>
+  stream?: (...args: unknown[]) => Promise<AsyncIterable<unknown>>
+  wireStream?: { open: (...args: unknown[]) => Promise<AsyncIterable<unknown>> }
 }
 
 afterEach(async () => {
@@ -95,6 +95,51 @@ describe('Hub Connector coexistence', () => {
     } }, expect.any(AbortSignal)]])
   })
 
+  it('forwards the official Web /api/respond envelope to current Remote events', async () => {
+    const calls: unknown[][] = []
+    const connector = new HubConnector(undefined, {
+      dispatchRpc: async (...args: unknown[]) => {
+        calls.push(args)
+        return { ok: true, value: undefined }
+      },
+    }, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.6-alpha.2', reconnectMaximumMs: 1_000,
+    })
+    ;(connector as unknown as { remoteEventClientId: string }).remoteEventClientId = 'event-client-web'
+    const invokeWeb = (connector as unknown as { invokeWeb(operation: string, value: unknown): Promise<unknown> }).invokeWeb.bind(connector)
+    const result = await invokeWeb('fetch', {
+      method: 'POST', path: '/api/respond', headers: [['content-type', 'application/json']],
+      body: JSON.stringify({ type: 'client-response', rpcId: 'event-web-1', result: {
+        ok: true, value: { sessionId: 'session-1', answer: { answers: [{ id: 'continue', selected: ['Yes'] }] } },
+      } }),
+    }) as { body: string; status: number }
+    expect(result.status).toBe(200)
+    expect(JSON.parse(result.body)).toEqual({ accepted: true })
+    expect(calls[0]).toEqual(['$events/result', { args: {
+      clientId: 'event-client-web', eventId: 'event-web-1', outcome: { kind: 'result', value: {
+        sessionId: 'session-1', answer: { answers: [{ id: 'continue', selected: ['Yes'] }] },
+      } },
+    } }, expect.any(AbortSignal)])
+  })
+
+  it.each(['legacy', 'remote', 'disconnected'] as const)('reports rejected answers through both carriers (%s)', async (kind) => {
+    const receipt = { accepted: false, reason: kind === 'legacy' ? 'not-pending' : kind === 'remote' ? 'response-rejected' : 'response-unavailable' }
+    const connector = new HubConnector(kind === 'legacy' ? { respond: async () => receipt } : undefined, {
+      dispatchRpc: async () => ({ ok: false, error: { message: 'event expired' } }),
+    }, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: 'test', reconnectMaximumMs: 1_000,
+    })
+    if (kind !== 'disconnected') (connector as unknown as { remoteEventClientId: string }).remoteEventClientId = 'event-client'
+    const invokeWeb = (connector as unknown as { invokeWeb(operation: string, value: unknown): Promise<{ body: string }> }).invokeWeb.bind(connector)
+    const result = await invokeWeb('fetch', {
+      method: 'POST', path: '/api/respond', headers: [['content-type', 'application/json']],
+      body: JSON.stringify({ type: 'client-response', rpcId: 'expired-question', result: { ok: true, value: {} } }),
+    })
+    expect(JSON.parse(result.body)).toEqual(receipt)
+    const invokeSessions = (connector as unknown as { invokeSessions(operation: string, value: unknown, id: string): Promise<unknown> }).invokeSessions.bind(connector)
+    await expect(invokeSessions('interaction.respond', { requestId: 'expired-question', response: {} }, 'answer')).rejects.toThrow(receipt.reason)
+  })
+
   it('captures the current event client id before forwarding a question', async () => {
     const frames: HubIpcFrame[] = []
     const resultCalls: unknown[][] = []
@@ -148,6 +193,7 @@ describe('Hub Connector coexistence', () => {
     const gateway = {
       invoke: async (request: { namespace: string; method: string; args: Record<string, unknown> }) => {
         calls.push(request)
+        expect(Object.keys(request.args)).toEqual([request.method === 'list' ? '_request' : 'request'])
         if (request.namespace === 'session' && request.method === 'list') {
           return { items: listed ? [{ sessionId: 'new-session', updatedAt: 10, running: true, cwd: '/workspace' }] : [] }
         }
@@ -191,9 +237,9 @@ describe('Hub Connector coexistence', () => {
     const invokeWeb = (connector as unknown as { invokeWeb(operation: string, value: unknown): Promise<unknown> }).invokeWeb.bind(connector)
     const result = await invokeWeb('fetch', {
       method: 'POST', path: '/api/commands/execute', headers: [['content-type', 'application/json']],
-      body: JSON.stringify({ type: 'client-request', rpcId: 'tool-rpc-1', method: 'commands/execute', payload: {
+      body: JSON.stringify({ type: 'client-request', rpcId: 'tool-rpc-1', method: 'commands/execute', payload: { args: {
         agentId: 'session-1', line: '/skill run-check', submittedAttachments: [],
-      } }),
+      } } }),
     }) as { body: string; status: number }
     expect(result.status).toBe(200)
     expect(JSON.parse(result.body)).toMatchObject({ rpcId: 'tool-rpc-1', result: { ok: true, value: { completed: true } } })
@@ -278,6 +324,7 @@ describe('Hub Connector coexistence', () => {
       if (method === 'commands/execute') return { ok: true, value: { completed: 'created' } } as never
       if (method === 'settings/update') return { ok: true, value: { completed: 'settings' } } as never
       if (method === 'respond') return { ok: true, value: { completed: 'answer' } } as never
+      if (method === 'session/cancel') return { ok: true, value: { accepted: true } } as never
       throw new Error(`unexpected Gateway method ${method}`)
     })
 
@@ -332,6 +379,7 @@ describe('Hub Connector coexistence', () => {
         server.send('default', webCommand('command-priority-create-0001', 'commands/execute')),
         server.send('default', webCommand('command-priority-settings-0001', 'settings/update')),
         server.send('default', webCommand('command-priority-answer-0001', 'respond')),
+        server.send('default', webCommand('command-priority-cancel-0001', 'session/cancel')),
       ])
       await vi.waitFor(() => { expect(bodies).toContainEqual(expect.objectContaining({
         type: 'capability.result', commandId: 'command-priority-goal-0001', status: 'ok',
@@ -345,6 +393,11 @@ describe('Hub Connector coexistence', () => {
       await vi.waitFor(() => { expect(bodies).toContainEqual(expect.objectContaining({
         type: 'capability.result', commandId: 'command-priority-answer-0001', status: 'ok',
       })) })
+      await vi.waitFor(() => { expect(bodies).toContainEqual(expect.objectContaining({
+        type: 'capability.result', commandId: 'command-priority-cancel-0001', status: 'ok',
+      })) })
+      const cancelled = bodies.find(body => body.type === 'capability.result' && body.commandId === 'command-priority-cancel-0001')
+      expect(cancelled).toMatchObject({ value: { body: expect.stringContaining('"accepted":true') } })
       expect(bodies.some(body => body.type === 'capability.result'
         && body.commandId.startsWith('command-priority-slow-'))).toBe(false)
       releaseSlow?.()
