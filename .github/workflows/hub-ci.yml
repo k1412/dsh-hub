@@ -100,7 +100,11 @@ jobs:
         if: always()
         with:
           name: hub-performance
-          path: .artifacts/performance*.json
+          path: |
+            .artifacts/performance.json
+            .artifacts/performance-disk.json
+          include-hidden-files: true
+          if-no-files-found: error
 
   web-regression:
     name: Hub / reviewed Web desktop and mobile
