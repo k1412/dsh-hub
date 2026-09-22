@@ -4,6 +4,6 @@
     "rootDir": "src",
     "outDir": "lib/types"
   },
-  "include": ["src/setup.ts"],
+  "include": ["src/setup.ts", "src/target-bridge.ts"],
   "references": []
 }

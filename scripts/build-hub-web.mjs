@@ -43,6 +43,17 @@ async function buildSetupPage() {
   await writeFile(join(outputRoot, 'setup.html'), html)
 }
 
+async function buildTargetBridge() {
+  await esbuild({
+    entryPoints: [join(hubWebRoot, 'src', 'target-bridge.ts')],
+    bundle: true,
+    format: 'iife',
+    minify: true,
+    outfile: join(outputRoot, 'target-bridge.js'),
+    sourcemap: false,
+  })
+}
+
 /** Build the immutable browser boot graph and copy every pinned bundle. */
 export async function buildHubWeb() {
   const snapshot = JSON.parse(await readFile(join(snapshotRoot, 'snapshot.json'), 'utf8'))
@@ -94,11 +105,13 @@ export async function buildHubWeb() {
 
   const graph = { rev: shortHash(JSON.stringify(entries)), entries }
   await writeFile(join(outputRoot, 'boot.js'), renderBootScript(graph))
+  await buildTargetBridge()
   const indexPath = join(outputRoot, 'index.html')
   const officialHtml = await readFile(indexPath, 'utf8')
   if (!officialHtml.includes('</head>')) throw new Error('official Web artifact has no </head>')
   const additions = [
     '<meta name="dsh-settings-access" content="authenticated-control-plane" />',
+    '<script src="/target-bridge.js"></script>',
     '<script src="/boot.js"></script>',
   ].join('')
   const html = officialHtml

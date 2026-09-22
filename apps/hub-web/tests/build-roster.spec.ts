@@ -80,4 +80,16 @@ describe('reviewed official Web snapshot', () => {
     expect(script.indexOf('jitless: true')).toBeLessThan(script.indexOf('window.__DSH_BOOT__'))
     expect(script).toContain('window.__DSH_BOOT__ = {"rev":"revision","entries":[]};')
   })
+
+  it('loads the version-neutral target bridge before the official boot graph', async () => {
+    const index = await readFile(resolve(root, 'apps/hub-web/dist/index.html'), 'utf8')
+    expect(index).toContain('<script src="/target-bridge.js"></script>')
+    expect(index.indexOf('<script src="/target-bridge.js"></script>')).toBeLessThan(
+      index.indexOf('<script src="/boot.js"></script>'),
+    )
+    const bridge = await readFile(resolve(root, 'apps/hub-web/dist/target-bridge.js'), 'utf8')
+    expect(bridge).toContain('/api/')
+    expect(bridge).toContain('nodeId')
+    expect(bridge).toContain('runtimeId')
+  })
 })
