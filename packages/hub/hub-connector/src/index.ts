@@ -621,6 +621,23 @@ export class HubConnector {
   }
 
   private async webRemote(endpoint: string, payload: unknown): Promise<unknown> {
+    // The pinned Web UI still speaks ApiProxy's host directory verbs. Current
+    // DSH exports the same browse data through the directoryPicker namespace.
+    // Keep an actual legacy Host service authoritative on older runtimes.
+    const hostMethod = endpoint.startsWith('host.') || endpoint.startsWith('host/')
+      ? endpoint.slice(5) : ''
+    if (this.api?.host?.[hostMethod] === undefined && this.gateway.invoke !== undefined
+      && ['listDirectory', 'createDirectory', 'pickDirectory'].includes(hostMethod)) {
+      const carrier = (payload ?? {}) as Record<string, unknown>
+      const request = (carrier.args ?? carrier) as Record<string, unknown>
+      const method = hostMethod === 'listDirectory' ? 'list'
+        : hostMethod === 'createDirectory' ? 'createDirectory' : 'pick'
+      const args = hostMethod === 'listDirectory'
+        ? request.path === undefined ? {} : { path: request.path }
+        : hostMethod === 'createDirectory' ? { path: request.path, name: request.name } : {}
+      const value = await this.gateway.invoke({ namespace: 'directoryPicker', method, args })
+      return hostMethod === 'listDirectory' ? value : { path: value }
+    }
     if (endpoint.includes('/')) {
       // The Remote HTTP carrier wraps named arguments in { args }. Dispatch
       // consumes that carrier payload; direct invoke consumes only its args.

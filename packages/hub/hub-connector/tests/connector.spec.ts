@@ -55,6 +55,66 @@ function testGateway(): TestGateway {
 }
 
 describe('Hub Connector coexistence', () => {
+  it('bridges the pinned Web directory picker to current DSH Remote methods', async () => {
+    const listing = { path: '/home/dsh', home: '/home/dsh', crumbs: [], entries: [
+      { name: 'work', path: '/home/dsh/work', hidden: false },
+    ], truncated: false }
+    const calls: Array<{ namespace: string; method: string; args: Record<string, unknown> }> = []
+    const connector = new HubConnector(undefined, {
+      invoke: async request => {
+        calls.push(request)
+        if (request.method === 'list') return listing
+        if (request.method === 'createDirectory') return '/home/dsh/new'
+        if (request.method === 'pick') return null
+        throw new Error(`unexpected directory method ${request.method}`)
+      },
+    }, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.7-rc.2', reconnectMaximumMs: 1_000,
+    })
+    const invokeWeb = (connector as unknown as {
+      invokeWeb(operation: string, value: unknown): Promise<{ body: string; status: number }>
+    }).invokeWeb.bind(connector)
+    async function request(method: string, payload: unknown): Promise<unknown> {
+      const result = await invokeWeb('fetch', {
+        method: 'POST', path: `/api/${method}`, headers: [['content-type', 'application/json']],
+        body: JSON.stringify({ type: 'client-request', rpcId: method, method, payload }),
+      })
+      expect(result.status).toBe(200)
+      return (JSON.parse(result.body) as { result: { ok: boolean; value: unknown } }).result
+    }
+    await expect(request('host.listDirectory', {})).resolves.toEqual({ ok: true, value: listing })
+    await expect(request('host.listDirectory', { path: '/home/dsh/work' })).resolves.toEqual({ ok: true, value: listing })
+    await expect(request('host.createDirectory', { path: '/home/dsh', name: 'new' })).resolves.toEqual({
+      ok: true, value: { path: '/home/dsh/new' },
+    })
+    await expect(request('host.pickDirectory', {})).resolves.toEqual({ ok: true, value: { path: null } })
+    expect(calls).toEqual([
+      { namespace: 'directoryPicker', method: 'list', args: {} },
+      { namespace: 'directoryPicker', method: 'list', args: { path: '/home/dsh/work' } },
+      { namespace: 'directoryPicker', method: 'createDirectory', args: { path: '/home/dsh', name: 'new' } },
+      { namespace: 'directoryPicker', method: 'pick', args: {} },
+    ])
+  })
+
+  it('keeps the legacy Host directory service on older DSH runtimes', async () => {
+    const listing = { path: '/work', home: '/home', crumbs: [], entries: [], truncated: false }
+    const hostList = vi.fn(async () => ({ result: { ok: true, value: listing } }))
+    const remoteInvoke = vi.fn(async () => { throw new Error('current Remote must not be called') })
+    const connector = new HubConnector({ host: { listDirectory: hostList } }, { invoke: remoteInvoke }, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.0-rc.7', reconnectMaximumMs: 1_000,
+    })
+    const invokeWeb = (connector as unknown as {
+      invokeWeb(operation: string, value: unknown): Promise<{ body: string }>
+    }).invokeWeb.bind(connector)
+    const response = await invokeWeb('fetch', {
+      method: 'POST', path: '/api/host.listDirectory', headers: [['content-type', 'application/json']],
+      body: JSON.stringify({ type: 'client-request', rpcId: 'legacy-directory', method: 'host.listDirectory', payload: {} }),
+    })
+    expect(JSON.parse(response.body)).toMatchObject({ result: { ok: true, value: listing } })
+    expect(hostList).toHaveBeenCalledOnce()
+    expect(remoteInvoke).not.toHaveBeenCalled()
+  })
+
   it('normalizes current Gateway event frames for the legacy Web stream envelope', () => {
     expect(normalizeEventFrame({ type: 'ready', clientId: 'client-1', host: { home: '/workspace' } })).toBeUndefined()
     expect(normalizeEventFrame({ type: 'emit', event: 'api-session/status', args: [{ sessionId: 's1', running: true }] })).toMatchObject({
