@@ -4,6 +4,6 @@
 
 - insert:
     - id: hub-connector
-      # Resolve from this profile instead of the globally installed DSH loader.
-      # This keeps global, container and desktop installations on the same path.
-      name: './node_modules/@k1412/dsh-hub-connector/lib/index.js'
+      # The loader resolves package names from the active DSH profile. A
+      # relative node_modules path is rebased under the bundle in DSH 0.1.7.
+      name: '@k1412/dsh-hub-connector'

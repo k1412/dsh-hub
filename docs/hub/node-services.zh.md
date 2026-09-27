@@ -40,6 +40,8 @@ journalctl --user --unit dsh-hub-node.service --follow
 
 除非管理员为该账户启用 lingering，否则用户会话结束时用户服务也会停止。也可以使用系统服务，但必须设置显式的非特权 `User=`、相同的主目录和相同的绝对配置路径。
 
+在没有可用 systemd 用户管理器的 Linux 环境（例如 Android 上的 Debian chroot）中，安装节点时使用 `--no-service`，由宿主机进程管理器在 chroot 挂载和网络就绪后分别守护现有 DSH Runtime 与 Node Agent。两个进程必须使用同一个非特权账户及同一组 `HOME`、`DSH_HOME`、`DSH_HUB_STATE_DIRECTORY`、`DSH_HUB_RUNTIME_ID`；DSH Web 监听器只绑定回环地址。宿主机管理器可以由 root 启动，但 DSH 和 Node Agent 本身不能以 root 运行。
+
 ## macOS LaunchAgent
 
 创建 `~/Library/LaunchAgents/top.example.dsh-hub-node.plist`。它必须是 LaunchAgent 而不是系统 LaunchDaemon，确保服务以 DSH Profile 所有者身份运行。

@@ -95,8 +95,8 @@ try {
     repository: connectorManifest.repository,
     dsh: connectorManifest.dsh,
     peerDependencies: {
-      '@deepseek-ai/cordis': '4.0.1',
-      '@deepseek-ai/schemastery': '3.18.1',
+      '@deepseek-ai/cordis': '^4.0.1',
+      '@deepseek-ai/schemastery': '^3.18.1',
     },
   }, null, 2)}\n`)
   await pack(connectorRoot)

@@ -40,6 +40,8 @@ journalctl --user --unit dsh-hub-node.service --follow
 
 A user service stops when the user session ends unless the administrator enables lingering for that account. A system service is also supported when it sets an explicit unprivileged `User=`, the same home directory, and the same absolute configuration path.
 
+On Linux without a working systemd user manager, such as a Debian chroot on Android, install the node with `--no-service`. Have the host process manager supervise the existing DSH runtime and Node Agent separately after the chroot mounts and network are ready. Both processes must use the same unprivileged account and matching `HOME`, `DSH_HOME`, `DSH_HUB_STATE_DIRECTORY`, and `DSH_HUB_RUNTIME_ID`; bind DSH Web only to loopback. The host supervisor may start as root, but DSH and Node Agent must not run as root.
+
 ## macOS LaunchAgent
 
 Create `~/Library/LaunchAgents/top.example.dsh-hub-node.plist`. Keep this as a LaunchAgent, not a system LaunchDaemon, so it runs as the DSH profile owner.

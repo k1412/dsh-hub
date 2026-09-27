@@ -16,6 +16,10 @@ describe('DSH compatibility reporting', () => {
     }
   })
 
+  it('recognizes the deployed 0.1.7-rc.2 runtime', () => {
+    expect(classifyDshCompatibility('0.1.7-rc.2').status).toBe('supported')
+  })
+
   it('reports an untested upstream release as requiring an adapter upgrade', () => {
     const result = classifyDshCompatibility('0.1.8-alpha.1')
     expect(result.status).toBe('upgrade-required')

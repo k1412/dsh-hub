@@ -64,8 +64,8 @@ try {
     throw new Error('packed Connector must not require removed legacy DSH Host packages')
   }
   const connectorPatch = await readFile(join(connectorRoot, 'cordis.patch.yml'), 'utf8')
-  if (!connectorPatch.includes("name: './node_modules/@k1412/dsh-hub-connector/lib/index.js'")) {
-    throw new Error('packed Connector must resolve from the active DSH profile')
+  if (!connectorPatch.includes("name: '@k1412/dsh-hub-connector'")) {
+    throw new Error('packed Connector must use a package name that DSH 0.1.7 resolves from the active profile')
   }
   await Promise.all([
     access(join(connectorRoot, 'lib', 'index.js')),

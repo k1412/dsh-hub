@@ -9,6 +9,7 @@ export const DSH_SUPPORTED_VERSIONS = [
   '0.1.5-rc.3',
   '0.1.6-alpha.2',
   '0.1.7-alpha.1',
+  '0.1.7-rc.2',
 ] as const
 
 /**
