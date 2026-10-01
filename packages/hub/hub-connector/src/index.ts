@@ -704,11 +704,19 @@ export class HubConnector {
     return this.remote(endpoint, args, signal)
   }
 
-  private async webRemote(endpoint: string, payload: unknown): Promise<unknown> {
+  private async webRemote(endpoint: string, payload: unknown, webRpcId: string): Promise<unknown> {
     const carrier = (payload ?? {}) as Record<string, unknown>
     const args = (carrier.args ?? carrier) as Record<string, unknown>
     const request = (args.request ?? args) as Record<string, unknown>
     this.lifecycle?.assertAvailable(request.sessionId)
+    // The pinned Web predates the required durable prompt identity. Reuse its
+    // RPC identity so a transport replay cannot admit a second user message.
+    // A native legacy ApiProxy and an explicit modern requestId stay authoritative.
+    if (/^session[./]prompt$/u.test(endpoint) && this.api?.sessions?.prompt === undefined) {
+      return this.apiCall('sessions', 'prompt', 'session.prompt', {
+        ...request, ...(request.requestId === undefined ? { requestId: webRpcId } : {}),
+      })
+    }
     // Current DSH removed Host.describe; the pinned Web still needs this
     // readiness handshake before it can load any Workspace or Session baseline.
     if (/^host[./]describe$/u.test(endpoint) && this.api?.host?.describe === undefined) {
@@ -804,7 +812,7 @@ export class HubConnector {
       // the Remote endpoint before the Gateway can see it.
       if (parsedBody !== undefined && parsedBody.method === endpoint) {
         const result = await this.webRemote(endpoint,
-          parsedBody.payload).then(async value => ({ ok: true, value: await this.filterWebResult(endpoint, value) })).catch(remoteFailure)
+          parsedBody.payload, parsedBody.rpcId).then(async value => ({ ok: true, value: await this.filterWebResult(endpoint, value) })).catch(remoteFailure)
         remoteResponse = Response.json({ type: 'server-response', rpcId: parsedBody.rpcId, result })
       }
     }

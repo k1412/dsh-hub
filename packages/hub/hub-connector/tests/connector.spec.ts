@@ -575,6 +575,60 @@ describe('Hub Connector coexistence', () => {
     await pumping
   })
 
+  it.each(['invoke', 'dispatch'] as const)('admits legacy Web prompts with stable identities on independent owners (%s)', async (gatewayKind) => {
+    const admitted = new Map<string, Map<string, unknown>>()
+    for (const owner of ['node-a', 'node-b']) {
+      const messages = new Map<string, unknown>(); admitted.set(owner, messages)
+      const admit = async (endpoint: string, args: Record<string, unknown>) => {
+        expect(endpoint).toBe('session/prompt')
+        expect(Object.keys(args)).toEqual(['request'])
+        const request = args.request as Record<string, unknown>
+        if (typeof request.requestId !== 'string' || request.requestId.length === 0) throw new Error('wire field "request" failed boundary validation')
+        expect(request).toMatchObject({ sessionId: 'same-session', mode: 'steer', content: [{ type: 'text', text: '你好啊' }], clientTimeZone: 'Asia/Shanghai' })
+        messages.set(request.requestId, request)
+        return { accepted: true }
+      }
+      const connector = new HubConnector(undefined, gatewayKind === 'invoke' ? {
+        invoke: ({ namespace, method, args }) => admit(`${namespace}/${method}`, args),
+      } : { dispatch: async (endpoint, args) => ({ ok: true, value: await admit(endpoint, args as Record<string, unknown>) }) }, {
+        ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: owner, dshVersion: '0.1.7-rc.2', reconnectMaximumMs: 1_000,
+      })
+      const fetch = (connector as unknown as { invokeWeb(operation: string, input: unknown): Promise<{ body: string }> }).invokeWeb.bind(connector)
+      for (const endpoint of ['session.prompt', 'session/prompt']) {
+        for (const explicit of [false, true]) {
+          const request = { sessionId: 'same-session', mode: 'steer', content: [{ type: 'text', text: '你好啊' }], clientTimeZone: 'Asia/Shanghai',
+            ...(explicit ? { requestId: 'native-id' } : {}) }
+          const input = { method: 'POST', path: `/api/${endpoint}`, headers: [['content-type', 'application/json']],
+            body: JSON.stringify({ type: 'client-request', rpcId: 'stable-web-id', method: endpoint,
+              payload: endpoint.includes('/') ? { args: { request } } : request }) }
+          for (let replay = 0; replay < 2; replay++) {
+            const response = await fetch('fetch', input)
+            expect(JSON.parse(response.body).result).toEqual({ ok: true, value: { accepted: true } })
+          }
+        }
+      }
+      expect([...messages.keys()]).toEqual(['stable-web-id', 'native-id'])
+    }
+    expect(admitted.get('node-a')).not.toBe(admitted.get('node-b'))
+  })
+
+  it('leaves legacy prompt payloads unchanged and never retries a rejected modern prompt', async () => {
+    const payload = { sessionId: 'same-session', mode: 'queue', content: [{ type: 'text', text: 'hello' }] }
+    const legacy = vi.fn(async (request: { rpcId: string; payload: unknown }) => ({ result: { ok: true, value: { accepted: true } }, rpcId: request.rpcId }))
+    const invoke = vi.fn(async () => { throw new Error('model unavailable') })
+    const options = { ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: 'test', reconnectMaximumMs: 1_000 }
+    const connectors = [new HubConnector({ sessions: { prompt: legacy } }, { invoke }, options), new HubConnector(undefined, { invoke }, options)]
+    for (const [index, connector] of connectors.entries()) {
+      const fetch = (connector as unknown as { invokeWeb(operation: string, input: unknown): Promise<{ body: string }> }).invokeWeb.bind(connector)
+      const result = JSON.parse((await fetch('fetch', { method: 'POST', path: '/api/session.prompt', headers: [['content-type', 'application/json']],
+        body: JSON.stringify({ type: 'client-request', rpcId: 'web-id', method: 'session.prompt', payload }) })).body).result
+      expect(result.ok).toBe(index === 0)
+      if (index === 1) expect(result.error.message).toBe('model unavailable')
+    }
+    expect(legacy.mock.calls[0]?.[0].payload).toEqual(payload)
+    expect(invoke).toHaveBeenCalledTimes(1)
+  })
+
   it('adapts current Typert Remote session calls without the legacy ApiProxy', async () => {
     const calls: Array<{ namespace: string; method: string; args: Record<string, unknown> }> = []
     let listed = false

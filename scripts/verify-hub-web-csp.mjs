@@ -5,6 +5,7 @@
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { legacyWebProjectionValues } from '../packages/hub/hub-connector/src/web-projections.ts'
+import { HubConnector } from '../packages/hub/hub-connector/src/index.ts'
 import { encodeFleetId, decodeFleetId } from '../packages/hub/hub-server/src/fleet-web.ts'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, resolve, sep } from 'node:path'
@@ -49,8 +50,10 @@ const flowCalls = []
 const flowWorkspaces = []
 const flowSessions = []
 const flowSelections = new Map()
+const flowHistory = new Map()
+const flowPromptIds = new Set()
 const flowOnboarding = { ns: 'ui-onboarding', schema: {}, value: {}, applies: 'live', secrets: [], revision: 0 }
-function flowResult(method, payload, url) {
+function flowResult(method, payload, url, webRpcId) {
   const owner = (payload.sessionId && decodeFleetId(payload.sessionId))
     || (payload.workspaceId && decodeFleetId(payload.workspaceId))
     || fixtureRuntimes.find(row => row.nodeId === url.searchParams.get('nodeId') && row.runtimeId === url.searchParams.get('runtimeId'))
@@ -80,7 +83,42 @@ function flowResult(method, payload, url) {
     flowWorkspaces.find(row => row.workspaceId === payload.workspaceId)?.sessionIds.push(sessionId)
     return { sessionId }
   }
-  if (method === 'session.history') return { events: [], hasMore: false, projections: { asOfSeq: -1, values: legacyWebProjectionValues({ plan: { active: false, pending: false }, subagent: null, title: null, todos: null, permissions: { currentValue: 'workspace-write' } }, [{ value: 'workspace-write', name: 'workspace-write' }]) } }
+  if (method === 'session.history') return { events: (flowHistory.get(payload.sessionId) ?? []).map(event => ({ event })), hasMore: false, projections: { asOfSeq: (flowHistory.get(payload.sessionId)?.length ?? 0) - 1, values: legacyWebProjectionValues({ plan: { active: false, pending: false }, subagent: null, title: null, todos: null, permissions: { currentValue: 'workspace-write' } }, [{ value: 'workspace-write', name: 'workspace-write' }]) } }
+  if (method === 'session.prompt') {
+    // Use the real Connector; a permissive browser fixture must not hide the
+    // required native request identity that the pinned Web does not send.
+    const connector = new HubConnector(undefined, { invoke: async ({ namespace, method: nativeMethod, args }) => {
+      const request = args.request
+      if (namespace !== 'session' || nativeMethod !== 'prompt' || typeof request?.requestId !== 'string' || !request.requestId) {
+        throw new Error('session/prompt: wire field "request" failed boundary validation')
+      }
+      if (request.sessionId !== payload.sessionId || decodeFleetId(request.sessionId)?.nodeId !== owner.nodeId) throw new Error('prompt crossed Runtime ownership')
+      if (!flowPromptIds.has(request.requestId)) {
+        flowPromptIds.add(request.requestId)
+        const text = request.content[0]?.text
+        const at = (seq, type, data, surfaceOp) => ({ seq, type, data, time: Date.now(), ...(surfaceOp ? { surfaceOp } : {}) })
+        const events = [
+          at(0, 'turn/start', { turn: 1 }),
+          at(1, 'user/message', { id: 'fixture-user', role: 'user', content: [{ type: 'text', text }], source: { kind: 'user', rpcId: request.requestId } }, 'append'),
+          at(2, 'step/start', { turn: 1, step: 0 }),
+          at(3, 'assistant/message', { turn: 1, step: 0, stream: [], message: { id: 'fixture-assistant', role: 'assistant', content: [{ type: 'text', text: '手机发送验收成功' }], source: { kind: 'model', provider: 'fixture', model: 'second' } } }, 'append'),
+          at(4, 'step/end', { turn: 1, step: 0 }),
+          at(5, 'turn/end', { turn: 1, reason: { kind: 'completed' } }),
+        ]
+        flowHistory.set(request.sessionId, events)
+        flowSessions.find(row => row.sessionId === request.sessionId).blank = false
+        setTimeout(() => {
+          for (const event of events) for (const socket of downlinks.clients) {
+            if (socket.flowMux) socket.send(JSON.stringify({ type: 'server-request', method: 'session/event', rpcId: `fixture-event-${event.seq}`, payload: { type: 'session/event', sessionId: request.sessionId, event } }))
+          }
+        }, 50)
+      }
+      return { accepted: true }
+    } }, { ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: owner.runtimeId, dshVersion: '0.1.7-rc.2', reconnectMaximumMs: 1_000 })
+    return connector.invokeWeb('fetch', { method: 'POST', path: '/api/session.prompt', headers: [['content-type', 'application/json']],
+      body: JSON.stringify({ type: 'client-request', rpcId: webRpcId, method: 'session.prompt', payload })
+    }).then(response => { const result = JSON.parse(response.body).result; if (!result.ok) throw new Error(result.error.message); return result.value })
+  }
   if (method === 'session.models') return { current: flowSelections.get(payload.sessionId) ?? { provider: 'fixture', model: 'first' }, routable: true,
     groups: [{ id: 'fixture', name: `${owner.nodeId} models`, models: [{ id: 'first', name: 'Fixture First' }, { id: 'second', name: 'Fixture Second' }] }], failures: [] }
   if (method === 'session.selectModel') {
@@ -178,7 +216,7 @@ const server = createServer((request, response) => {
       const chunks = []; for await (const chunk of request) chunks.push(chunk)
       const input = JSON.parse(Buffer.concat(chunks).toString('utf8'))
       let result
-      try { result = { ok: true, value: flowResult(input.method, input.payload, url) } }
+      try { result = { ok: true, value: await flowResult(input.method, input.payload, url, input.rpcId) } }
       catch (error) { result = { ok: false, error: { code: 'internal', message: error.message } } }
       response.setHeader('Content-Type', 'application/json; charset=utf-8')
       response.end(JSON.stringify({ type: 'server-response', rpcId: input.rpcId, result }))
@@ -235,8 +273,9 @@ const server = createServer((request, response) => {
 // Keep both downlinks connected so the actual Web Runtime can finish its baselines.
 const { WebSocketServer } = createRequire(new URL('../packages/hub/hub-server/package.json', import.meta.url))('ws')
 const downlinks = new WebSocketServer({ server })
-downlinks.on('connection', (_socket, request) => {
+downlinks.on('connection', (socket, request) => {
   if (new URL(request.url, 'http://fixture').searchParams.has('nodeId')) throw new Error('fleet downlink scoped to one node')
+  socket.flowMux = request.url.includes('mux')
 })
 
 await new Promise((resolveListen, reject) => {
@@ -495,9 +534,17 @@ try {
     await phone.getByRole('menuitem', { name: /^(模型|Model)/u }).click()
     await phone.getByRole('menuitemradio', { name: 'Fixture Second', exact: true }).click()
     await phone.getByRole('button', { name: /选择模型，当前 Fixture Second|Select model, current Fixture Second/u }).waitFor()
+    await input.fill('手机发送验收')
+    await phone.getByRole('button', { name: /^发送消息$|^Send message$/u }).click()
+    await phone.getByText('手机发送验收', { exact: true }).waitFor()
+    await phone.getByText('手机发送验收成功', { exact: true }).waitFor()
+    if (flowPromptIds.size !== 1) throw new Error('phone submission was not admitted exactly once')
+    await phone.reload({ waitUntil: 'domcontentloaded' })
+    await phone.getByText('手机发送验收成功', { exact: true }).waitFor()
+    if (flowPromptIds.size !== 1) throw new Error('history reload resubmitted the prompt')
     if (flowCalls.some(call => call.method === 'settings.mutate' && call.payload.ns === 'ui-onboarding')) throw new Error('Hub tried to persist a removed onboarding namespace on the node')
     if (flowWorkspaces.length !== 1 || flowSessions.length !== 1 || flowSelections.size !== 1) throw new Error('mobile did not create a Workspace, Session and model selection')
-    for (const method of ['host.listDirectory', 'workspace.create', 'session.create', 'session.history', 'session.models', 'session.selectModel']) {
+    for (const method of ['host.listDirectory', 'workspace.create', 'session.create', 'session.history', 'session.models', 'session.selectModel', 'session.prompt']) {
       if (!flowCalls.some(call => call.method === method && call.nodeId === 'fixture-second')) throw new Error(`mobile did not route ${method} to its selected owner`)
     }
     if (new URL(phone.url()).searchParams.has('nodeId')) throw new Error('mobile conversation recreated a scoped URL')
@@ -505,6 +552,7 @@ try {
     await phone.screenshot({ path: '/tmp/dsh-hub-mobile-composer-verified.png' })
     process.stdout.write('Hub Web: visible, editable phone composer with current native permission projections verified\n')
     process.stdout.write('Hub Web: touch mobile directory → Workspace → Session → history → model selection verified\n')
+    process.stdout.write('Hub Web: mobile send → live reply → history reload through strict native prompt boundary verified\n')
   } catch (error) {
     await phone.screenshot({ path: '/tmp/dsh-hub-mobile-failure.png', fullPage: true })
     await writeFile('/tmp/dsh-hub-mobile-failure.txt', await phone.locator('body').innerText())
