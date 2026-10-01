@@ -130,6 +130,14 @@ interface HubCommand {
   result?: unknown
 }
 
+export interface ModelSyncReceipt { nodeId: string; runtimeId: string; ok: boolean; providers?: number; models?: number; skipped?: number; error?: string }
+/** Request an online-only encrypted transfer; no configurations or keys reach this API response. */
+export async function syncModels(source: HubRuntime, targets: HubRuntime[], replaceExisting: boolean): Promise<ModelSyncReceipt[]> {
+  const owner = (row: HubRuntime) => ({ nodeId: row.nodeId, runtimeId: row.runtimeId })
+  const result = await requestJson<{ results: ModelSyncReceipt[] }>('/hub/v1/model-sync', mutation({ source: owner(source), targets: targets.map(owner), replaceExisting }))
+  return result.results
+}
+
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init)
   const text = await response.text()

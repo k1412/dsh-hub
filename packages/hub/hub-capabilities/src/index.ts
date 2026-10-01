@@ -38,6 +38,20 @@ const empty = z.strictObject({})
 const ok = z.strictObject({ ok: z.literal(true) })
 const webBody = z.string().max(224 * 1024 * 1024)
 
+/** Node-owned model configuration transfer; only encrypted bundles cross the Hub. */
+export const modelSyncRecipientSchema = z.strictObject({ transferId: z.string().regex(/^[A-Za-z0-9_-]{24}$/),
+  publicKey: z.string().min(40).max(256), expiresAt: z.number().int().positive() })
+export const modelSyncBundleSchema = modelSyncRecipientSchema.extend({ senderKey: z.string().min(40).max(256),
+  nonce: z.string().max(32), tag: z.string().max(32), ciphertext: z.string().min(1).max(1_400_000) })
+export const modelSyncCapability = capability('dsh.model-sync', [
+  { name: 'prepare', idempotency: 'never-retry', request: empty, response: modelSyncRecipientSchema },
+  { name: 'export', idempotency: 'read', request: modelSyncRecipientSchema, response: modelSyncBundleSchema },
+  { name: 'apply', idempotency: 'never-retry', request: z.strictObject({ bundle: modelSyncBundleSchema,
+    replaceExisting: z.boolean().default(false) }), response: z.strictObject({ providers: z.number().int().nonnegative(),
+    models: z.number().int().nonnegative(), skipped: z.number().int().nonnegative(), backup: z.string().optional() }) },
+  { name: 'cancel', idempotency: 'idempotent', request: z.strictObject({ transferId: z.string().regex(/^[A-Za-z0-9_-]{24}$/) }), response: ok },
+], [])
+
 const sessionSummary = z.strictObject({
   sessionId: id,
   title: z.string().max(1_024).optional(),
@@ -464,6 +478,7 @@ export const filesCapability = capability('dsh.files', [
 
 /** All contracts implemented by the complete Connector profile. */
 export const hubCapabilityContracts: readonly HubCapabilityContract[] = [
+  modelSyncCapability,
   sessionsCapability,
   sessionLifecycleCapability,
   terminalsCapability,

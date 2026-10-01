@@ -1,5 +1,13 @@
 /** Simplified Chinese dictionary and key source of truth. */
 export const zh = {
+  modelSyncNav: '模型同步',
+  modelSyncHelp: '从一个节点复制自定义提供方、模型配置及其 API 密钥到其他节点。内置模型由各节点自己的 DSH 版本提供。',
+  modelSyncSource: '来源节点', modelSyncChoose: '请选择来源节点', modelSyncTargets: '目标节点',
+  modelSyncRefresh: '刷新节点', modelSyncUnavailable: '离线或需要升级', modelSyncReplace: '替换目标上的同名提供方及其凭据（默认跳过）',
+  modelSyncBoundary: '配置和密钥只保存在节点。Hub 仅临时转发加密内容，不保存模型库或凭据；保留目标上的其他提供方、默认模型及会话选模。同步前会在目标节点保存备份。设备登录授权需在目标节点单独完成。',
+  modelSyncBusy: '正在同步…', modelSyncStart: '同步到选中的节点', modelSyncDone: '已同步',
+  modelSyncProviders: '个提供方', modelSyncModels: '个自定义模型', modelSyncSkipped: '跳过同名提供方',
+  modelSyncFailed: '同步未完成；检查在线状态、提供方插件和凭据后重试。',
   nodesNav: 'Hub 节点',
   pluginsNav: '节点插件',
   sessionsNav: '会话管理',
@@ -44,6 +52,14 @@ export type HubSettingsLocaleKey = keyof typeof zh
 
 /** English mirror dictionary. */
 export const en = {
+  modelSyncNav: 'Model sync',
+  modelSyncHelp: 'Copy custom providers, model configuration and their API keys from one node to others. Built-in models come from each node’s DSH version.',
+  modelSyncSource: 'Source node', modelSyncChoose: 'Choose a source', modelSyncTargets: 'Target nodes',
+  modelSyncRefresh: 'Refresh nodes', modelSyncUnavailable: 'Offline or upgrade required', modelSyncReplace: 'Replace matching providers and credentials on targets (skipped by default)',
+  modelSyncBoundary: 'Configuration and keys stay on nodes. Hub only relays encrypted content in memory; it stores no model or credential library. Other providers, target defaults and Session selections are preserved. A backup is saved on each target. Device login grants require a separate sign-in on the target.',
+  modelSyncBusy: 'Syncing…', modelSyncStart: 'Sync to selected nodes', modelSyncDone: 'Synced',
+  modelSyncProviders: 'providers', modelSyncModels: 'custom models', modelSyncSkipped: 'Matching providers skipped',
+  modelSyncFailed: 'Sync incomplete; check connectivity, provider plugins and credentials before retrying.',
   nodesNav: 'Hub nodes',
   pluginsNav: 'Node plugins',
   sessionsNav: 'Session management',

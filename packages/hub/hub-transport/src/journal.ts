@@ -168,6 +168,7 @@ export class SqliteReliableJournal {
    * @returns durable outbound record.
    */
   public enqueue(bodyInput: HubEnvelopeBody, now = Date.now(), messageId = HubMessageId(randomBytes(18).toString('base64url'))): ReliableOutboundRecord {
+    if (bodyInput.type.startsWith('transient.')) throw new Error('transient bodies cannot be journaled')
     const body = hubEnvelopeBodySchema.parse(bodyInput)
     const bodyJson = canonicalHubJson(body as unknown as HubJson)
     const bodySize = Buffer.byteLength(bodyJson, 'utf8')

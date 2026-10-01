@@ -146,6 +146,29 @@ function hubSessionId(nodeId: string, runtimeId: string, sourceId: string): stri
 export class HubAgentRegistry {
   private readonly connections = new Map<string, ActiveNodeConnection>()
   private readonly hubBootId = HubMessageId(randomBytes(18).toString('base64url'))
+  private readonly transientPending = new Map<string, { connection: ActiveNodeConnection; runtimeId: string;
+    operation: string; version: string; finish: (value: HubJson) => void; fail: (error: Error) => void }>()
+
+  /** Online-only model transfer; no command row, journal, event replay, or payload audit. */
+  public async invokeModelSync(nodeId: HubNodeIdType, runtimeId: HubRuntimeIdType, operation: string, input: unknown): Promise<HubJson> {
+    const connection = this.connections.get(nodeId)
+    const descriptor = connection?.runtimes.get(runtimeId)?.get('dsh.model-sync')
+    const contract = descriptor === undefined ? undefined : resolveHubOperation('dsh.model-sync', descriptor.version, operation)
+    if (connection === undefined || connection.socket.readyState !== WebSocket.OPEN || contract === undefined) throw new Error('model sync requires an online upgraded node')
+    if (this.transientPending.size >= 64) throw new Error('too many model sync requests')
+    const requestId = randomBytes(18).toString('base64url')
+    const payload = contract.request.parse(input) as HubJson
+    return new Promise<HubJson>((resolve, reject) => {
+      const cleanup = (): void => { clearTimeout(timeout); this.transientPending.delete(requestId) }
+      const timeout = setTimeout(() => { cleanup(); reject(new Error('model sync timed out; retry explicitly')) }, 30_000)
+      this.transientPending.set(requestId, { connection, runtimeId, operation, version: descriptor?.version ?? '',
+        finish: value => { cleanup(); resolve(value) }, fail: error => { cleanup(); reject(error) } })
+      void sendSocket(connection.socket, connection.peer.transient({ type: 'transient.invoke', requestId,
+        runtimeId, capabilityVersion: descriptor?.version ?? '', operation, payload })).catch(() => {
+        this.transientPending.get(requestId)?.fail(new Error('model sync connection closed'))
+      })
+    })
+  }
 
   public constructor(
     private readonly storage: HubStorage,
@@ -406,6 +429,7 @@ export class HubAgentRegistry {
     payloadInput: unknown,
     actor: string,
   ): Promise<HubCommandRecord> {
+    if (capabilityName === 'dsh.model-sync') throw new Error('model sync must use the non-persistent channel')
     const connection = this.connections.get(nodeId)
     const node = this.storage.control.getNode(nodeId)
     if (node === undefined || node.status !== 'active') throw new Error('active node not found')
@@ -475,6 +499,7 @@ export class HubAgentRegistry {
 
   /** Close every active connection during Hub shutdown. */
   public close(): void {
+    for (const pending of this.transientPending.values()) pending.fail(new Error('Hub stopped during model sync'))
     for (const connection of this.connections.values()) {
       if (connection.heartbeat !== undefined) clearInterval(connection.heartbeat)
       if (connection.authenticationExpiry !== undefined) clearTimeout(connection.authenticationExpiry)
@@ -503,6 +528,20 @@ export class HubAgentRegistry {
     if (this.connections.get(connection.nodeId) !== connection) throw new Error('fenced Agent connection')
     if (binary) throw new Error('Agent protocol accepts JSON frames only')
     const input = JSON.parse(webSocketText(data)) as unknown
+    if ((input as { body?: { type?: string } })?.body?.type?.startsWith('transient.')) {
+      const body = connection.peer.receiveTransient(input)
+      if (body.type !== 'transient.result') throw new Error('unexpected transient request')
+      const pending = this.transientPending.get(body.requestId)
+      if (pending === undefined) return // late response after timeout; never replay or persist
+      if (pending.connection !== connection || pending.runtimeId !== body.runtimeId) throw new Error('wrong transient result owner')
+      if (body.status !== 'ok') pending.fail(new Error('node refused model sync; check provider configuration and credentials'))
+      else {
+        const contract = resolveHubOperation('dsh.model-sync', pending.version, pending.operation)
+        try { pending.finish(contract?.response.parse(body.value) as HubJson) }
+        catch { pending.fail(new Error('invalid model sync response')) }
+      }
+      return
+    }
     const received = connection.peer.receive(input)
     if (received.kind === 'rejected') {
       if (received.reason === 'sequence-gap') {
@@ -778,6 +817,7 @@ export class HubAgentRegistry {
   }
 
   private disconnected(connection: ActiveNodeConnection): void {
+    for (const pending of this.transientPending.values()) if (pending.connection === connection) pending.fail(new Error('node disconnected during model sync'))
     if (connection.heartbeat !== undefined) clearInterval(connection.heartbeat)
     if (connection.authenticationExpiry !== undefined) clearTimeout(connection.authenticationExpiry)
     if (this.connections.get(connection.nodeId) !== connection) return

@@ -1,8 +1,12 @@
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
+import { WebSocket } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { generateHubIdentity, HubMessageId, type HubEnvelopeBody } from '@k1412/dsh-hub-protocol'
+import { generateHubIdentity, HubMessageId, HubNodeId, type HubEnvelopeBody } from '@k1412/dsh-hub-protocol'
+import { modelSyncCapability } from '@k1412/dsh-hub-capabilities'
+import { ReliablePeer, SqliteReliableJournal } from '@k1412/dsh-hub-transport'
 import { HubNodeAgent } from '../src/agent.ts'
 import { HubNodeAgentState, loadHubNodeAgentConfig } from '../src/state.ts'
 
@@ -13,6 +17,42 @@ afterEach(async () => {
 })
 
 describe('Node Agent private state', () => {
+  it('routes transient sync through the exact live Connector, rejects replay, and bypasses durable node storage', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'node-model-sync-')); roots.push(root)
+    const hubIdentity = generateHubIdentity(); const path = join(root, 'config.json')
+    await writeFile(path, JSON.stringify({ hubUrl: 'https://hub.example.com', nodeId: 'sync-node', accessClientId: 'test-service',
+      accessClientSecret: 'service-secret-with-at-least-32-characters', hubPublicKey: hubIdentity.publicKey,
+      stateDirectory: join(root, 'state'), ipcEndpoint: join(root, 'state', 'connector.sock') }), { mode: 0o600 })
+    const state = await HubNodeAgentState.open(path); const agent = new HubNodeAgent({ state })
+    const database = new DatabaseSync(':memory:'); const journal = new SqliteReliableJournal(database, 'node')
+    const nodeId = HubNodeId('sync-node')
+    const peer = new ReliablePeer({ nodeId, localBootId: 'node-sync-boot-0001', expectedRemoteBootId: 'hub-sync-boot-00001',
+      connectionGeneration: 1, localPrivateKey: state.identity.privateKey, remotePublicKey: hubIdentity.publicKey, journal: state.journal })
+    const hub = new ReliablePeer({ nodeId, localBootId: 'hub-sync-boot-00001', expectedRemoteBootId: 'node-sync-boot-0001',
+      connectionGeneration: 1, localPrivateKey: hubIdentity.privateKey, remotePublicKey: state.identity.publicKey, journal })
+    const sent: unknown[] = []
+    const connection = { peer, socket: { send: (value: string, callback: (error?: Error) => void) => { sent.push(JSON.parse(value)); callback() } } }
+    const internal = agent as unknown as { connection: unknown; connector: { baselines(): unknown[]; send(runtime: string, body: unknown): Promise<boolean> };
+      handleHubMessage(connection: unknown, value: WebSocket.RawData, binary: boolean): Promise<void>; connectorBody(body: HubEnvelopeBody): void }
+    internal.connection = connection
+    vi.spyOn(internal.connector, 'baselines').mockReturnValue([{ runtimeId: 'owner-runtime', capabilities: [modelSyncCapability.descriptor] }])
+    const forwarded = vi.spyOn(internal.connector, 'send').mockResolvedValue(true)
+    const requestId = 'node-model-sync-request01'
+    const frame = hub.transient({ type: 'transient.invoke', requestId, runtimeId: 'owner-runtime',
+      capabilityVersion: modelSyncCapability.descriptor.version, operation: 'prepare', payload: {} })
+    await internal.handleHubMessage(connection, Buffer.from(JSON.stringify(frame)), false)
+    await internal.handleHubMessage(connection, Buffer.from(JSON.stringify(frame)), false)
+    expect(forwarded).toHaveBeenCalledOnce()
+    expect(forwarded).toHaveBeenCalledWith('owner-runtime', expect.objectContaining({ capability: 'dsh.model-sync', commandId: requestId }))
+    internal.connectorBody({ type: 'capability.result', commandId: requestId, status: 'ok', value: { encrypted: 'sealed-secret-marker' } })
+    expect(hub.receiveTransient(sent[0])).toMatchObject({ type: 'transient.result', runtimeId: 'owner-runtime', requestId, status: 'ok' })
+    expect(state.journal.inboundAcknowledgement()).toBe(0); expect(state.journal.pendingOutbound()).toHaveLength(0)
+    expect(state.journal.recoverableInboundAfter(0)).toHaveLength(0)
+    const foreign = hub.transient({ type: 'transient.invoke', requestId: 'node-model-sync-foreign1', runtimeId: 'wrong-runtime',
+      capabilityVersion: modelSyncCapability.descriptor.version, operation: 'prepare', payload: {} })
+    await expect(internal.handleHubMessage(connection, Buffer.from(JSON.stringify(foreign)), false)).rejects.toThrow('not advertised')
+    state.close(); database.close()
+  })
   it('creates owner-only identity, IPC secret, journal, and clears enrollment material', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-hub-node-state-'))
     roots.push(root)

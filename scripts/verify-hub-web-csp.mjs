@@ -33,6 +33,8 @@ for (const runtime of fixtureRuntimes) runtime.capabilities.push({
   name: 'dsh.session-lifecycle', version: '1.0.0',
   operations: ['inventory', 'archive', 'unarchive', 'trash', 'restore', 'purge'].map(name => ({ name })),
 })
+for (const runtime of fixtureRuntimes) runtime.capabilities.push({ name: 'dsh.model-sync', version: '1.0.0', operations: [] })
+const modelSyncCalls = []
 const lifecycleRows = new Map(fixtureRuntimes.map((runtime, index) => [runtime.nodeId, [{
   sessionId: 'same-session', title: `Fixture conversation ${index === 0 ? 'A' : 'B'}`,
   workspacePath: `/projects/${index === 0 ? 'a' : 'b'}`, updatedAt: index + 1,
@@ -123,6 +125,13 @@ const server = createServer((request, response) => {
       response.statusCode = 200
       response.setHeader('Content-Type', 'application/json; charset=utf-8')
       response.end('{"enrollments":[]}')
+      return
+    }
+    if (request.method === 'POST' && url.pathname === '/hub/v1/model-sync') {
+      const chunks = []; for await (const chunk of request) chunks.push(chunk)
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8')); modelSyncCalls.push(input)
+      response.setHeader('Content-Type', 'application/json; charset=utf-8')
+      response.end(JSON.stringify({ results: input.targets.map(row => ({ ...row, ok: true, providers: 1, models: 6, skipped: 0 })) }))
       return
     }
     if (request.method === 'POST' && url.pathname === '/hub/v1/commands') {
@@ -262,6 +271,15 @@ try {
     throw new Error('session management crossed Runtime ownership')
   }
   process.stdout.write('Hub Web: archive, restore, trash, permanent confirmation, and two-owner routing verified\n')
+  await page.getByRole('button', { name: /^模型同步$|^Model sync$/u }).click()
+  const syncManager = page.getByRole('region', { name: /^模型同步$|^Model sync$/u })
+  await syncManager.getByRole('combobox').selectOption({ label: 'Fixture NAS · fixture-runtime' })
+  await syncManager.getByRole('checkbox', { name: 'Fixture Mac · desktop', exact: true }).check()
+  await syncManager.getByRole('button', { name: /^同步到选中的节点$|^Sync to selected nodes$/u }).click()
+  await syncManager.getByText(/已同步 1 个提供方 \/ 6 个自定义模型|Synced 1 providers \/ 6 custom models/u).waitFor()
+  if (JSON.stringify(modelSyncCalls) !== JSON.stringify([{ source: { nodeId: 'fixture-node', runtimeId: 'fixture-runtime' },
+    targets: [{ nodeId: 'fixture-second', runtimeId: 'desktop' }], replaceExisting: false }])) throw new Error('model sync crossed ownership or sent model configuration from the browser')
+  process.stdout.write('Hub Web: model sync source, target, preserved-conflict default and receipt verified\n')
 
   const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' })
   await mobile.context().addCookies([loginCookie])

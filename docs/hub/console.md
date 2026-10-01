@@ -12,6 +12,7 @@ Use the overview to find work and Settings in the lower-left menu to manage mach
 | Add or revoke a machine, clear offline listings | Settings → Hub nodes |
 | Inspect plugin versions, update, or recover | Settings → Node plugins; select Management target first |
 | Browse archives, restore, or delete Sessions | Settings → Session management; filter by node and status |
+| Copy models from one node to others | Settings → [Model sync](model-sync.md); select source and targets |
 
 These steps use Hub's pinned official Web components. Interface changes in newer DSH releases may not yet be included; see [compatibility](compatibility.md).
 

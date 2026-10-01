@@ -5,7 +5,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { extname, resolve, sep } from 'node:path'
 import { z } from 'zod'
 import { WebSocket, WebSocketServer } from 'ws'
-import { HubNodeId, HubRuntimeId, type HubIdentityKeyPair } from '@k1412/dsh-hub-protocol'
+import { HubNodeId, HubRuntimeId, type HubIdentityKeyPair, type HubJson } from '@k1412/dsh-hub-protocol'
 import type { HubStorage } from '@k1412/dsh-hub-storage'
 import {
   HubAuthError, type HubHumanPrincipal, type HubRequestHeaders, type HubServicePrincipal,
@@ -439,6 +439,38 @@ export class HubServer {
       json(response, 200, {
         enrollments: this.options.storage.control.listPendingEnrollments(),
       })
+      return
+    }
+    if (method === 'POST' && url.pathname === '/hub/v1/model-sync') {
+      const target = z.strictObject({ nodeId: z.string().min(1).max(64), runtimeId: z.string().min(1).max(64) })
+      const input = z.strictObject({ source: target, targets: z.array(target).min(1).max(16),
+        replaceExisting: z.boolean().default(false) }).parse(await jsonBody(request))
+      const seen = new Set<string>()
+      for (const row of input.targets) {
+        const key = `${row.nodeId}\0${row.runtimeId}`
+        if (seen.has(key) || (row.nodeId === input.source.nodeId && row.runtimeId === input.source.runtimeId)) throw new HttpProblem(400, 'choose distinct source and target runtimes')
+        seen.add(key)
+      }
+      const results = await Promise.all(input.targets.map(async row => {
+        const nodeId = HubNodeId(row.nodeId); const runtimeId = HubRuntimeId(row.runtimeId)
+        let recipient: { transferId: string } | undefined
+        try {
+          recipient = await this.agents.invokeModelSync(nodeId, runtimeId, 'prepare', {}) as { transferId: string }
+          const bundle = await this.agents.invokeModelSync(HubNodeId(input.source.nodeId), HubRuntimeId(input.source.runtimeId), 'export', recipient)
+          const receipt = await this.agents.invokeModelSync(nodeId, runtimeId, 'apply', { bundle, replaceExisting: input.replaceExisting }) as Record<string, HubJson>
+          this.options.storage.control.appendAudit({ occurredAt: Date.now(), actor: `human:${human.email}`,
+            action: 'models.synced', nodeId, runtimeId, outcome: 'ok', details: { sourceNodeId: input.source.nodeId,
+              sourceRuntimeId: input.source.runtimeId, providers: receipt.providers ?? 0, models: receipt.models ?? 0, skipped: receipt.skipped ?? 0 } })
+          return { ...row, ok: true, providers: receipt.providers, models: receipt.models, skipped: receipt.skipped }
+        } catch {
+          this.options.storage.control.appendAudit({ occurredAt: Date.now(), actor: `human:${human.email}`,
+            action: 'models.synced', nodeId, runtimeId, outcome: 'error', details: { sourceNodeId: input.source.nodeId, sourceRuntimeId: input.source.runtimeId } })
+          return { ...row, ok: false, error: '同步未完成，请检查节点是否在线、提供方插件和凭据是否可用。' }
+        } finally {
+          if (recipient !== undefined) await this.agents.invokeModelSync(nodeId, runtimeId, 'cancel', { transferId: recipient.transferId }).catch(() => undefined)
+        }
+      }))
+      json(response, 200, { results })
       return
     }
     if (method === 'GET' && url.pathname === '/hub/v1/sessions') {

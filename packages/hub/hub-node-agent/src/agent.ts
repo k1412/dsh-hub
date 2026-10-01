@@ -89,6 +89,7 @@ function webSocketText(data: WebSocket.RawData): string {
   return bytes.toString('utf8')
 }
 
+
 function receiveOne(socket: WebSocket, timeoutMs: number): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -177,6 +178,8 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
 
 /** Long-running outbound Agent; the service manager owns restart and OS-account scope. */
 export class HubNodeAgent {
+  private readonly transientRequests = new Map<string, { connection: ActiveHubConnection; runtimeId: string; expiresAt: number }>()
+  private readonly transientSeen = new Map<string, number>()
   private readonly bootId = HubMessageId(randomBytes(18).toString('base64url'))
   private readonly connector: HubConnectorServer
   private readonly supervisors = new Map<string, HubNodeSupervisor>()
@@ -400,7 +403,31 @@ export class HubNodeAgent {
   private async handleHubMessage(connection: ActiveHubConnection, data: WebSocket.RawData, binary: boolean): Promise<void> {
     if (this.connection !== connection) throw new Error('fenced Hub connection')
     if (binary) throw new Error('Hub protocol accepts JSON frames only')
-    const received = connection.peer.receive(JSON.parse(webSocketText(data)) as unknown)
+    const input = JSON.parse(webSocketText(data)) as unknown
+    if ((input as { body?: { type?: string } })?.body?.type?.startsWith('transient.')) {
+      const body = connection.peer.receiveTransient(input)
+      if (body.type !== 'transient.invoke') throw new Error('unexpected transient response')
+      for (const [id, until] of this.transientSeen) if (until < Date.now()) this.transientSeen.delete(id)
+      for (const [id, row] of this.transientRequests) if (row.expiresAt < Date.now() || row.connection !== connection) this.transientRequests.delete(id)
+      if (this.transientSeen.has(body.requestId)) return
+      if (this.transientSeen.size >= 256) throw new Error('too many transient requests')
+      this.transientSeen.set(body.requestId, Date.now() + 60_000)
+      const baseline = this.connector.baselines().find(row => row.runtimeId === body.runtimeId)
+      const descriptor = baseline?.capabilities.find(row => row.name === 'dsh.model-sync')
+      const operation = descriptor?.version === body.capabilityVersion ? resolveHubOperation('dsh.model-sync', body.capabilityVersion, body.operation) : undefined
+      if (operation === undefined) throw new Error('model sync was not advertised')
+      const payload = operation.request.parse(body.payload) as HubJson
+      this.transientRequests.set(body.requestId, { connection, runtimeId: body.runtimeId, expiresAt: Date.now() + 30_000 })
+      if (!await this.connector.send(body.runtimeId, { type: 'capability.invoke', commandId: body.requestId,
+        runtimeId: body.runtimeId, capability: 'dsh.model-sync', capabilityVersion: body.capabilityVersion,
+        operation: body.operation, payload })) {
+        this.transientRequests.delete(body.requestId)
+        await send(connection.socket, connection.peer.transient({ type: 'transient.result', requestId: body.requestId,
+          runtimeId: body.runtimeId, status: 'error' }))
+      }
+      return
+    }
+    const received = connection.peer.receive(input)
     if (received.kind === 'rejected') throw new Error(`Hub frame rejected: ${received.reason}`)
     this.drainDeferredConnectorBodies()
     this.drainPendingRuntimeStates()
@@ -523,6 +550,15 @@ export class HubNodeAgent {
   }
 
   private connectorBody(body: HubEnvelopeBody): void {
+    if (body.type === 'capability.result' && this.transientSeen.has(body.commandId)) {
+      const pending = this.transientRequests.get(body.commandId)
+      this.transientRequests.delete(body.commandId)
+      if (pending === undefined || pending.connection !== this.connection || pending.expiresAt < Date.now()) return
+      void send(pending.connection.socket, pending.connection.peer.transient({ type: 'transient.result',
+        requestId: body.commandId, runtimeId: pending.runtimeId, status: body.status === 'ok' ? 'ok' : 'error',
+        ...(body.status === 'ok' ? { value: body.value } : {}) })).catch(() => undefined)
+      return
+    }
     if (body.type === 'stream.frame' && !isControlStream(body) && this.shouldSuppressStream()) {
       this.recordDroppedStream(body)
       return

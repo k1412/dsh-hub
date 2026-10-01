@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { runtimeCapability, sessionsCapability, webCapability } from '@k1412/dsh-hub-capabilities'
+import { modelSyncCapability, runtimeCapability, sessionsCapability, webCapability } from '@k1412/dsh-hub-capabilities'
+import { ModelSync, type ModelSyncSettings, type ModelSyncCredentials } from '../../hub-connector/src/model-sync.ts'
 import {
   generateHubIdentity, HubMessageId, HubNodeId, HubRuntimeId, signHubEnvelope,
   verifyHubEnvelope, type HubEnvelopeBody, type HubIdentityKeyPair,
@@ -91,6 +92,7 @@ async function openSignedNode(options: {
   hubIdentity: HubIdentityKeyPair
   port: number
   nodeName: string
+  models?: boolean
   existing?: Pick<SignedNode, 'nodeId' | 'runtimeId' | 'identity' | 'journal'>
 }): Promise<SignedNode> {
   const nodeId = options.existing?.nodeId ?? HubNodeId(options.nodeName)
@@ -193,7 +195,7 @@ async function openSignedNode(options: {
     bootId: `runtime-${options.nodeName}-boot`,
     dshVersion: '0.1.0',
     connectorVersion: '0.1.0',
-    capabilities: [sessionsCapability.descriptor, runtimeCapability.descriptor, webCapability.descriptor],
+    capabilities: [sessionsCapability.descriptor, runtimeCapability.descriptor, webCapability.descriptor, ...(options.models ? [modelSyncCapability.descriptor] : [])],
   })
   await node.flush()
   await vi.waitFor(() => {
@@ -205,6 +207,56 @@ async function openSignedNode(options: {
 }
 
 describe('Hub simultaneous multi-node integration', () => {
+  it('relays one source to two node-owned model stores without command rows, journal payloads, or model-bearing events', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hub-model-sync-')); roots.push(root)
+    const storage = await HubStorage.open(join(root, 'hub.db')); const hubIdentity = generateHubIdentity()
+    const server = new HubServer({ storage, access, originGuard: { permits: () => true }, hubIdentity, publicOrigin: 'https://hub.example.com' })
+    servers.push(server); const address = await server.listen('127.0.0.1', 0)
+    const stores = await Promise.all(['source', 'target-a', 'target-b'].map(async (name, index) => {
+      const node = await openSignedNode({ storage, hubIdentity, port: address.port, nodeName: name, models: true })
+      const profiles: Record<string, unknown> = index === 0 ? { shared: { api: 'openai-completions', baseURL: 'https://models.example.com/v1',
+        apiKeyEnv: 'SOURCE_SECRET', models: [{ id: 'private-shared-model' }] } } : { local: { models: [{ id: `${name}-only` }] } }
+      const keys = new Map(index === 0 ? [['SOURCE_SECRET', 'must-never-reach-hub-plaintext']] : [])
+      let revision = 0
+      const settings: ModelSyncSettings = { describe: () => [{ ns: 'llm-pi-ai', value: { providers: profiles }, revision }],
+        update: async (_ns, patch, expected) => { expect(expected).toBe(revision); Object.assign(profiles, (patch as { providers: unknown }).providers); revision += 1 } }
+      const credentials: ModelSyncCredentials = { resolve: async ref => keys.has(ref) ? { value: keys.get(ref) as string } : undefined,
+        set: async (ref, value) => { keys.set(ref, value) }, unset: async ref => { keys.delete(ref) } }
+      const sync = new ModelSync(settings, credentials, join(root, name))
+      const pump = async (): Promise<void> => {
+        for (;;) {
+          const input = await node.next()
+          if ((input as { body?: { type?: string } }).body?.type?.startsWith('transient.')) {
+            const body = node.peer.receiveTransient(input); if (body.type !== 'transient.invoke') throw new Error('wrong direction')
+            const value = body.operation === 'prepare' ? sync.prepare() : body.operation === 'export' ? await sync.export(body.payload as never)
+              : body.operation === 'apply' ? await sync.apply(body.payload as never) : sync.cancel((body.payload as { transferId: string }).transferId)
+            await send(node.socket, node.peer.transient({ type: 'transient.result', requestId: body.requestId, runtimeId: body.runtimeId,
+              status: 'ok', value: value as never }))
+          } else {
+            const received = node.peer.receive(input)
+            if (received.kind === 'accepted') { node.journal.claimInbound(received.record.sequence); node.journal.completeInbound(received.record.sequence); node.journal.pruneProcessed() }
+          }
+        }
+      }
+      void pump()
+      return { node, profiles, keys }
+    }))
+    const owner = (index: number) => ({ nodeId: stores[index]?.node.nodeId, runtimeId: 'default' })
+    const response = await fetch(`http://127.0.0.1:${address.port}/hub/v1/model-sync`, { method: 'POST',
+      headers: { origin: 'https://hub.example.com', 'content-type': 'application/json' },
+      body: JSON.stringify({ source: owner(0), targets: [owner(1), owner(2)], replaceExisting: false }) })
+    expect(response.status).toBe(200)
+    const receipt = await response.json()
+    expect(receipt).toMatchObject({ results: [{ nodeId: 'target-a', ok: true, providers: 1, models: 1 }, { nodeId: 'target-b', ok: true, providers: 1, models: 1 }] })
+    for (const store of stores.slice(1)) { expect(Object.keys(store.profiles)).toEqual(['local', 'shared']); expect([...store.keys.values()]).toEqual(['must-never-reach-hub-plaintext']) }
+    expect(storage.control.listCommands(100)).toHaveLength(0)
+    const trace = JSON.stringify({ audit: storage.control.listAudit(100), receipt })
+    expect(trace).not.toContain('private-shared-model'); expect(trace).not.toContain('must-never-reach-hub-plaintext')
+    for (const store of stores) {
+      expect(storage.reliableJournal(`node:${store.node.nodeId}`).pendingOutbound().some(row => row.body.type.startsWith('transient.'))).toBe(false)
+      await expect(server.agents.invoke(store.node.nodeId, store.node.runtimeId, 'dsh.model-sync', modelSyncCapability.descriptor.version, 'prepare', {}, 'test')).rejects.toThrow('non-persistent')
+    }
+  })
   it('isolates concurrent commands, survives one stalled/disconnected node, and recovers only its backlog', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-hub-multi-node-'))
     roots.push(root)

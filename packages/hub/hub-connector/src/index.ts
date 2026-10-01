@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import {
-  runtimeCapability, sessionsCapability, sessionLifecycleCapability, settingsCapability, webCapability,
+  runtimeCapability, sessionsCapability, sessionLifecycleCapability, settingsCapability, webCapability, modelSyncCapability,
   resolveHubOperation,
 } from '@k1412/dsh-hub-capabilities'
 import {
@@ -18,6 +18,7 @@ import {
 import { HubMessageId, type HubEnvelopeBody, type HubJson } from '@k1412/dsh-hub-protocol'
 import { classifyDshCompatibility } from './dsh-compatibility.ts'
 import { SessionLifecycle, type LifecyclePersistence } from './session-lifecycle.ts'
+import { ModelSync, type ModelSyncSettings, type ModelSyncCredentials } from './model-sync.ts'
 
 interface RuntimeApi {
   sessions?: Record<string, (request: unknown, signal?: AbortSignal) => Promise<unknown>>
@@ -423,6 +424,7 @@ export class HubConnector {
     private readonly gateway: RuntimeGateway,
     private readonly config: ResolvedConfig,
     private readonly lifecycle?: SessionLifecycle,
+    private readonly modelSync?: ModelSync,
   ) {}
 
   /**
@@ -494,6 +496,7 @@ export class HubConnector {
               capabilities: [
                 sessionsCapability.descriptor,
                 ...(this.lifecycle === undefined ? [] : [sessionLifecycleCapability.descriptor]),
+                ...(this.modelSync === undefined ? [] : [modelSyncCapability.descriptor]),
                 runtimeCapability.descriptor,
                 settingsCapability.descriptor,
                 webCapability.descriptor,
@@ -603,6 +606,13 @@ export class HubConnector {
   }
 
   private async invoke(capability: string, operation: string, input: unknown, commandId: string): Promise<unknown> {
+    if (capability === 'dsh.model-sync') {
+      if (this.modelSync === undefined) throw new Error('model sync is unavailable')
+      if (operation === 'prepare') return this.modelSync.prepare()
+      if (operation === 'export') return this.modelSync.export(input as Parameters<ModelSync['export']>[0])
+      if (operation === 'apply') return this.modelSync.apply(input as Parameters<ModelSync['apply']>[0])
+      if (operation === 'cancel') return this.modelSync.cancel((input as { transferId: string }).transferId)
+    }
     if (capability === 'dsh.session-lifecycle') {
       if (this.lifecycle === undefined) throw new Error('此节点需要升级 Connector 和 DSH 后才能管理归档与回收站。')
       if (operation === 'inventory') return this.lifecycle.inventory(input as Parameters<SessionLifecycle['inventory']>[0])
@@ -1124,6 +1134,11 @@ function mountConnector(ctx: Context, config: Config): () => Promise<void> {
     list(): Array<{ sessionIds: readonly string[]; detachSession(id: string): Promise<void> }>
   } | undefined
   const liveSessions = ctx.get('sessions') as { get(id: string): unknown } | undefined
+  const settings = ctx.get('settings') as ModelSyncSettings | undefined
+  const credentials = ctx.get('credentials') as ModelSyncCredentials | undefined
+  const modelSync = typeof settings?.describe === 'function' && typeof credentials?.resolve === 'function'
+    && typeof credentials.set === 'function' && typeof credentials.unset === 'function'
+    ? new ModelSync(settings, credentials, join(dirname(config.secretFile ?? join(defaultStateDirectory, 'connector.secret')), 'model-sync-backups')) : undefined
   const lifecycle: SessionLifecycle | undefined = persistence?.name === 'session-persistence-jsonl'
     && typeof persistence.stat === 'function' && typeof persistence.resolveCurrentLog === 'function'
     && typeof persistence.acquireWriteLease === 'function' && typeof persistence.config?.root === 'string'
@@ -1156,11 +1171,12 @@ function mountConnector(ctx: Context, config: Config): () => Promise<void> {
     runtimeId: config.runtimeId ?? (process.env.DSH_HUB_RUNTIME_ID?.trim() || 'default'),
     dshVersion: config.dshVersion ?? '',
     reconnectMaximumMs: config.reconnectMaximumMs ?? 30_000,
-  }, lifecycle)
+  }, lifecycle, modelSync)
   const task = connector.run(controller.signal).catch((error: unknown) => {
     if (!controller.signal.aborted) ctx.logger.error(`Hub Connector stopped: ${String(error)}`)
   })
   return async () => {
+    modelSync?.close()
     controller.abort(new Error('Hub Connector disposed'))
     await task
   }

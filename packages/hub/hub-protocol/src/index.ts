@@ -244,6 +244,23 @@ export interface HubResultBody {
   error?: { code: string; message: string; retryable: boolean; details?: HubJson }
 }
 
+/** Online-only model transfer. These bodies must never enter a durable journal. */
+export interface HubTransientInvokeBody {
+  type: 'transient.invoke'
+  requestId: string
+  runtimeId: string
+  capabilityVersion: string
+  operation: string
+  payload: HubJson
+}
+export interface HubTransientResultBody {
+  type: 'transient.result'
+  requestId: string
+  runtimeId: string
+  status: 'ok' | 'error'
+  value?: HubJson
+}
+
 /** One reconstructible or durable capability stream frame. */
 export interface HubStreamFrameBody {
   type: 'stream.frame'
@@ -298,6 +315,8 @@ export type HubEnvelopeBody =
   | HubRuntimeGoodbyeBody
   | HubInvokeBody
   | HubResultBody
+  | HubTransientInvokeBody
+  | HubTransientResultBody
   | HubStreamFrameBody
   | HubResyncBody
   | HubTransportStatusBody
@@ -367,6 +386,11 @@ export const hubEnvelopeBodySchema: z.ZodType<HubEnvelopeBody> = z.discriminated
     payload: z.json(),
   }),
   resultBodySchema,
+  z.strictObject({ type: z.literal('transient.invoke'), requestId: protocolIdSchema,
+    runtimeId: hubRuntimeIdSchema, capabilityVersion: z.string().regex(SEMVER),
+    operation: memberNameSchema, payload: z.json() }),
+  z.strictObject({ type: z.literal('transient.result'), requestId: protocolIdSchema,
+    runtimeId: hubRuntimeIdSchema, status: z.enum(['ok', 'error']), value: z.json().optional() }),
   z.strictObject({
     type: z.literal('stream.frame'),
     runtimeId: hubRuntimeIdSchema,

@@ -52,6 +52,21 @@ const hello: HubEnvelopeBody = {
 }
 
 describe('reliable Hub transport', () => {
+  it('authenticates transient model frames without journaling, advancing cursors, or accepting a foreign node', () => {
+    const { node, hub, nodeJournal, hubJournal } = peerPair()
+    const body = { type: 'transient.invoke' as const, requestId: 'model-sync-request-000001', runtimeId: 'default',
+      capabilityVersion: '1.0.0', operation: 'prepare', payload: {} }
+    const frame = hub.transient(body)
+    expect(node.receiveTransient(frame)).toEqual(body)
+    expect(node.receive(frame)).toEqual({ kind: 'rejected', reason: 'transient-requires-memory-channel' })
+    expect(() => hub.enqueue(body)).toThrow('cannot be journaled')
+    expect(() => hubJournal.enqueue(body)).toThrow('cannot be journaled')
+    expect(nodeJournal.inboundAcknowledgement()).toBe(0)
+    expect(hubJournal.pendingOutbound()).toHaveLength(0)
+    expect(() => peerPair().node.receiveTransient(frame)).toThrow()
+    expect(() => node.receiveTransient(frame, Date.now() + 60_000)).toThrow()
+    hub.enqueue(hello); expect(node.receive(hub.renderPending()[0]).kind).toBe('accepted')
+  })
   it('persists before delivery, deduplicates replay, and clears only after a peer acknowledgement', () => {
     const { node, hub, nodeJournal, hubJournal } = peerPair()
     const record = node.enqueue(hello, 1_000)
