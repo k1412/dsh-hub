@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { SessionLifecycle, type LifecycleHost, type LifecycleSummary } from '../src/session-lifecycle.ts'
 
 const roots: string[] = []
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
 async function fixture(id = 'same-session') {
   const root = await mkdtemp(join(tmpdir(), 'hub-lifecycle-')); roots.push(root)
@@ -51,6 +51,32 @@ async function trash(lifecycle: SessionLifecycle, sessionId: string) {
 }
 
 describe('node-owned session lifecycle', () => {
+  it('allows canonical aliases above the storage root but refuses a linked root itself', async () => {
+    const f = await fixture()
+    const alias = join(f.root, 'parent-alias'); await symlink(f.root, alias, 'junction')
+    f.host.persistence.config.root = join(alias, 'logs')
+    f.host.persistence.resolveCurrentLog = async () => join(alias, 'logs', 'project', f.id, 'session.v4.jsonl')
+    const receipt = await trash(f.lifecycle, f.id)
+    await expect(f.lifecycle.mutate('purge', receipt)).resolves.toMatchObject({ status: 'purged' })
+    const other = await fixture()
+    const linkedRoot = join(other.root, 'linked-logs'); await symlink(join(other.root, 'logs'), linkedRoot, 'junction')
+    other.host.persistence.config.root = linkedRoot
+    other.host.persistence.resolveCurrentLog = async () => join(linkedRoot, 'project', other.id, 'session.v4.jsonl')
+    await expect(other.lifecycle.mutate('purge', await trash(other.lifecycle, other.id))).rejects.toThrow('符号链接')
+    expect(await readFile(other.log, 'utf8')).toContain('private transcript')
+  })
+  it('fences stale confirmations after restore and restart even when the clock moves backwards', async () => {
+    const f = await fixture()
+    vi.spyOn(Date, 'now').mockReturnValue(100)
+    const first = await trash(f.lifecycle, f.id)
+    await f.lifecycle.mutate('restore', first)
+    const restarted = new SessionLifecycle(f.metadata, f.host); await restarted.ready()
+    vi.spyOn(Date, 'now').mockReturnValue(50)
+    const second = await trash(restarted, f.id)
+    expect(second.deletedAt).toBeGreaterThan(first.deletedAt)
+    await expect(restarted.mutate('purge', first)).rejects.toThrow('回收站记录已变化')
+    expect(await readFile(f.log, 'utf8')).toContain('private transcript')
+  })
   it('archives, lists, and unarchives without deleting source data', async () => {
     const f = await fixture()
     await expect(f.lifecycle.mutate('archive', { sessionId: f.id })).resolves.toMatchObject({ status: 'archived' })

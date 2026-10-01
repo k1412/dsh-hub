@@ -17,7 +17,8 @@ const recordSchema = z.discriminatedUnion('phase', [
   z.strictObject({ phase: z.literal('purged'), sessionId: z.string().min(1).max(256), deletedAt: z.number().int().positive() }),
 ])
 type TrashRecord = z.infer<typeof recordSchema>
-const manifestSchema = z.strictObject({ version: z.literal(1), records: z.array(recordSchema).max(100_000) })
+const manifestSchema = z.strictObject({ version: z.literal(1), lastDeletedAt: z.number().int().nonnegative().default(0),
+  records: z.array(recordSchema).max(100_000) })
 interface Header { id: string; cwd?: string | undefined; origin?: string | undefined }
 /** Backend-specific operations verified against DSH's JSONL write-lock contract. */
 export interface LifecyclePersistence {
@@ -54,6 +55,7 @@ async function syncDirectory(path: string): Promise<void> {
 /** One Runtime owns its own durable trash set; no network or shared global ids. */
 export class SessionLifecycle {
   private records = new Map<string, TrashRecord>()
+  private lastDeletedAt = 0
   private tail = Promise.resolve()
   public constructor(private readonly path: string, private readonly host: LifecycleHost) {}
 
@@ -72,6 +74,7 @@ export class SessionLifecycle {
     }
     const state = manifestSchema.parse(JSON.parse(serialized) as unknown)
     this.records = new Map(state.records.map(record => [idOf(record), record]))
+    this.lastDeletedAt = state.records.reduce((latest, record) => Math.max(latest, record.deletedAt), state.lastDeletedAt)
     if (this.records.size !== state.records.length) throw new Error('Session trash contains duplicate ids')
     for (const record of this.records.values()) {
       if (record.phase === 'purging') {
@@ -124,7 +127,7 @@ export class SessionLifecycle {
     const temporary = `${this.path}.${randomBytes(8).toString('hex')}.tmp`
     const handle = await open(temporary, 'wx', 0o600)
     try {
-      await handle.writeFile(JSON.stringify({ version: 1, records: [...records.values()] }), 'utf8')
+      await handle.writeFile(JSON.stringify({ version: 1, lastDeletedAt: this.lastDeletedAt, records: [...records.values()] }), 'utf8')
       await handle.sync()
     } finally { await handle.close() }
     try { await rename(temporary, this.path); await syncDirectory(dirname(this.path)) }
@@ -173,7 +176,8 @@ export class SessionLifecycle {
     const wasArchived = this.host.archived().includes(id)
     await this.host.archive(id)
     if (operation === 'archive') return { sessionId: id, status: 'archived' }
-    const deletedAt = Date.now()
+    const deletedAt = Math.max(Date.now(), this.lastDeletedAt + 1)
+    this.lastDeletedAt = deletedAt
     const next = new Map(this.records)
     next.set(id, { phase: 'trash', summary, wasArchived, deletedAt }); await this.save(next)
     return { sessionId: id, status: 'trash', deletedAt }
@@ -186,6 +190,9 @@ export class SessionLifecycle {
     const log = record.phase === 'purging' ? undefined : await persistence.resolveCurrentLog(id)
     if (log === undefined && record.phase !== 'purging') throw new Error('旧格式日志需要先在 DSH 中打开并完成迁移，再归档删除。')
     const root = resolve(persistence.config.root)
+    // OS-owned ancestors may have canonical aliases (macOS /var -> /private/var).
+    // Refuse links in the configured storage subtree, not those outside it.
+    const canonicalRoot = await realpath(root)
     const directory = record.phase === 'purging' ? record.directory : dirname(log as string)
     const parts = relative(root, directory).split(sep)
     if (parts.length !== 2 || parts.some(part => part === '' || part === '..') || basename(directory) !== segment(id)) {
@@ -193,7 +200,9 @@ export class SessionLifecycle {
     }
     for (const path of [root, join(root, parts[0] as string), directory, ...(log === undefined ? [] : [log])]) {
       const metadata = await lstat(path)
-      if (metadata.isSymbolicLink() || await realpath(path) !== resolve(path)) throw new Error('日志路径含符号链接，拒绝删除。')
+      if (metadata.isSymbolicLink() || await realpath(path) !== resolve(canonicalRoot, relative(root, path))) {
+        throw new Error('日志路径含符号链接，拒绝删除。')
+      }
     }
     const lease = await persistence.acquireWriteLease(snapshot.header)
     try {
