@@ -4,10 +4,11 @@
 
 import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
+import { legacyWebProjectionValues } from '../packages/hub/hub-connector/src/web-projections.ts'
 import { encodeFleetId, decodeFleetId } from '../packages/hub/hub-server/src/fleet-web.ts'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, resolve, sep } from 'node:path'
-import { chromium } from 'playwright'
+import { chromium, webkit } from 'playwright'
 import { HUB_CONTENT_SECURITY_POLICY } from '../packages/hub/hub-server/src/server.ts'
 
 const repositoryRoot = resolve(import.meta.dirname, '..')
@@ -79,7 +80,7 @@ function flowResult(method, payload, url) {
     flowWorkspaces.find(row => row.workspaceId === payload.workspaceId)?.sessionIds.push(sessionId)
     return { sessionId }
   }
-  if (method === 'session.history') return { events: [], hasMore: false, projections: { asOfSeq: -1, values: {} } }
+  if (method === 'session.history') return { events: [], hasMore: false, projections: { asOfSeq: -1, values: legacyWebProjectionValues({ plan: { active: false, pending: false }, subagent: null, title: null, todos: null, permissions: { currentValue: 'workspace-write' } }, [{ value: 'workspace-write', name: 'workspace-write' }]) } }
   if (method === 'session.models') return { current: flowSelections.get(payload.sessionId) ?? { provider: 'fixture', model: 'first' }, routable: true,
     groups: [{ id: 'fixture', name: `${owner.nodeId} models`, models: [{ id: 'first', name: 'Fixture First' }, { id: 'second', name: 'Fixture Second' }] }], failures: [] }
   if (method === 'session.selectModel') {
@@ -247,7 +248,8 @@ if (address === null || typeof address === 'string') throw new Error('strict-CSP
 
 let browser
 try {
-  browser = await chromium.launch({ headless: true })
+  const engine = process.env.DSH_HUB_BROWSER_ENGINE === 'webkit' ? webkit : chromium
+  browser = await engine.launch({ headless: true })
   const page = await browser.newPage()
   const loginCookie = { name: 'hub-fixture', value: 'authenticated', url: `http://127.0.0.1:${address.port}` }
   await page.context().addCookies([loginCookie])
@@ -279,15 +281,24 @@ try {
   await page.waitForFunction(() => document.querySelector('#root')?.childElementCount !== 0)
   recordTiming('desktopBootMs', startedAt)
   // Ask Chromium to fetch the actual manifest, exercising its distinct cookie rules.
-  const cdp = await page.context().newCDPSession(page)
-  try {
-    const manifest = await cdp.send('Page.getAppManifest')
-    if (!manifest.data || !manifest.url.endsWith('/manifest.webmanifest')) {
-      throw new Error('authenticated browser could not fetch its same-origin manifest')
+  if (process.env.DSH_HUB_BROWSER_ENGINE === 'webkit') {
+    const manifest = await page.evaluate(async () => {
+      const response = await fetch('/manifest.webmanifest', { credentials: 'include' })
+      if (!response.ok) throw new Error('authenticated manifest request failed')
+      return response.json()
+    })
+    if (typeof manifest !== 'object' || manifest === null) throw new Error('WebKit manifest is malformed')
+  } else {
+    const cdp = await page.context().newCDPSession(page)
+    try {
+      const manifest = await cdp.send('Page.getAppManifest')
+      if (!manifest.data || !manifest.url.endsWith('/manifest.webmanifest')) {
+        throw new Error('authenticated browser could not fetch its same-origin manifest')
+      }
+      JSON.parse(manifest.data)
+    } finally {
+      await cdp.detach()
     }
-    JSON.parse(manifest.data)
-  } finally {
-    await cdp.detach()
   }
   const policyErrors = await page.evaluate(() => globalThis.__hubCspViolations)
   if (pageErrors.length > 0 || policyErrors.length > 0) {
@@ -453,6 +464,9 @@ try {
   const phone = await phoneContext.newPage()
   const flowErrors = []
   phone.on('pageerror', error => flowErrors.push(error.message))
+  phone.on('console', message => {
+    if (message.type() === 'error' && /TypeError|slot.*error|reading ['"](?:find|pending)|InputBar/u.test(message.text())) flowErrors.push(message.text())
+  })
   phone.setDefaultTimeout(10_000)
   try {
     await phone.goto(`${loginCookie.url}/?nodeId=fixture-node&runtimeId=fixture-runtime`, { waitUntil: 'domcontentloaded' })
@@ -468,6 +482,14 @@ try {
     await directory.getByRole('button', { name: /^打开$|^Open$/u }).click()
     process.stdout.write('Mobile flow: directory selected\n')
     const modelTrigger = phone.getByRole('button', { name: /^(选择模型|Select model)/u }).first()
+    const input = phone.locator('[data-composer-card] textarea')
+    await input.waitFor()
+    if (!await input.isEnabled()) throw new Error('phone composer is disabled after selecting a Workspace')
+    const box = await input.boundingBox()
+    if (box === null || box.width < 200 || box.height < 24 || box.y < 0 || box.y + box.height > 844) throw new Error(`phone composer is outside the visible viewport: ${JSON.stringify(box)}`)
+    await input.fill('手机输入验收')
+    if (await input.inputValue() !== '手机输入验收') throw new Error('phone composer does not retain typed text')
+    await input.fill('')
     await modelTrigger.waitFor()
     await modelTrigger.click()
     await phone.getByRole('menuitem', { name: /^(模型|Model)/u }).click()
@@ -480,6 +502,8 @@ try {
     }
     if (new URL(phone.url()).searchParams.has('nodeId')) throw new Error('mobile conversation recreated a scoped URL')
     if (flowErrors.length) throw new Error(flowErrors.join('\n'))
+    await phone.screenshot({ path: '/tmp/dsh-hub-mobile-composer-verified.png' })
+    process.stdout.write('Hub Web: visible, editable phone composer with current native permission projections verified\n')
     process.stdout.write('Hub Web: touch mobile directory → Workspace → Session → history → model selection verified\n')
   } catch (error) {
     await phone.screenshot({ path: '/tmp/dsh-hub-mobile-failure.png', fullPage: true })
@@ -490,6 +514,7 @@ try {
   process.stdout.write('Hub Web: 390px sidebar and full-screen Settings verified\n')
   const report = {
     schemaVersion: 1,
+    engine: process.env.DSH_HUB_BROWSER_ENGINE ?? 'chromium',
     measuredAt: new Date().toISOString(),
     viewport: { width: 390, height: 844 },
     interactionBudgetMs,

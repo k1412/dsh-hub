@@ -16,6 +16,7 @@ import {
   type HubIpcFrame,
 } from '@k1412/dsh-hub-node-ipc'
 import { HubMessageId, type HubEnvelopeBody, type HubJson } from '@k1412/dsh-hub-protocol'
+import { legacyWebProjectionValues, needsLegacyPermissionCatalog, type LegacyPermissionOption } from './web-projections.ts'
 import { classifyDshCompatibility } from './dsh-compatibility.ts'
 import { SessionLifecycle, type LifecyclePersistence } from './session-lifecycle.ts'
 import { ModelSync, type ModelSyncSettings, type ModelSyncCredentials } from './model-sync.ts'
@@ -803,7 +804,7 @@ export class HubConnector {
       // the Remote endpoint before the Gateway can see it.
       if (parsedBody !== undefined && parsedBody.method === endpoint) {
         const result = await this.webRemote(endpoint,
-          parsedBody.payload).then(value => ({ ok: true, value: this.filterWebResult(endpoint, value) })).catch(remoteFailure)
+          parsedBody.payload).then(async value => ({ ok: true, value: await this.filterWebResult(endpoint, value) })).catch(remoteFailure)
         remoteResponse = Response.json({ type: 'server-response', rpcId: parsedBody.rpcId, result })
       }
     }
@@ -822,19 +823,51 @@ export class HubConnector {
     }
   }
 
-  private filterWebResult(endpoint: string, value: unknown): unknown {
-    if (this.lifecycle === undefined || typeof value !== 'object' || value === null) return value
-    const result = value as { items?: Array<Record<string, unknown>> }
+  private async permissionOptions(): Promise<LegacyPermissionOption[]> {
+    try {
+      const catalog = await this.remote('permissionPresets.catalog', {}) as { options?: LegacyPermissionOption[] }
+      return Array.isArray(catalog.options) ? catalog.options.filter(option => typeof option.value === 'string' && typeof option.name === 'string') : []
+    } catch {
+      // A missing presentation catalog must not erase the entire composer.
+      // This never changes the node's effective permission or approval policy.
+      return []
+    }
+  }
+
+  private async filterWebResult(endpoint: string, value: unknown): Promise<unknown> {
+    if (typeof value !== 'object' || value === null) return value
+    let options: Promise<LegacyPermissionOption[]> | undefined
+    const projection = async (input: unknown): Promise<unknown> => {
+      if (typeof input !== 'object' || input === null) return input
+      const block = input as { values?: Record<string, unknown> }
+      if (typeof block.values !== 'object' || block.values === null) return input
+      if (needsLegacyPermissionCatalog(block.values)) options ??= this.permissionOptions()
+      return { ...block, values: legacyWebProjectionValues(block.values, await options ?? []) }
+    }
+    const result = value as { items?: Array<Record<string, unknown>>; projections?: unknown }
+    if (/^session[./]history$/u.test(endpoint) && result.projections !== undefined) {
+      return { ...result, projections: await projection(result.projections) }
+    }
     if (!Array.isArray(result.items)) return value
     if (/^session[./](list|search)$/u.test(endpoint)) {
-      return { ...result, items: result.items.filter(item => !this.lifecycle?.hidden(String(item.sessionId ?? item.id))) }
+      return { ...result, items: await Promise.all(result.items
+        .filter(item => !this.lifecycle?.hidden(String(item.sessionId ?? item.id)))
+        .map(async item => item.projections === undefined ? item : { ...item, projections: await projection(item.projections) })) }
     }
-    if (/^workspace[./]list$/u.test(endpoint)) {
+    if (this.lifecycle !== undefined && /^workspace[./]list$/u.test(endpoint)) {
       return { ...result, items: result.items.map(item => ({ ...item,
         sessionIds: Array.isArray(item.sessionIds) ? item.sessionIds.filter(id => !this.lifecycle?.hidden(String(id))) : item.sessionIds,
       })) }
     }
     return value
+  }
+
+  private async legacyWebFrame(event: NormalizedEventFrame): Promise<NormalizedEventFrame> {
+    if (event.payload.type !== 'session/projection' || typeof event.payload.key !== 'string') return event
+    const values = { [event.payload.key]: event.payload.value }
+    const options = needsLegacyPermissionCatalog(values) ? await this.permissionOptions() : []
+    const compatible = legacyWebProjectionValues(values, options)
+    return { ...event, payload: { ...event.payload, value: compatible[event.payload.key] } }
   }
 
   /** Read the source baseline before applying this Runtime's trash filter. */
@@ -1089,8 +1122,9 @@ export class HubConnector {
     const consumeMux = async () => {
       for await (const frame of mux) {
         if (signal.aborted) return
-        const event = normalizeEventFrame(frame)
-        if (event === undefined) continue
+        const normalized = normalizeEventFrame(frame)
+        if (normalized === undefined) continue
+        const event = await this.legacyWebFrame(normalized)
         this.webMuxFrameSequence += 1
         await this.send({ type: 'ipc.hub-body', body: {
           type: 'stream.frame',
@@ -1121,8 +1155,9 @@ export class HubConnector {
           && typeof (frame as Record<string, unknown>).clientId === 'string') {
           this.remoteEventClientId = (frame as Record<string, unknown>).clientId as string
         }
-        const event = normalizeEventFrame(frame)
-        if (event === undefined) continue
+        const normalized = normalizeEventFrame(frame)
+        if (normalized === undefined) continue
+        const event = await this.legacyWebFrame(normalized)
         this.webHostFrameSequence += 1
         await this.send({ type: 'ipc.hub-body', body: {
           type: 'stream.frame',

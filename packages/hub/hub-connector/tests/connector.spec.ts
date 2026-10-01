@@ -339,6 +339,37 @@ describe('Hub Connector coexistence', () => {
     expect(invoke.mock.calls.every(([request]) => request.namespace === 'session')).toBe(true)
   })
 
+  it('joins each current Runtime permission catalog for list, history and live projection frames', async () => {
+    for (const owner of ['first-node', 'second-node']) {
+      const options = [{ value: owner, name: `Preset for ${owner}` }]
+      const values = { permissions: { currentValue: owner }, plan: { active: false, pending: false } }
+      const invoke = vi.fn(async ({ namespace, method }: { namespace: string; method: string }) => {
+        if (namespace === 'permissionPresets' && method === 'catalog') return { options }
+        throw new Error('unexpected catalog source')
+      })
+      const connector = new HubConnector(undefined, { invoke }, {
+        ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.7-rc.2', reconnectMaximumMs: 1_000,
+      }) as unknown as {
+        filterWebResult(endpoint: string, value: unknown): Promise<unknown>
+        legacyWebFrame(event: { rpcId: string; payload: Record<string, unknown> }): Promise<unknown>
+      }
+      for (const endpoint of ['session.history', 'session/history']) {
+        await expect(connector.filterWebResult(endpoint, { events: [], projections: { asOfSeq: 4, values } })).resolves.toMatchObject({
+          projections: { values: { permissions: { currentValue: owner, options } } },
+        })
+      }
+      await expect(connector.filterWebResult('session.list', { items: [1, 2].map(index => ({
+        sessionId: `session-${index}`, projections: { asOfSeq: 4, values },
+      })) })).resolves.toMatchObject({ items: [1, 2].map(() => ({ projections: { values: { permissions: { currentValue: owner, options } } } })) })
+      await expect(connector.legacyWebFrame({ rpcId: 'live', payload: { type: 'session/projection', sessionId: 'same-local-id',
+        key: 'permissions', value: values.permissions, seq: 5 } })).resolves.toMatchObject({
+        payload: { value: { currentValue: owner, options } },
+      })
+      expect(values.permissions).toEqual({ currentValue: owner })
+      expect(invoke).toHaveBeenCalledTimes(4)
+    }
+  })
+
   it('keeps the legacy Host directory service on older DSH runtimes', async () => {
     const listing = { path: '/work', home: '/home', crumbs: [], entries: [], truncated: false }
     const hostList = vi.fn(async () => ({ result: { ok: true, value: listing } }))
