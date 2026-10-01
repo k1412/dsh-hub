@@ -20,6 +20,7 @@ type TestApiProxy = {
   sessions?: Record<string, (...args: unknown[]) => Promise<unknown>>
   settings?: Record<string, (...args: unknown[]) => Promise<unknown>>
   host?: Record<string, (...args: unknown[]) => Promise<unknown>>
+  workspace?: Record<string, (...args: unknown[]) => Promise<unknown>>
   events?: Record<string, (...args: unknown[]) => AsyncIterable<unknown>>
   respond?: (...args: unknown[]) => Promise<unknown>
 }
@@ -112,6 +113,60 @@ describe('Hub Connector coexistence', () => {
     })
     expect(JSON.parse(response.body)).toMatchObject({ result: { ok: true, value: listing } })
     expect(hostList).toHaveBeenCalledOnce()
+    expect(remoteInvoke).not.toHaveBeenCalled()
+  })
+
+  it('adapts the pinned Web workspace mutations to current Typert request arguments', async () => {
+    const workspace = {
+      workspaceId: 'workspace-1', path: '/home/dsh/project', title: 'project',
+      sessionIds: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+    }
+    const remoteInvoke = vi.fn(async ({ method }: { method: string }) =>
+      method === 'create' ? { workspace, created: true } : { workspace: { ...workspace, title: 'renamed' } })
+    const connector = new HubConnector(undefined, { invoke: remoteInvoke }, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.7-rc.2', reconnectMaximumMs: 1_000,
+    })
+    const invokeWeb = (connector as unknown as {
+      invokeWeb(operation: string, value: unknown): Promise<{ body: string; status: number }>
+    }).invokeWeb.bind(connector)
+    async function request(method: string, payload: unknown): Promise<unknown> {
+      const response = await invokeWeb('fetch', {
+        method: 'POST', path: `/api/${method}`, headers: [['content-type', 'application/json']],
+        body: JSON.stringify({ type: 'client-request', rpcId: method, method, payload }),
+      })
+      expect(response.status).toBe(200)
+      return (JSON.parse(response.body) as { result: unknown }).result
+    }
+    await expect(request('workspace.create', { path: workspace.path })).resolves.toEqual({
+      ok: true, value: { workspace, created: true },
+    })
+    await expect(request('workspace.rename', { workspaceId: workspace.workspaceId, title: 'renamed' })).resolves.toEqual({
+      ok: true, value: { workspace: { ...workspace, title: 'renamed' } },
+    })
+    expect(remoteInvoke).toHaveBeenNthCalledWith(1, {
+      namespace: 'workspace', method: 'create', args: { request: { path: workspace.path } }, signal: expect.any(AbortSignal),
+    })
+    expect(remoteInvoke).toHaveBeenNthCalledWith(2, {
+      namespace: 'workspace', method: 'rename', args: { request: { workspaceId: workspace.workspaceId, title: 'renamed' } },
+      signal: expect.any(AbortSignal),
+    })
+  })
+
+  it('keeps legacy workspace mutation arguments on older DSH runtimes', async () => {
+    const create = vi.fn(async () => ({ result: { ok: true, value: { workspace: { path: '/work' }, created: true } } }))
+    const remoteInvoke = vi.fn(async () => { throw new Error('current Remote must not be called') })
+    const connector = new HubConnector({ workspace: { create } }, { invoke: remoteInvoke }, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.0-rc.7', reconnectMaximumMs: 1_000,
+    })
+    const invokeWeb = (connector as unknown as {
+      invokeWeb(operation: string, value: unknown): Promise<{ body: string }>
+    }).invokeWeb.bind(connector)
+    const response = await invokeWeb('fetch', {
+      method: 'POST', path: '/api/workspace.create', headers: [['content-type', 'application/json']],
+      body: JSON.stringify({ type: 'client-request', rpcId: 'legacy-workspace', method: 'workspace.create', payload: { path: '/work' } }),
+    })
+    expect(JSON.parse(response.body)).toMatchObject({ result: { ok: true, value: { created: true } } })
+    expect(create).toHaveBeenCalledWith({ rpcId: expect.any(String), payload: { path: '/work' } }, undefined)
     expect(remoteInvoke).not.toHaveBeenCalled()
   })
 

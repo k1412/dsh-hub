@@ -612,10 +612,11 @@ export class HubConnector {
     const service = this.api?.[namespace] as Record<string, ((request: unknown, signal?: AbortSignal) => Promise<unknown>)> | undefined
     const legacy = service?.[method]
     if (legacy !== undefined) return unwrap(await legacy({ rpcId: rpcId(), payload }, signal) as RpcResponse<unknown>)
-    // Typert names each method parameter; Session takes a single request
-    // object, unlike Settings and Commands which take separate named values.
+    // Typert names each method parameter. Session and Workspace mutations
+    // take a single request object, unlike Settings and Commands.
     const args = namespace === 'sessions'
       ? method === 'list' ? { _request: payload } : { request: payload }
+      : namespace === 'workspace' && method !== 'list' ? { request: payload }
       : payload
     return this.remote(endpoint, args, signal)
   }
