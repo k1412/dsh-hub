@@ -12,7 +12,7 @@ Hub 1.0.4 最初基于 `0.1.0-rc.7` Host API 家族构建并测试。当前 Conn
 
 | DSH 系列 | 上游状态 | Hub 状态 |
 | --- | --- | --- |
-| `0.1.0-rc.7` | 旧 Host API / ApiProxy 接口 | Hub 1.0.4 支持 |
+| `0.1.0-rc.6` / `0.1.0-rc.7` | 旧 Host API / ApiProxy 接口 | Hub 1.0.4 支持；等待 ApiProxy 依赖激活后再启动 Connector，避免错误地进入新版 Remote 路径 |
 | `0.1.5-rc.2` / `0.1.5-rc.3` | Remote 网关和 Session API 已变化 | 已覆盖 Connector Remote 适配、事件桥接和 `$events/result` 回答路径；页面级 target bridge 也会把 Hub 选择带入 `/api/*`；内置 Web UI 仍是 rc.7 组合 |
 | `0.1.6-alpha.2` / `0.1.7-alpha.1` | 已覆盖的 alpha 版本，包含插件管理器和 Session 变化 | 已覆盖 Connector Remote 适配、工具/Skill 路由、问题/取消、事件桥接和 `$events/result` 回答路径；target bridge 覆盖了变化后的 HTTP/WebSocket 载体，但内置 Web UI 仍是 rc.7 组合 |
 | `0.1.7-rc.2` | 当前已验证的 DSH Runtime | Connector 继续桥接 Session 和事件，将内置 rc.7 Web UI 的 `host.listDirectory`、`host.createDirectory`、`host.pickDirectory` 转到新版 `directoryPicker` Remote，并把工作区写入请求包装为新版 `workspace` Remote 所需的 `request` 参数。Hub 内置 Web UI 仍是 rc.7 组合，新版 DSH Web 功能不会自动出现在 Hub 页面。 |
@@ -22,6 +22,8 @@ Hub 1.0.4 最初基于 `0.1.0-rc.7` Host API 家族构建并测试。当前 Conn
 ## 升级策略
 
 内置模型选择器的 `session.models` 调用会适配为新版 `session.modelCatalog` 与 `session.projections` 读取。适配层保留每个 Session 的下一次模型选择，未配置的会话使用所属 Runtime 的部署默认模型，并保留提供方分组、推理参数和单独提供方的失败信息。模型切换继续使用 `session.selectModel`，由适配层包装命名的 `request` 参数。已有的旧版 ApiProxy 模型服务仍是权威来源。
+
+内置历史界面的 `session.history` 调用会适配为新版 `session.page`，使用先读取的 `session.projections.asOfSeq` 作为有效日志截点，并保留向前分页和尾页的投影基线。旧版 ApiProxy 历史服务仍是权威来源。Connector 等待所属版本的依赖初始化；本地 IPC 即使正常关闭也会退避重连，避免启动失败产生通知风暴。
 
 归档浏览、回收站、恢复和永久删除属于 Hub 扩展，通过协商后的 `dsh.session-lifecycle` 能力提供。JSONL 存储和写锁约定已针对 `0.1.7-rc.2` 验证，不会假定旧版 DSH 支持删除。使用此新约定时应一起更新 Hub、Node Agent 和 Connector。没有此能力的节点仍可正常使用，并在[会话管理](session-management.zh.md)中显示升级提示。
 

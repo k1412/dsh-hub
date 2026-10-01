@@ -57,6 +57,87 @@ function testGateway(): TestGateway {
 }
 
 describe('Hub Connector coexistence', () => {
+  it('waits for late legacy ApiProxy activation instead of reconnecting through unowned Remote endpoints', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hub-delayed-legacy-')); roots.push(root)
+    const secretFile = join(root, 'connector.secret'); const endpoint = join(root, 'agent.sock')
+    const secret = generateHubIpcSecret(); await writeFile(secretFile, `${secret}\n`, { mode: 0o600 })
+    let connected = 0; let disconnected = 0; const bodies: HubEnvelopeBody[] = []
+    const server = new HubConnectorServer(endpoint, secret, 'delayed-legacy-agent', {
+      connected: () => { connected += 1 }, body: (_runtime, body) => { bodies.push(body) }, disconnected: () => { disconnected += 1 },
+    }); servers.push(server); await server.listen()
+    const context = new Context(); contexts.push(context)
+    const invoke = vi.fn(async () => { throw new Error('legacy Remote endpoint is unowned') })
+    context.provide('typertGateway', { invoke })
+    await context.plugin(HubConnectorPlugin, { ipcEndpoint: endpoint, secretFile, runtimeId: 'legacy-runtime',
+      dshVersion: '0.1.0-rc.6', reconnectMaximumMs: 1_000 })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(connected).toBe(0); expect(invoke).not.toHaveBeenCalled()
+    context.provide('apiProxy', { sessions: { list: async (request: { rpcId: string }) => ({ rpcId: request.rpcId, result: { ok: true, value: { items: [] } } }) },
+      events: { mux: (_request: unknown, signal: AbortSignal) => idle(signal), host: (_request: unknown, signal: AbortSignal) => idle(signal) },
+    } as never)
+    await vi.waitFor(() => { expect(bodies.some(body => body.type === 'stream.frame' && body.stream === 'index')).toBe(true) })
+    expect(server.baselines()[0]?.dshVersion).toBe('0.1.0-rc.6')
+    expect(connected).toBe(1); expect(disconnected).toBe(0); expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('backs off after clean EOF caused by a failed startup baseline instead of flooding Runtime notifications', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hub-eof-backoff-')); roots.push(root)
+    const secretFile = join(root, 'connector.secret'); const endpoint = join(root, 'agent.sock')
+    const secret = generateHubIpcSecret(); await writeFile(secretFile, `${secret}\n`, { mode: 0o600 })
+    let attempts = 0
+    const server = new HubConnectorServer(endpoint, secret, 'eof-backoff-agent', {
+      connected: () => { attempts += 1 }, body: () => undefined, disconnected: () => undefined,
+    }); servers.push(server); await server.listen()
+    const connector = new HubConnector({ sessions: { list: async () => { throw new Error('temporary storage initialization failure') } },
+      events: { mux: (_request, signal) => idle(signal), host: (_request, signal) => idle(signal) },
+    }, testGateway(), { ipcEndpoint: endpoint, secretFile, runtimeId: 'eof-runtime', dshVersion: '0.1.0-rc.6', reconnectMaximumMs: 1_000 })
+    const controller = new AbortController(); const task = connector.run(controller.signal)
+    try {
+      await vi.waitFor(() => { expect(attempts).toBe(1) })
+      await new Promise(resolve => setTimeout(resolve, 150))
+      expect(attempts).toBe(1)
+    } finally { controller.abort(); await task.catch(() => undefined) }
+  })
+  it('loads and paginates pinned histories through current pages with an observed cursor on simultaneous nodes', async () => {
+    const targets = ['node-a', 'node-b'].map(owner => {
+      const projections = { asOfSeq: 7, values: { owner } }
+      const invoke = vi.fn(async ({ namespace, method, args }: { namespace: string; method: string; args: Record<string, unknown> }) => {
+        expect(namespace).toBe('session')
+        if (method === 'projections') { expect(args).toEqual({ request: { sessionId: 'shared-session' } }); return projections }
+        expect(method).toBe('page')
+        const request = args.request as { throughSeq: number; beforeSeq?: number; maxMessages?: number }
+        expect(request).toMatchObject({ address: { kind: 'session', sessionId: 'shared-session' }, throughSeq: 7, maxMessages: 2 })
+        return { records: [{ type: 'event', event: { type: 'user/message', seq: request.beforeSeq === undefined ? 7 : 1, data: { owner } } }],
+          hasMore: request.beforeSeq === undefined }
+      })
+      const connector = new HubConnector(undefined, { invoke }, { ipcEndpoint: '/unused', secretFile: '/unused',
+        runtimeId: owner, dshVersion: '0.1.7-rc.2', reconnectMaximumMs: 1_000 })
+      return { owner, projections, bridge: connector as unknown as { webRemote(endpoint: string, payload: unknown): Promise<unknown> } }
+    })
+    for (const endpoint of ['session.history', 'session/history']) {
+      const tail = await Promise.all(targets.map(target => target.bridge.webRemote(endpoint, endpoint.includes('/')
+        ? { args: { request: { sessionId: 'shared-session', maxMessages: 2 } } } : { sessionId: 'shared-session', maxMessages: 2 })))
+      tail.forEach((value, index) => { expect(value).toEqual({ events: [{ event: { type: 'user/message', seq: 7, data: { owner: targets[index]?.owner } } }],
+        hasMore: true, projections: targets[index]?.projections }) })
+      const older = await targets[0]?.bridge.webRemote(endpoint, endpoint.includes('/')
+        ? { args: { request: { sessionId: 'shared-session', beforeSeq: 7, maxMessages: 2 } } }
+        : { sessionId: 'shared-session', beforeSeq: 7, maxMessages: 2 })
+      expect(older).toEqual({ events: [{ event: { type: 'user/message', seq: 1, data: { owner: 'node-a' } } }], hasMore: false })
+    }
+  })
+
+  it('keeps legacy native history authoritative for both Web request forms', async () => {
+    const value = { events: [{ event: { seq: 1 } }], hasMore: false, projections: { asOfSeq: 1, values: {} } }
+    const history = vi.fn(async () => ({ result: { ok: true, value } }))
+    const invoke = vi.fn(async () => { throw new Error('legacy history must not call Remote') })
+    const connector = new HubConnector({ sessions: { history } }, { invoke }, { ipcEndpoint: '/unused', secretFile: '/unused',
+      runtimeId: 'legacy', dshVersion: '0.1.0-rc.6', reconnectMaximumMs: 1_000 })
+    const bridge = connector as unknown as { webRemote(endpoint: string, payload: unknown): Promise<unknown> }
+    await expect(bridge.webRemote('session.history', { sessionId: 'legacy-session' })).resolves.toEqual(value)
+    await expect(bridge.webRemote('session/history', { args: { request: { sessionId: 'legacy-session' } } })).resolves.toEqual(value)
+    expect(history).toHaveBeenCalledTimes(2); expect(invoke).not.toHaveBeenCalled()
+  })
+
   it('rebuilds the pinned model selector from the current catalog and Session projection', async () => {
     const selected = { provider: 'configured', model: 'session-model', reasoningEffort: 'high' }
     const catalog = { default: { provider: 'configured', model: 'default-model' }, routableProviders: ['configured'],
@@ -126,7 +207,7 @@ describe('Hub Connector coexistence', () => {
       connected: () => undefined, body: () => undefined, disconnected: () => undefined,
     }); servers.push(server); await server.listen()
     const context = new Context(); contexts.push(context)
-    context.provide('typertGateway', testGateway())
+    context.provide('typertGateway', { invoke: async () => ({ items: [] }) })
     await context.plugin(HubConnectorPlugin, { ipcEndpoint: endpoint, secretFile, runtimeId: 'delayed-runtime',
       dshVersion: '0.1.7-rc.2', reconnectMaximumMs: 1_000 })
     expect(server.baselines()).toEqual([])
@@ -434,7 +515,8 @@ describe('Hub Connector coexistence', () => {
           listed = true
           return { sessionId: 'new-session' }
         }
-        if (request.namespace === 'session' && request.method === 'page') return { records: [], hasMore: false }
+        if (request.namespace === 'session' && request.method === 'projections') return { asOfSeq: -1, values: {} }
+        if (request.namespace === 'session' && request.method === 'page') { expect(request.args.request).toMatchObject({ throughSeq: -1 }); return { records: [], hasMore: false } }
         if (request.namespace === 'session' && request.method === 'prompt') return { accepted: true }
         throw new Error(`unexpected Remote ${request.namespace}.${request.method}`)
       },
@@ -452,8 +534,8 @@ describe('Hub Connector coexistence', () => {
       clientMutationId: 'answer-mutation', sessionId: 'new-session', text: 'answer this',
     }, 'command-2')).resolves.toMatchObject({ accepted: true })
     expect(calls.map(call => `${call.namespace}.${call.method}`)).toEqual([
-      'session.list', 'session.create', 'session.page', 'session.prompt', 'session.list', 'session.page',
-      'session.page', 'session.prompt', 'session.list', 'session.page',
+      'session.list', 'session.create', 'session.projections', 'session.page', 'session.prompt', 'session.list', 'session.projections', 'session.page',
+      'session.projections', 'session.page', 'session.prompt', 'session.list', 'session.projections', 'session.page',
     ])
   })
 

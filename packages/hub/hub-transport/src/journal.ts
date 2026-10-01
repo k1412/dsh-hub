@@ -117,6 +117,9 @@ export function installReliableJournalSchema(database: DatabaseSync): void {
       UNIQUE (peer_id, message_id)
     ) STRICT;
 
+    CREATE INDEX IF NOT EXISTS reliable_outbox_by_type
+      ON reliable_outbox(peer_id, json_extract(body_json, '$.type'), sequence);
+
     CREATE INDEX IF NOT EXISTS reliable_inbox_recovery
       ON reliable_inbox(peer_id, state, sequence);
   `)
@@ -442,8 +445,12 @@ export class SqliteReliableJournal {
    * @returns newest queued acknowledgement record, when present.
    */
   public pendingAcknowledgement(): ReliableOutboundRecord | undefined {
-    const rows = this.pendingOutbound(this.limits.maxOutboundRecords)
-    return rows.findLast(record => record.body.type === 'transport.ack')
+    const row = this.database.prepare(`
+      SELECT * FROM reliable_outbox
+      WHERE peer_id = ? AND json_extract(body_json, '$.type') = 'transport.ack'
+      ORDER BY sequence DESC LIMIT 1
+    `).get(this.peerId)
+    return row === undefined ? undefined : outboundFromRow(row)
   }
 
   private state(): {

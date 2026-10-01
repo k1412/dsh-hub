@@ -437,15 +437,20 @@ export class HubConnector {
     let attempt = 0
     for (;;) {
       if (signal.aborted) return
+      const startedAt = Date.now()
       try {
         await this.connectOnce(secret, signal)
-        attempt = 0
+        // A clean socket close is still a disconnect. Startup failures often
+        // arrive as EOF, so retrying immediately turns one failed baseline into
+        // thousands of durable Runtime hello/goodbye records.
+        attempt = Date.now() - startedAt >= 30_000 ? 0 : attempt + 1
       } catch {
         attempt += 1
-        const maximum = this.config.reconnectMaximumMs
-        const ceiling = Math.min(maximum, 500 * 2 ** Math.min(attempt, 7))
-        await delay(Math.floor(ceiling / 2 + Math.random() * ceiling / 2), signal)
       }
+      if (signal.aborted) return
+      const maximum = this.config.reconnectMaximumMs
+      const ceiling = Math.min(maximum, 500 * 2 ** Math.min(attempt, 7))
+      await delay(Math.floor(ceiling / 2 + Math.random() * ceiling / 2), signal)
     }
   }
 
@@ -648,6 +653,20 @@ export class HubConnector {
     const service = this.api?.[namespace] as Record<string, ((request: unknown, signal?: AbortSignal) => Promise<unknown>)> | undefined
     const legacy = service?.[method]
     if (legacy !== undefined) return unwrap(await legacy({ rpcId: rpcId(), payload }, signal) as RpcResponse<unknown>)
+    if (namespace === 'sessions' && method === 'history') {
+      // The pinned UI reads ApiProxy history, while current DSH requires a
+      // bounded page at an observed durable cursor. Never invent a future cut.
+      const projections = await this.remote('session.projections', { request: { sessionId: payload.sessionId } }, signal) as {
+        asOfSeq: number; values: Record<string, unknown>
+      } | null
+      const page = await this.remote('session.page', { request: {
+        address: { kind: 'session', sessionId: payload.sessionId }, throughSeq: projections?.asOfSeq ?? -1,
+        ...(payload.beforeSeq === undefined ? {} : { beforeSeq: payload.beforeSeq }),
+        ...(payload.maxMessages === undefined ? {} : { maxMessages: payload.maxMessages }),
+      } }, signal) as { records: Array<{ event: unknown }>; hasMore: boolean }
+      return { events: page.records.map(record => ({ event: record.event })), hasMore: page.hasMore,
+        ...(payload.beforeSeq === undefined && projections !== null ? { projections } : {}) }
+    }
     if (namespace === 'sessions' && method === 'models') {
       // Current DSH separates the Host-wide catalog from the durable Session
       // selection. Rebuild the pinned selector's value without resuming an Agent.
@@ -675,8 +694,9 @@ export class HubConnector {
     const args = (carrier.args ?? carrier) as Record<string, unknown>
     const request = (args.request ?? args) as Record<string, unknown>
     this.lifecycle?.assertAvailable(request.sessionId)
-    if (/^session[./]models$/u.test(endpoint)) {
-      return this.apiCall('sessions', 'models', 'session.models', request)
+    if (/^session[./](models|history)$/u.test(endpoint)) {
+      const method = endpoint.slice(8)
+      return this.apiCall('sessions', method, `session.${method}`, request)
     }
     // The pinned Web UI still speaks ApiProxy's host directory verbs. Current
     // DSH exports the same browse data through the directoryPicker namespace.
@@ -804,14 +824,10 @@ export class HubConnector {
   }
 
   private async history(sessionId: string, maximum = 2_000): Promise<unknown[]> {
-    if (this.api?.sessions?.history !== undefined) {
-      const history = unwrap(await this.api.sessions.history({ rpcId: rpcId(), payload: { sessionId: SessionId(sessionId), maxMessages: maximum } }) as RpcResponse<{ events: Array<{ event: unknown }> }>)
-      return history.events.map(entry => entry.event)
-    }
-    const page = await this.apiCall('sessions', 'history', 'session.page', {
-      address: { kind: 'session', sessionId: SessionId(sessionId) }, throughSeq: Number.MAX_SAFE_INTEGER, maxMessages: maximum,
-    }) as { records?: Array<{ event: unknown }> }
-    return (page.records ?? []).map(entry => entry.event)
+    const history = await this.apiCall('sessions', 'history', 'session.history', {
+      sessionId: SessionId(sessionId), maxMessages: maximum,
+    }) as { events: Array<{ event: unknown }> }
+    return history.events.map(entry => entry.event)
   }
 
   private async hasMutation(sessionId: string, mutationId: string): Promise<boolean> {
@@ -1113,6 +1129,13 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     // Gateway starts before persistence and the durable registry. A one-time
     // ctx.get() at that point would silently omit the lifecycle capability.
     const fiber = ctx.inject(['sessionPersistence', 'workspaceRegistry', 'sessions'], child => mountConnector(child, config))
+    return async () => { await fiber.dispose() }
+  }
+  if (version !== undefined) {
+    // Legacy ApiProxy activates after Gateway and its own dependency graph.
+    // Capturing ctx.get('apiProxy') early would pin undefined forever and route
+    // the baseline through Remote endpoints the legacy release does not own.
+    const fiber = ctx.inject(['apiProxy'], child => mountConnector(child, config))
     return async () => { await fiber.dispose() }
   }
   return mountConnector(ctx, config)

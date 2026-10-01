@@ -4,6 +4,7 @@ export const DSH_HOST_API_FAMILY = '0.1.0-rc.7' as const
 
 /** DSH releases whose Host/Remote contracts are covered by this Connector. */
 export const DSH_SUPPORTED_VERSIONS = [
+  '0.1.0-rc.6',
   DSH_HOST_API_FAMILY,
   '0.1.5-rc.2',
   '0.1.5-rc.3',

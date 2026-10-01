@@ -67,6 +67,25 @@ describe('reliable Hub transport', () => {
     expect(() => node.receiveTransient(frame, Date.now() + 60_000)).toThrow()
     hub.enqueue(hello); expect(node.receive(hub.renderPending()[0]).kind).toBe('accepted')
   })
+  it('finds and coalesces ACKs behind a large backlog without reading unrelated payloads or deleting queued data', () => {
+    const { node, nodeJournal } = peerPair()
+    for (let index = 0; index < 600; index++) node.enqueue({ type: 'capability.result',
+      commandId: `backlog-command-${index}`, status: 'ok', value: { body: 'x'.repeat(8_000) } })
+    const ack = node.enqueueAcknowledgement()
+    node.enqueue(hello)
+    const pendingOutbound = nodeJournal.pendingOutbound
+    nodeJournal.pendingOutbound = () => { throw new Error('ACK lookup must not materialize the full backlog') }
+    try {
+      expect(nodeJournal.pendingAcknowledgement()).toEqual(ack)
+      expect(node.enqueueAcknowledgement()).toEqual(ack)
+      expect(nodeJournal.outboundUsageForBodyType('transport.ack').records).toBe(1)
+      expect(nodeJournal.outboundUsage().records).toBe(602)
+      nodeJournal.acknowledgeOutbound(ack.sequence)
+      expect(nodeJournal.pendingAcknowledgement()).toBeUndefined()
+    } finally { nodeJournal.pendingOutbound = pendingOutbound }
+    expect(nodeJournal.pendingOutbound()).toMatchObject([{ body: hello }])
+  })
+
   it('persists before delivery, deduplicates replay, and clears only after a peer acknowledgement', () => {
     const { node, hub, nodeJournal, hubJournal } = peerPair()
     const record = node.enqueue(hello, 1_000)

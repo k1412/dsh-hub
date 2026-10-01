@@ -12,7 +12,7 @@ These are covered versions, not a claim about the latest upstream release:
 
 | DSH line | Upstream state | Hub status |
 | --- | --- | --- |
-| `0.1.0-rc.7` | legacy Host API / ApiProxy surface | supported by Hub 1.0.4 |
+| `0.1.0-rc.6` / `0.1.0-rc.7` | legacy Host API / ApiProxy surface | supported by Hub 1.0.4; Connector waits for ApiProxy dependencies to activate rather than entering the current Remote path prematurely |
 | `0.1.5-rc.2` / `0.1.5-rc.3` | Remote gateway and Session API changes | Connector Remote fallback, event bridge, and `$events/result` answer path covered; target bridge also carries Hub selection into `/api/*`; bundled Web UI remains the rc.7 composition |
 | `0.1.6-alpha.2` / `0.1.7-alpha.1` | covered alpha versions; plugin manager and Session changes | Connector Remote fallback, tool/Skill routing, questions/cancel, event bridge, and `$events/result` answer path covered; target bridge covers the changed HTTP/WebSocket carrier, while the bundled Web UI remains the rc.7 composition |
 | `0.1.7-rc.2` | currently verified DSH runtime | The Connector bridges sessions and events, translates the bundled rc.7 Web UI's `host.listDirectory`, `host.createDirectory`, and `host.pickDirectory` calls to the current `directoryPicker` Remote, and wraps workspace mutations in the `request` argument required by the current `workspace` Remote. Hub still bundles the rc.7 Web UI composition, so new DSH Web features do not automatically appear in Hub. |
@@ -22,6 +22,8 @@ Do not install a newer DSH profile into a node running the 1.0.4 Connector and a
 ## Upgrade policy
 
 The pinned selector's `session.models` call is adapted to the current `session.modelCatalog` and `session.projections` reads. The adapter retains each Session's next model selection, falls back to that Runtime's deployment default for an unconfigured Session, and preserves provider groups, reasoning metadata, and isolated provider failures. Model selection continues through `session.selectModel`; the adapter wraps its named `request` argument. Existing legacy ApiProxy model services remain authoritative.
+
+The pinned history UI's `session.history` call is adapted to the current `session.page` using the observed `session.projections.asOfSeq` as a valid log cut. Backward pagination and the tail page's projection baseline are preserved. Legacy ApiProxy history remains authoritative. Connector waits for its Runtime's dependencies and backs off after clean IPC closure as well as errors, preventing startup failures from flooding Runtime notifications.
 
 Archive browsing, trash, restore, and permanent deletion are Hub extensions exposed by the negotiated `dsh.session-lifecycle` capability. Their JSONL storage and write-lock contract is verified against `0.1.7-rc.2`; older DSH families are not assumed to support deletion. Upgrade Hub, Node Agent, and Connector together to use the new contract. Nodes without it remain usable and display an upgrade notice in [session management](session-management.md).
 
