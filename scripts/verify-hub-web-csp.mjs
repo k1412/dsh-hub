@@ -3,6 +3,8 @@
 /** Verify that the assembled Hub UI boots under its production script policy. */
 
 import { createServer } from 'node:http'
+import { createRequire } from 'node:module'
+import { encodeFleetId, decodeFleetId } from '../packages/hub/hub-server/src/fleet-web.ts'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, extname, resolve, sep } from 'node:path'
 import { chromium } from 'playwright'
@@ -42,6 +44,50 @@ const lifecycleRows = new Map(fixtureRuntimes.map((runtime, index) => [runtime.n
 }]]))
 const lifecycleCommands = new Map()
 const lifecycleCalls = []
+const flowCalls = []
+const flowWorkspaces = []
+const flowSessions = []
+const flowSelections = new Map()
+const flowOnboarding = { ns: 'ui-onboarding', schema: {}, value: {}, applies: 'live', secrets: [], revision: 0 }
+function flowResult(method, payload, url) {
+  const owner = (payload.sessionId && decodeFleetId(payload.sessionId))
+    || (payload.workspaceId && decodeFleetId(payload.workspaceId))
+    || fixtureRuntimes.find(row => row.nodeId === url.searchParams.get('nodeId') && row.runtimeId === url.searchParams.get('runtimeId'))
+  flowCalls.push({ method, payload, nodeId: owner?.nodeId, query: url.search })
+  if (['session.list', 'workspace.list', 'session.search'].includes(method) && url.searchParams.has('nodeId')) throw new Error('fleet baseline scoped to one node')
+  if (method === 'session.list') return { items: flowSessions }
+  if (method === 'workspace.list') return { items: flowWorkspaces, archivedSessionIds: [] }
+  if (method === 'session.search') return { items: [], hasMore: false }
+  if (!owner) throw new Error(`flow RPC ${method} has no owner`)
+  if (method === 'settings.describe') return { writable: true, hasDocument: true, namespaces: [] }
+  if (method === 'settings.mutate') {
+    if (payload.ns !== 'ui-onboarding') throw new Error('unexpected settings mutation')
+    for (const op of payload.ops) flowOnboarding.value[op.path[0]] = op.value
+    return { ...flowOnboarding, revision: ++flowOnboarding.revision }
+  }
+  if (method === 'host.describe') return { version: 'fixture', cwd: '/projects', attachedSessions: 0, canOpenPath: false, directoryPicking: ['browse'] }
+  if (method === 'host.listDirectory') return { path: '/projects', home: '/projects', crumbs: [], entries: [], truncated: false }
+  if (method === 'workspace.create') {
+    const workspace = { workspaceId: encodeFleetId('workspace', owner, `workspace-${flowWorkspaces.length}`), path: payload.path,
+      title: `${owner.nodeId} project`, sessionIds: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }
+    flowWorkspaces.push(workspace)
+    return { workspace, created: true }
+  }
+  if (method === 'session.create') {
+    const sessionId = encodeFleetId('session', owner, `conversation-${flowSessions.length}`)
+    flowSessions.push({ sessionId, updatedAt: Date.now(), running: false, blank: true, cwd: '/projects' })
+    flowWorkspaces.find(row => row.workspaceId === payload.workspaceId)?.sessionIds.push(sessionId)
+    return { sessionId }
+  }
+  if (method === 'session.history') return { events: [], hasMore: false, projections: { asOfSeq: -1, values: {} } }
+  if (method === 'session.models') return { current: flowSelections.get(payload.sessionId) ?? { provider: 'fixture', model: 'first' }, routable: true,
+    groups: [{ id: 'fixture', name: `${owner.nodeId} models`, models: [{ id: 'first', name: 'Fixture First' }, { id: 'second', name: 'Fixture Second' }] }], failures: [] }
+  if (method === 'session.selectModel') {
+    const selected = { provider: payload.provider, model: payload.model }
+    flowSelections.set(payload.sessionId, selected); return { selected }
+  }
+  throw new Error(`unsupported flow RPC ${method}`)
+}
 
 function lifecycleResult(input) {
   const rows = lifecycleRows.get(input.nodeId)
@@ -127,6 +173,16 @@ const server = createServer((request, response) => {
       response.end('{"enrollments":[]}')
       return
     }
+    if (request.method === 'POST' && url.pathname.startsWith('/api/') && request.headers.cookie?.includes('hub-flow=enabled')) {
+      const chunks = []; for await (const chunk of request) chunks.push(chunk)
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      let result
+      try { result = { ok: true, value: flowResult(input.method, input.payload, url) } }
+      catch (error) { result = { ok: false, error: { code: 'internal', message: error.message } } }
+      response.setHeader('Content-Type', 'application/json; charset=utf-8')
+      response.end(JSON.stringify({ type: 'server-response', rpcId: input.rpcId, result }))
+      return
+    }
     if (request.method === 'POST' && url.pathname === '/hub/v1/model-sync') {
       const chunks = []; for await (const chunk of request) chunks.push(chunk)
       const input = JSON.parse(Buffer.concat(chunks).toString('utf8')); modelSyncCalls.push(input)
@@ -175,6 +231,13 @@ const server = createServer((request, response) => {
   })
 })
 
+// Keep both downlinks connected so the actual Web Runtime can finish its baselines.
+const { WebSocketServer } = createRequire(new URL('../packages/hub/hub-server/package.json', import.meta.url))('ws')
+const downlinks = new WebSocketServer({ server })
+downlinks.on('connection', (_socket, request) => {
+  if (new URL(request.url, 'http://fixture').searchParams.has('nodeId')) throw new Error('fleet downlink scoped to one node')
+})
+
 await new Promise((resolveListen, reject) => {
   server.once('error', reject)
   server.listen(0, '127.0.0.1', resolveListen)
@@ -211,6 +274,7 @@ try {
     waitUntil: 'domcontentloaded',
   })
   await Promise.all([hubPluginRequest, directoryFlowRequest])
+  if (new URL(page.url()).searchParams.has('nodeId') || new URL(page.url()).searchParams.has('runtimeId')) throw new Error('legacy bookmark was not migrated to the canonical Hub entry')
   await page.locator('#root').waitFor({ state: 'attached' })
   await page.waitForFunction(() => document.querySelector('#root')?.childElementCount !== 0)
   recordTiming('desktopBootMs', startedAt)
@@ -361,7 +425,8 @@ try {
   startedAt = performance.now()
   await settingsTarget.click()
   await mobile.getByRole('menuitem', { name: 'Fixture Mac · desktop' }).click()
-  await mobile.waitForFunction(() => new URL(globalThis.location.href).searchParams.get('nodeId') === 'fixture-second')
+  await mobile.waitForFunction(() => JSON.parse(sessionStorage.getItem('dsh.hub.runtime-target') ?? '{}').nodeId === 'fixture-second')
+  if (new URL(mobile.url()).searchParams.has('nodeId') || new URL(mobile.url()).searchParams.has('runtimeId')) throw new Error('Runtime selection recreated a node-specific page URL')
   recordTiming('mobileSettingsTargetSwitchMs', startedAt)
   if (await mobile.locator('html').getAttribute('data-hub-csp-document') !== 'settings-target-switch') {
     throw new Error('Hub Web reloaded the document while changing its Settings Runtime target')
@@ -380,6 +445,48 @@ try {
     throw new Error(`Hub Web mobile UI raised page errors:\n${mobileErrors.join('\n')}`)
   }
   await mobile.close()
+
+  // Full mobile acceptance uses real HTTP envelopes, Workspace/Session ownership,
+  // and the production plugins rather than only checking the empty shell geometry.
+  const phoneContext = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: 'zh-CN' })
+  await phoneContext.addCookies([loginCookie, { name: 'hub-flow', value: 'enabled', url: loginCookie.url }])
+  const phone = await phoneContext.newPage()
+  const flowErrors = []
+  phone.on('pageerror', error => flowErrors.push(error.message))
+  phone.setDefaultTimeout(10_000)
+  try {
+    await phone.goto(`${loginCookie.url}/?nodeId=fixture-node&runtimeId=fixture-runtime`, { waitUntil: 'domcontentloaded' })
+    await phone.getByRole('button', { name: /^继续$|^Continue$/u }).click()
+    await phone.getByRole('button', { name: /^继续$|^Continue$/u }).waitFor({ state: 'detached' })
+    await phone.getByRole('button', { name: '节点与 Runtime' }).waitFor()
+    await phone.getByRole('button', { name: '节点与 Runtime' }).click()
+    await phone.getByRole('menuitem', { name: 'Fixture Mac · desktop' }).click()
+    process.stdout.write('Mobile flow: Runtime selected\n')
+    await phone.getByRole('button', { name: /^选择工作区$|^Select workspace$/u }).click()
+    process.stdout.write('Mobile flow: workspace picker opened\n')
+    const directory = phone.getByRole('dialog', { name: /^选择工作区目录$|^Select Workspace Directory$/u })
+    await directory.getByRole('button', { name: /^打开$|^Open$/u }).click()
+    process.stdout.write('Mobile flow: directory selected\n')
+    const modelTrigger = phone.getByRole('button', { name: /^(选择模型|Select model)/u }).first()
+    await modelTrigger.waitFor()
+    await modelTrigger.click()
+    await phone.getByRole('menuitem', { name: /^(模型|Model)/u }).click()
+    await phone.getByRole('menuitemradio', { name: 'Fixture Second', exact: true }).click()
+    await phone.getByRole('button', { name: /选择模型，当前 Fixture Second|Select model, current Fixture Second/u }).waitFor()
+    if (flowCalls.some(call => call.method === 'settings.mutate' && call.payload.ns === 'ui-onboarding')) throw new Error('Hub tried to persist a removed onboarding namespace on the node')
+    if (flowWorkspaces.length !== 1 || flowSessions.length !== 1 || flowSelections.size !== 1) throw new Error('mobile did not create a Workspace, Session and model selection')
+    for (const method of ['host.listDirectory', 'workspace.create', 'session.create', 'session.history', 'session.models', 'session.selectModel']) {
+      if (!flowCalls.some(call => call.method === method && call.nodeId === 'fixture-second')) throw new Error(`mobile did not route ${method} to its selected owner`)
+    }
+    if (new URL(phone.url()).searchParams.has('nodeId')) throw new Error('mobile conversation recreated a scoped URL')
+    if (flowErrors.length) throw new Error(flowErrors.join('\n'))
+    process.stdout.write('Hub Web: touch mobile directory → Workspace → Session → history → model selection verified\n')
+  } catch (error) {
+    await phone.screenshot({ path: '/tmp/dsh-hub-mobile-failure.png', fullPage: true })
+    await writeFile('/tmp/dsh-hub-mobile-failure.txt', await phone.locator('body').innerText())
+    process.stderr.write(`Mobile RPCs: ${JSON.stringify(flowCalls.map(({ method, nodeId }) => ({ method, nodeId })))}\n`)
+    throw error
+  } finally { await phoneContext.close() }
   process.stdout.write('Hub Web: 390px sidebar and full-screen Settings verified\n')
   const report = {
     schemaVersion: 1,
@@ -397,5 +504,7 @@ try {
   process.stdout.write(`Hub Web UI timings: ${JSON.stringify(timings)}\n`)
 } finally {
   await browser?.close()
+  for (const socket of downlinks.clients) socket.terminate()
+  await new Promise(resolveClose => downlinks.close(resolveClose))
   await new Promise(resolveClose => server.close(resolveClose))
 }

@@ -22,22 +22,24 @@ function validTarget(value: unknown): value is HubRuntimeTarget {
 }
 
 function storedTarget(): HubRuntimeTarget | undefined {
-  try {
-    const raw = globalThis.localStorage.getItem(STORAGE_KEY)
-    if (raw === null) return undefined
-    const value = JSON.parse(raw) as unknown
-    return validTarget(value) ? value : undefined
-  } catch {
-    return undefined
+  for (const storage of ['sessionStorage', 'localStorage'] as const) {
+    try {
+      const raw = globalThis[storage].getItem(STORAGE_KEY)
+      if (raw === null) continue
+      const value = JSON.parse(raw) as unknown
+      if (validTarget(value)) return value
+    } catch { /* Try the last-used choice when tab storage is unavailable. */ }
   }
+  return undefined
 }
 
 function persistTarget(target: HubRuntimeTarget): void {
   try {
-    globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify(target))
+    globalThis.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(target))
   } catch {
-    // URL state remains authoritative when browser storage is unavailable.
+    // The current picker still owns the in-memory selection.
   }
+  try { globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify(target)) } catch { /* Last-used choice is optional. */ }
 }
 
 /**
@@ -60,7 +62,7 @@ export function supportsOfficialWeb(runtime: CapabilityCarrier): boolean {
 }
 
 /**
- * Read the explicit URL target, falling back to the most recently selected Runtime.
+ * Read a legacy bookmark hint, then the tab selection and last-used Runtime.
  * @returns a validated target or undefined when neither source contains one.
  */
 export function readRuntimeTarget(): HubRuntimeTarget | undefined {
@@ -72,15 +74,15 @@ export function readRuntimeTarget(): HubRuntimeTarget | undefined {
 }
 
 /**
- * Persist a Runtime choice and update the current URL without remounting official Web.
+ * Persist a tab-local Runtime choice and keep the Hub page URL canonical without remounting Web.
  * @param target - selected node and Runtime.
  */
 export function replaceRuntimeTarget(target: HubRuntimeTarget): void {
   if (!validTarget(target)) throw new Error('Runtime target is malformed')
-  persistTarget(target)
+  persistTarget({ nodeId: target.nodeId, runtimeId: target.runtimeId })
   const url = new URL(globalThis.location.href)
-  url.searchParams.set('nodeId', target.nodeId)
-  url.searchParams.set('runtimeId', target.runtimeId)
+  url.searchParams.delete('nodeId')
+  url.searchParams.delete('runtimeId')
   globalThis.history.replaceState(globalThis.history.state, '', url)
 }
 

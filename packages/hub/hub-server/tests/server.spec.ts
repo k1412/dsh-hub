@@ -668,13 +668,22 @@ describe('Hub HTTP server', () => {
       'desktop-node', 'nas-node', 'desktop-node', 'nas-node',
     ])
 
+    for (const hint of ['desktop-node', 'nas-node']) {
+      const response = await fetch(`${base}/api/session.list?nodeId=${hint}&runtimeId=web`, {
+        method: 'POST', headers: requestHeaders('human', true),
+        body: JSON.stringify({ type: 'client-request', rpcId: `legacy-list-${hint}`, method: 'session.list', payload: {} }),
+      })
+      const body = await response.json() as typeof listBody
+      expect(body.result.value.items).toEqual(listBody.result.value.items)
+    }
+
     const nasSessionId = listBody.result.value.items[0]?.sessionId
     if (nasSessionId === undefined) throw new Error('aggregated NAS session missing')
     expect(decodeFleetId(nasSessionId)).toEqual({
       kind: 'session', nodeId: 'nas-node', runtimeId: 'web', sourceId: 'nas-session',
     })
     invocations.length = 0
-    const historyResponse = await fetch(`${base}/api/session.history`, {
+    const historyResponse = await fetch(`${base}/api/session.history?nodeId=desktop-node&runtimeId=web`, {
       method: 'POST',
       headers: requestHeaders('human', true),
       body: JSON.stringify({

@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } 
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import { invoke, readFleet, type HubRuntime } from './api.ts'
 import css from './HubSettings.module.css'
+import { readRuntimeTarget, runtimeKey } from './runtime-target.ts'
 
 /** Props supplied by the official Settings section outlet. */
 export type HubPluginsSectionProps = PropsRuntime<'settings.section'>
@@ -127,9 +128,8 @@ export function HubPluginsSection(_props: HubPluginsSectionProps): ReactNode {
     void readFleet().then((fleet) => {
       const candidates = fleet.runtimes.filter(candidate => supports(candidate, 'dsh.plugins'))
       setRuntimes(candidates)
-      const url = new URL(globalThis.location.href)
-      const fromUrl = `${url.searchParams.get('nodeId') ?? ''}\u0000${url.searchParams.get('runtimeId') ?? ''}`
-      const initial = candidates.find(candidate => keyOf(candidate) === fromUrl) ?? candidates[0]
+      const target = readRuntimeTarget()
+      const initial = candidates.find(candidate => target !== undefined && keyOf(candidate) === runtimeKey(target)) ?? candidates[0]
       if (initial === undefined) return
       setSelected(keyOf(initial))
       void loadRuntime(initial)

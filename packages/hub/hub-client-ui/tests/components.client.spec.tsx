@@ -80,6 +80,7 @@ const clipboardWrite = vi.fn<(text: string) => Promise<void>>()
 
 beforeEach(() => {
   localStorage.clear()
+  sessionStorage.clear()
   history.replaceState({}, '', '/?nodeId=nas-home&runtimeId=web')
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
@@ -157,8 +158,8 @@ describe('Hub management Settings pages', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Mac Neo · desktop' }))
     expect(onTargetChange).toHaveBeenCalledOnce()
     expect(refreshNodeSettings).toHaveBeenCalledOnce()
-    expect(new URL(location.href).searchParams.get('nodeId')).toBe('workstation-a')
-    expect(new URL(location.href).searchParams.get('runtimeId')).toBe('desktop')
+    expect(new URL(location.href).searchParams.get('nodeId')).toBeNull()
+    expect(new URL(location.href).searchParams.get('runtimeId')).toBeNull()
     expect(localStorage.getItem('dsh.hub.runtime-target')).toContain('workstation-a')
   })
 
@@ -185,8 +186,8 @@ describe('Hub management Settings pages', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Mac Neo · desktop' }))
     expect(target.textContent).toContain('Mac Neo · desktop')
     expect(refreshNodeSettings).toHaveBeenCalledOnce()
-    expect(new URL(location.href).searchParams.get('nodeId')).toBe('workstation-a')
-    expect(new URL(location.href).searchParams.get('runtimeId')).toBe('desktop')
+    expect(new URL(location.href).searchParams.get('nodeId')).toBeNull()
+    expect(new URL(location.href).searchParams.get('runtimeId')).toBeNull()
   })
 
   it('pins the first online Runtime when Settings opens without a saved target', async () => {
@@ -201,8 +202,9 @@ describe('Hub management Settings pages', () => {
     const target = await screen.findByRole('button', { name: '当前 Runtime' })
     expect(target.textContent).toContain('Home NAS · web')
     await waitFor(() => { expect(refreshNodeSettings).toHaveBeenCalledOnce() })
-    expect(new URL(location.href).searchParams.get('nodeId')).toBe('nas-home')
-    expect(new URL(location.href).searchParams.get('runtimeId')).toBe('web')
+    expect(new URL(location.href).searchParams.get('nodeId')).toBeNull()
+    expect(new URL(location.href).searchParams.get('runtimeId')).toBeNull()
+    expect(JSON.parse(sessionStorage.getItem('dsh.hub.runtime-target')!)).toEqual({ nodeId: 'nas-home', runtimeId: 'web' })
   })
 
   it('synchronizes the node selector to the owner of an aggregated Workspace', async () => {
@@ -225,7 +227,7 @@ describe('Hub management Settings pages', () => {
     await waitFor(() => { expect(picker.textContent).toContain('workstation-a · desktop') })
     expect(onTargetChange).not.toHaveBeenCalled()
     expect(refreshNodeSettings).toHaveBeenCalledOnce()
-    expect(new URL(location.href).searchParams.get('nodeId')).toBe('workstation-a')
+    expect(new URL(location.href).searchParams.get('nodeId')).toBeNull()
   })
 
   it('shows registration lifecycle, runtime switching, and diagnostic purpose without primary tool navigation', async () => {
@@ -303,7 +305,7 @@ describe('Hub management Settings pages', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '设为默认' }))
     expect(refreshNodeSettings).toHaveBeenCalledOnce()
-    expect(new URL(location.href).searchParams.get('runtimeId')).toBe('desktop')
+    expect(new URL(location.href).searchParams.get('runtimeId')).toBeNull()
     expect(screen.getByRole('button', { name: '默认' })).toHaveProperty('disabled', true)
 
     fireEvent.click(screen.getByRole('button', { name: '撤销节点身份' }))

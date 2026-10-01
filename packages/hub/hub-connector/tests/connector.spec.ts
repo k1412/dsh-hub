@@ -320,6 +320,25 @@ describe('Hub Connector coexistence', () => {
     ])
   })
 
+  it('completes the pinned Web readiness handshake without a removed current Host Remote', async () => {
+    const invoke = vi.fn(async ({ namespace, method }: { namespace: string; method: string }) => {
+      if (namespace === 'session' && method === 'list') return { items: [{ sessionId: 'owned', updatedAt: 1, running: false, blank: true }] }
+      throw new Error('removed Host Remote must not be invoked')
+    })
+    const connector = new HubConnector(undefined, { invoke }, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.7-rc.2', reconnectMaximumMs: 1_000,
+    })
+    const web = (connector as unknown as { invokeWeb(operation: string, value: unknown): Promise<{ body: string }> }).invokeWeb.bind(connector)
+    for (const method of ['host.describe', 'host/describe']) {
+      const response = await web('fetch', { method: 'POST', path: `/api/${method}`, headers: [['content-type', 'application/json']],
+        body: JSON.stringify({ type: 'client-request', rpcId: method, method, payload: {} }) })
+      expect(JSON.parse(response.body)).toMatchObject({ result: { ok: true, value: {
+        version: '0.1.7-rc.2', cwd: process.cwd(), attachedSessions: 1, canOpenPath: false,
+      } } })
+    }
+    expect(invoke.mock.calls.every(([request]) => request.namespace === 'session')).toBe(true)
+  })
+
   it('keeps the legacy Host directory service on older DSH runtimes', async () => {
     const listing = { path: '/work', home: '/home', crumbs: [], entries: [], truncated: false }
     const hostList = vi.fn(async () => ({ result: { ok: true, value: listing } }))

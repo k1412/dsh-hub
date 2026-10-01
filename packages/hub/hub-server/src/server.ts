@@ -713,11 +713,12 @@ export class HubServer {
       throw new HttpProblem(409, 'one request cannot address multiple DSH Runtimes')
     }
     const rpc = this.officialRpcRequest(decodedBody.value)
+    const aggregateMethod = rpc?.method.replace('/', '.')
     if (method === 'POST' && rpc?.type === 'client-request'
       && payloadTarget === undefined && queryTarget === undefined
-      && FLEET_AGGREGATE_METHODS.has(rpc.method)) {
+      && aggregateMethod !== undefined && FLEET_AGGREGATE_METHODS.has(aggregateMethod)) {
       const aggregated = await this.aggregateOfficialRequest(
-        rpc.method,
+        aggregateMethod,
         `${forwarded.pathname}${forwarded.search}`,
         decodedBody.value,
         human,

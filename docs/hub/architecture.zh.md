@@ -40,7 +40,11 @@ Connector 通过 DSH Host Gateway 实现会话、设置和 Runtime 健康状态�
 
 Hub Web 应用直接构建官方 DSH Web 前端，并只增加固定编译进制品且经过审查的 Hub 客户端插件。日常项目与会话页面是 Fleet 视图：Hub 会向每个在线且声明 `dsh.web` 的 Runtime 请求 `session.list`、`session.search` 与 `workspace.list`，然后合并结果。每个节点的 Fleet 贡献有 2.5 秒独立预算；超时不会拖住其他节点，`session.list` 与 `workspace.list` 会使用最小发现索引保留该节点的“暂不可用”行。浏览器看到的会话和 Workspace ID 内含不透明的节点／Runtime 地址；后续历史、消息、重命名、归档或 Workspace 操作会自动回到所有者，无需手工切换节点。Host 与 Session WebSocket 同时复用全部在线 Runtime；对于官方协议中的 Workspace 顺序和已归档会话完整快照，Hub 会先合并再推送，避免一个节点覆盖整个 Fleet 状态。
 
-Hub 客户端会占用 Workspace picker 前面的可选官方 `conversation.hero.runtime` seat。它只列出在线且声明 `dsh.web.fetch` 的 Runtime，恢复上次仍可用的选择，并在不重新挂载 Web 的情况下更新后续无所有者目录与 Workspace 操作使用的目标。切换 Runtime 会先清除当前空白会话选择，再选择另一个文件夹；选择已有 Fleet Workspace 时则会同步到其编码的所有者。官方设置标题栏始终显示其所属节点与 Runtime；切换所有者时只更新当前标签页 URL，同时刷新 `SettingsScope` 控制器并广播官方 `connection/reset`，使模型、权限、Agent 预设、命令等直接 Host 控制器也重新读取；两类控制器都用代次隔离阻止旧节点的延迟读取发布。语言和外观仍是浏览器本地状态，Hub 节点是 Hub 全局状态，节点插件页单独选择管理目标。两处 Runtime 选择都不会过滤 Fleet 项目／会话页面。Hub 将官方 HTTP 与事件流量转换为 `dsh.web` 能力，Connector 调用同一 Runtime 的 Host API，而不是代理节点上的 Web Server。
+Hub 客户端会占用 Workspace picker 前面的可选官方 `conversation.hero.runtime` seat。它只列出在线且声明 `dsh.web.fetch` 的 Runtime，恢复上次仍可用的选择，并在不重新挂载 Web 的情况下更新后续无所有者目录与 Workspace 操作使用的目标。切换 Runtime 会先清除当前空白会话选择，再选择另一个文件夹；选择已有 Fleet Workspace 时则会同步到其编码的所有者。官方设置标题栏始终显示其所属节点与 Runtime；切换所有者时只更新当前标签页的节点选择，同时刷新 `SettingsScope` 控制器并广播官方 `connection/reset`，使模型、权限、Agent 预设、命令等直接 Host 控制器也重新读取；两类控制器都用代次隔离阻止旧节点的延迟读取发布。语言和外观仍是浏览器本地状态，Hub 节点是 Hub 全局状态，节点插件页单独选择管理目标。两处 Runtime 选择都不会过滤 Fleet 项目／会话页面。Hub 将官方 HTTP 与事件流量转换为 `dsh.web` 能力，Connector 调用同一 Runtime 的 Host API，而不是代理节点上的 Web Server。
+
+Hub 页面只有一个 Fleet 入口。旧书签中的 `nodeId`／`runtimeId` 会在启动时迁移为标签页的创建／设置目标并从地址栏移除；它们不再限定会话列表、工作区列表或事件流。已有会话与工作区的编码 ID 始终决定所有者，即使创建目标已切到另一个节点，也不会改变已有会话的历史来源。标签页选择存于 Session Storage，上次使用的目标仅用作新标签页的默认值。
+
+新 DSH 不再导出旧 Web 需要的 `host.describe` 时，Connector 从当前 Runtime 的版本、工作目录及会话基线重建启动握手。原有 Host 实现仍优先。新节点缺少旧界面的 `ui-onboarding` 设置项时，Hub 浏览器只在标签页保存声明确认；已有原生设置项及节点请求失败仍遵循原来的响应。移动端门禁使用生产 Web 插件和真实 HTTP 协议，覆盖目录选择、工作区与会话创建、历史读取和模型切换，并检查每一步的节点归属。
 
 Hub 设置使用同源 REST，控制面事件接口可用 SSE；官方可重建事件通道和 Host 通道使用同源 WebSocket。Hub 每 20 秒向浏览器事件与应急终端 Socket 发送协议 Ping，使空闲连接能够穿过有界的反向代理超时；不再响应的对端会被终止并重连。经过认证的 Hub 文档会显式允许远程使用 Host 持久设置，但不会把公网 Origin 判定为 Loopback，桌面原生动作仍只限回环。浏览器重连后会重新加载节点权威基线。专用同源 WebSocket 承载交互式应急终端输入和输出。
 
@@ -55,7 +59,7 @@ Hub 设置使用同源 REST，控制面事件接口可用 SSE；官方可重建�
 | 节点注册、吊销、传输健康 | Hub SQLite | 全局，不随 Runtime 切换 |
 | 插件包清单、更新历史、回退与快照 | “节点插件”页选定 Runtime 对应的 Node Agent 状态 | 每次切换重新读取，不由 Hub 缓存制品或快照 |
 
-切换设置 Runtime 会先原地更新 URL 所有权，再触发 Schema SettingsScope、直接 Host 控制器和官方插件清单的同一 `connection/reset` 边界。每个异步读取都绑定自己的目标代次；切换前发出的响应即使最后到达，也不能更新界面或参与后续写入。浏览器回归门禁在真实官方组合和 390px 视口中验证选择器可见、设置页不关闭、Document 不重载，并记录切换完成耗时。
+切换设置 Runtime 会先更新标签页中的节点选择，再触发 Schema SettingsScope、直接 Host 控制器和官方插件清单的同一 `connection/reset` 边界。每个异步读取都绑定自己的目标代次；切换前发出的响应即使最后到达，也不能更新界面或参与后续写入。浏览器回归门禁在真实官方组合和 390px 视口中验证选择器可见、设置页不关闭、Document 不重载，并记录切换完成耗时。
 
 ## 节点传输
 

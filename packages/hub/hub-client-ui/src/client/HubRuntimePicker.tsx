@@ -56,8 +56,8 @@ export function HubRuntimePicker({
 
   // An existing Workspace is authoritative. Otherwise keep the explicit or
   // last-used Runtime when it remains online, falling back to the first live
-  // dsh.web capability. Writing the target into the URL makes every later
-  // ownerless Host request (including directory browsing) route correctly.
+  // dsh.web capability. Tab state routes ownerless Host requests (including directory browsing)
+  // while Session and Workspace discovery remains fleet-wide.
   useEffect(() => {
     if (runtimes.length === 0) return
     const workspaceTarget = selectedWorkspaceId === undefined

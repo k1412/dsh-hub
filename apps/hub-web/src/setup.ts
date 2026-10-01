@@ -53,8 +53,6 @@ async function refresh(): Promise<void> {
       && runtime.capabilities.some(capability => capability.name === 'dsh.web'))
     if (ready !== undefined) {
       const target = new URL('/', globalThis.location.origin)
-      target.searchParams.set('nodeId', ready.nodeId)
-      target.searchParams.set('runtimeId', ready.runtimeId)
       globalThis.location.replace(target)
       return
     }

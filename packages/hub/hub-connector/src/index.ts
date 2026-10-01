@@ -708,6 +708,12 @@ export class HubConnector {
     const args = (carrier.args ?? carrier) as Record<string, unknown>
     const request = (args.request ?? args) as Record<string, unknown>
     this.lifecycle?.assertAvailable(request.sessionId)
+    // Current DSH removed Host.describe; the pinned Web still needs this
+    // readiness handshake before it can load any Workspace or Session baseline.
+    if (/^host[./]describe$/u.test(endpoint) && this.api?.host?.describe === undefined) {
+      return { version: await this.resolveDshVersion(), cwd: process.cwd(),
+        attachedSessions: (await this.listSessions()).length, canOpenPath: false }
+    }
     if (/^workspace[./]list$/u.test(endpoint)) return this.apiCall('workspace', 'list', 'workspace.list', request)
     if (/^session[./](models|history)$/u.test(endpoint)) {
       const method = endpoint.slice(8)
@@ -729,6 +735,9 @@ export class HubConnector {
         : hostMethod === 'createDirectory' ? { path: request.path, name: request.name } : {}
       const value = await this.gateway.invoke({ namespace: 'directoryPicker', method, args })
       return hostMethod === 'listDirectory' ? value : { path: value }
+    }
+    if (endpoint === 'session/list' && this.api?.sessions?.list !== undefined) {
+      return this.apiCall('sessions', 'list', 'session.list', (args._request ?? request) as Record<string, unknown>)
     }
     if (endpoint.includes('/')) {
       // The Remote HTTP carrier wraps named arguments in { args }. Dispatch

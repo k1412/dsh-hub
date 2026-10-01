@@ -7,13 +7,16 @@ import {
 
 beforeEach(() => {
   localStorage.clear()
+  sessionStorage.clear()
   history.replaceState({}, '', '/')
 })
 
 describe('Hub Runtime target browser state', () => {
-  it('round-trips a last-used target through URL and local storage', () => {
+  it('keeps the page canonical while remembering a tab-local target', () => {
     replaceRuntimeTarget({ nodeId: 'workstation-a', runtimeId: 'web' })
     expect(readRuntimeTarget()).toEqual({ nodeId: 'workstation-a', runtimeId: 'web' })
+    expect(location.search).toBe('')
+    localStorage.setItem('dsh.hub.runtime-target', JSON.stringify({ nodeId: 'another-tab', runtimeId: 'default' }))
     history.replaceState({}, '', '/')
     expect(readRuntimeTarget()).toEqual({ nodeId: 'workstation-a', runtimeId: 'web' })
   })
