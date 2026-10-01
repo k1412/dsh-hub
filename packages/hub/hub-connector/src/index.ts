@@ -8,7 +8,7 @@ import { dirname, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import {
-  runtimeCapability, sessionsCapability, settingsCapability, webCapability,
+  runtimeCapability, sessionsCapability, sessionLifecycleCapability, settingsCapability, webCapability,
   resolveHubOperation,
 } from '@k1412/dsh-hub-capabilities'
 import {
@@ -17,6 +17,7 @@ import {
 } from '@k1412/dsh-hub-node-ipc'
 import { HubMessageId, type HubEnvelopeBody, type HubJson } from '@k1412/dsh-hub-protocol'
 import { classifyDshCompatibility } from './dsh-compatibility.ts'
+import { SessionLifecycle, type LifecyclePersistence } from './session-lifecycle.ts'
 
 interface RuntimeApi {
   sessions?: Record<string, (request: unknown, signal?: AbortSignal) => Promise<unknown>>
@@ -249,6 +250,7 @@ const BULK_WEB_ENDPOINTS = new Set([
 
 /** Human-in-the-loop and mutation commands use capacity reserved from bulk reads. */
 function invocationPriority(body: Extract<HubEnvelopeBody, { type: 'capability.invoke' }>): 'interactive' | 'bulk' {
+  if (body.capability === 'dsh.session-lifecycle') return body.operation === 'inventory' ? 'bulk' : 'interactive'
   if (body.capability === 'dsh.sessions') {
     return body.operation === 'list' || body.operation === 'read' ? 'bulk' : 'interactive'
   }
@@ -407,6 +409,7 @@ export class HubConnector {
     private readonly api: RuntimeApi | undefined,
     private readonly gateway: RuntimeGateway,
     private readonly config: ResolvedConfig,
+    private readonly lifecycle?: SessionLifecycle,
   ) {}
 
   /**
@@ -414,6 +417,7 @@ export class HubConnector {
    * @param signal - service-lifetime cancellation signal.
    */
   public async run(signal: AbortSignal): Promise<void> {
+    await this.lifecycle?.ready()
     const secret = await privateSecret(this.config.secretFile)
     let attempt = 0
     for (;;) {
@@ -476,6 +480,7 @@ export class HubConnector {
               dshVersion,
               capabilities: [
                 sessionsCapability.descriptor,
+                ...(this.lifecycle === undefined ? [] : [sessionLifecycleCapability.descriptor]),
                 runtimeCapability.descriptor,
                 settingsCapability.descriptor,
                 webCapability.descriptor,
@@ -585,6 +590,13 @@ export class HubConnector {
   }
 
   private async invoke(capability: string, operation: string, input: unknown, commandId: string): Promise<unknown> {
+    if (capability === 'dsh.session-lifecycle') {
+      if (this.lifecycle === undefined) throw new Error('此节点需要升级 Connector 和 DSH 后才能管理归档与回收站。')
+      if (operation === 'inventory') return this.lifecycle.inventory(input as Parameters<SessionLifecycle['inventory']>[0])
+      const result = await this.lifecycle.mutate(operation, input as { sessionId: string; deletedAt?: number })
+      this.scheduleIndexRefresh()
+      return result
+    }
     if (capability === 'dsh.sessions') return this.invokeSessions(operation, input, commandId)
     if (capability === 'dsh.runtime') return this.invokeRuntime(operation, input, commandId)
     if (capability === 'dsh.settings') return this.invokeSettings(operation, input, commandId)
@@ -609,6 +621,7 @@ export class HubConnector {
   }
 
   private async apiCall(namespace: keyof RuntimeApi, method: string, endpoint: string, payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    if (namespace === 'sessions') this.lifecycle?.assertAvailable(payload.sessionId)
     const service = this.api?.[namespace] as Record<string, ((request: unknown, signal?: AbortSignal) => Promise<unknown>)> | undefined
     const legacy = service?.[method]
     if (legacy !== undefined) return unwrap(await legacy({ rpcId: rpcId(), payload }, signal) as RpcResponse<unknown>)
@@ -622,6 +635,10 @@ export class HubConnector {
   }
 
   private async webRemote(endpoint: string, payload: unknown): Promise<unknown> {
+    const carrier = (payload ?? {}) as Record<string, unknown>
+    const args = (carrier.args ?? carrier) as Record<string, unknown>
+    const request = (args.request ?? args) as Record<string, unknown>
+    this.lifecycle?.assertAvailable(request.sessionId)
     // The pinned Web UI still speaks ApiProxy's host directory verbs. Current
     // DSH exports the same browse data through the directoryPicker namespace.
     // Keep an actual legacy Host service authoritative on older runtimes.
@@ -703,7 +720,7 @@ export class HubConnector {
       // the Remote endpoint before the Gateway can see it.
       if (parsedBody !== undefined && parsedBody.method === endpoint) {
         const result = await this.webRemote(endpoint,
-          parsedBody.payload).then(value => ({ ok: true, value })).catch(remoteFailure)
+          parsedBody.payload).then(value => ({ ok: true, value: this.filterWebResult(endpoint, value) })).catch(remoteFailure)
         remoteResponse = Response.json({ type: 'server-response', rpcId: parsedBody.rpcId, result })
       }
     }
@@ -722,9 +739,29 @@ export class HubConnector {
     }
   }
 
-  private async listSessions(): Promise<SessionView[]> {
+  private filterWebResult(endpoint: string, value: unknown): unknown {
+    if (this.lifecycle === undefined || typeof value !== 'object' || value === null) return value
+    const result = value as { items?: Array<Record<string, unknown>> }
+    if (!Array.isArray(result.items)) return value
+    if (/^session[./](list|search)$/u.test(endpoint)) {
+      return { ...result, items: result.items.filter(item => !this.lifecycle?.hidden(String(item.sessionId ?? item.id))) }
+    }
+    if (/^workspace[./]list$/u.test(endpoint)) {
+      return { ...result, items: result.items.map(item => ({ ...item,
+        sessionIds: Array.isArray(item.sessionIds) ? item.sessionIds.filter(id => !this.lifecycle?.hidden(String(id))) : item.sessionIds,
+      })) }
+    }
+    return value
+  }
+
+  /** Read the source baseline before applying this Runtime's trash filter. */
+  public async sessionBaseline(): Promise<SessionView[]> {
     const listed = await this.apiCall('sessions', 'list', 'session.list', {}) as { items: SessionSummary[] }
     return listed.items.map(sessionView)
+  }
+
+  private async listSessions(): Promise<SessionView[]> {
+    return (await this.sessionBaseline()).filter(session => !this.lifecycle?.hidden(session.sessionId))
   }
 
   private async history(sessionId: string, maximum = 2_000): Promise<unknown[]> {
@@ -1039,13 +1076,47 @@ export function apply(ctx: Context, config: Config): () => Promise<void> {
   const api = ctx.get('apiProxy') as RuntimeApi | undefined
   const gateway = ctx.get('typertGateway') as RuntimeGateway | undefined
   if (gateway === undefined) throw new Error('DSH Hub Connector requires the Typert Gateway service')
+  const persistence = ctx.get('sessionPersistence') as LifecyclePersistence | undefined
+  const registry = ctx.get('workspaceRegistry') as {
+    archivedSessionIds: readonly string[]
+    archiveSession(id: string): Promise<void>
+    unarchiveSession(id: string): Promise<void>
+    list(): Array<{ sessionIds: readonly string[]; detachSession(id: string): Promise<void> }>
+  } | undefined
+  const liveSessions = ctx.get('sessions') as { get(id: string): unknown } | undefined
+  const lifecycle: SessionLifecycle | undefined = persistence?.name === 'session-persistence-jsonl'
+    && typeof persistence.stat === 'function' && typeof persistence.resolveCurrentLog === 'function'
+    && typeof persistence.acquireWriteLease === 'function' && typeof persistence.config?.root === 'string'
+    && registry !== undefined && Array.isArray(registry.archivedSessionIds)
+    && typeof registry.archiveSession === 'function' && typeof registry.unarchiveSession === 'function'
+    && typeof registry.list === 'function' && typeof liveSessions?.get === 'function'
+    ? new SessionLifecycle(join(dirname(config.secretFile ?? join(defaultStateDirectory, 'connector.secret')),
+      'session-lifecycle', `${config.runtimeId ?? process.env.DSH_HUB_RUNTIME_ID?.trim() ?? 'default'}.json`), {
+      persistence,
+      list: () => connector.sessionBaseline(),
+      archived: () => registry.archivedSessionIds,
+      archive: id => registry.archiveSession(id),
+      unarchive: id => registry.unarchiveSession(id),
+      live: id => liveSessions.get(id) !== undefined,
+      detach: async id => {
+        for (const workspace of registry.list()) {
+          if (workspace.sessionIds.includes(id)) await workspace.detachSession(id)
+        }
+      },
+      active: async id => {
+        const events = ctx as unknown as {
+          waterfall(event: string, request: { sessionId: string }, fallback: () => Promise<unknown[]>): Promise<unknown[]>
+        }
+        return (await events.waterfall('workspace/session-activity', { sessionId: id }, async () => [])).length > 0
+      },
+    }) : undefined
   const connector = new HubConnector(api, gateway, {
     ipcEndpoint: config.ipcEndpoint ?? defaultIpcEndpoint,
     secretFile: config.secretFile ?? join(defaultStateDirectory, 'connector.secret'),
     runtimeId: config.runtimeId ?? (process.env.DSH_HUB_RUNTIME_ID?.trim() || 'default'),
     dshVersion: config.dshVersion ?? '',
     reconnectMaximumMs: config.reconnectMaximumMs ?? 30_000,
-  })
+  }, lifecycle)
   const task = connector.run(controller.signal).catch((error: unknown) => {
     if (!controller.signal.aborted) ctx.logger.error(`Hub Connector stopped: ${String(error)}`)
   })

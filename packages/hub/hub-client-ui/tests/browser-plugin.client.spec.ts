@@ -6,6 +6,7 @@ import { HubNodesSection } from '../src/client/HubNodesSection.tsx'
 import { HubPluginsSection } from '../src/client/HubPluginsSection.tsx'
 import { HubRuntimePicker } from '../src/client/HubRuntimePicker.tsx'
 import { HubSettingsTarget } from '../src/client/HubSettingsTarget.tsx'
+import { HubSessionsSection } from '../src/client/HubSessionsSection.tsx'
 
 interface RegisteredEntry {
   options: { name: string; id?: string; label?: string | (() => string) }
@@ -120,6 +121,7 @@ describe('Hub official Settings registration', () => {
       label: labelOf(entry),
       component: entry.component,
     }))).toEqual([
+      { id: 'hub-sessions', label: '会话管理', component: HubSessionsSection },
       { id: 'hub-nodes', label: 'Hub 节点', component: HubNodesSection },
       { id: 'hub-plugins', label: '节点插件', component: HubPluginsSection },
     ])
@@ -129,7 +131,7 @@ describe('Hub official Settings registration', () => {
     }))).toEqual([{ id: 'hub-runtime-target', component: HubSettingsTarget }])
 
     locale.setLocale('en')
-    expect(entries.map(labelOf)).toEqual(['Hub nodes', 'Node plugins'])
+    expect(entries.map(labelOf)).toEqual(['Session management', 'Hub nodes', 'Node plugins'])
     ctx.dispose()
     expect(slots.entries('settings.section')).toHaveLength(0)
   })
@@ -152,7 +154,7 @@ describe('Hub official Settings registration', () => {
     apply(ctx as never)
     expect(slots.entries('settings.section')).toHaveLength(0)
     slots.declare('settings.section')
-    expect(slots.entries('settings.section')).toHaveLength(2)
+    expect(slots.entries('settings.section')).toHaveLength(3)
     ctx.dispose()
   })
 })

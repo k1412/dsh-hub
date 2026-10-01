@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { webCapability } from '@k1412/dsh-hub-capabilities'
+import { sessionLifecycleCapability, webCapability } from '@k1412/dsh-hub-capabilities'
 import { generateHubIdentity, HubCommandId, HubNodeId, HubRuntimeId } from '@k1412/dsh-hub-protocol'
 import { HubStorage } from '@k1412/dsh-hub-storage'
 import type { HubAccessVerifier } from '../src/server.ts'
@@ -505,6 +505,38 @@ describe('Hub HTTP server', () => {
     expect(storage.control.listAudit(10, targets[1]!.nodeId)).toContainEqual(expect.objectContaining({
       action: 'command.wait-timeout', outcome: 'timeout',
     }))
+  })
+
+  it('routes trash operations with the same source Session id to their explicit node and Runtime', async () => {
+    const { base, server, storage } = await fixture()
+    const owners = [{ nodeId: HubNodeId('owner-a'), runtimeId: HubRuntimeId('web') },
+      { nodeId: HubNodeId('owner-b'), runtimeId: HubRuntimeId('desktop') }]
+    for (const owner of owners) {
+      const grant = storage.control.createEnrollment(owner.nodeId, owner.nodeId, Date.now() + 60_000)
+      storage.control.consumeEnrollment(grant.code, `public-${owner.nodeId}`, `service-${owner.nodeId}`)
+      storage.control.upsertRuntime({ ...owner, bootId: `boot-${owner.nodeId}`, dshVersion: '0.1.7-rc.2', connectorVersion: '1.0.4',
+        capabilities: [sessionLifecycleCapability.descriptor] as never, online: true, lastSeenAt: Date.now() })
+    }
+    const calls: unknown[][] = []
+    vi.spyOn(server.agents, 'invoke').mockImplementation(async (...args) => {
+      calls.push(args)
+      const [nodeId, runtimeId, capability, capabilityVersion, operation, payload] = args
+      const command = storage.control.createCommand({ commandId: HubCommandId(`lifecycle-command-${String(calls.length)}`),
+        nodeId, runtimeId, capability, capabilityVersion, operation, payload, idempotency: 'reconcile', createdAt: Date.now() })
+      storage.control.transitionCommand(command.commandId, 'sent', undefined)
+      storage.control.transitionCommand(command.commandId, 'ok', { sessionId: 'same-session', status: 'trash', deletedAt: 1 })
+      return storage.control.getCommand(command.commandId) as typeof command
+    })
+    for (const owner of owners) {
+      const response = await fetch(`${base}/hub/v1/commands`, { method: 'POST', headers: requestHeaders('human', true),
+        body: JSON.stringify({ ...owner, capability: 'dsh.session-lifecycle', capabilityVersion: '1.0.0',
+          operation: 'trash', payload: { sessionId: 'same-session' } }) })
+      expect(response.status).toBe(202)
+      const body = await response.json() as { command: { nodeId: string; runtimeId: string } }
+      expect(body.command).toMatchObject(owner)
+    }
+    expect(calls.map(call => call.slice(0, 6))).toEqual(owners.map(owner => [owner.nodeId, owner.runtimeId,
+      'dsh.session-lifecycle', '1.0.0', 'trash', { sessionId: 'same-session' }]))
   })
 
   it('aggregates official sessions across Runtimes and routes a selected session back to its owner', async () => {

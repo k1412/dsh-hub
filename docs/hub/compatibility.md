@@ -21,6 +21,8 @@ Do not install a newer DSH profile into a node running the 1.0.4 Connector and a
 
 ## Upgrade policy
 
+Archive browsing, trash, restore, and permanent deletion are Hub extensions exposed by the negotiated `dsh.session-lifecycle` capability. Their JSONL storage and write-lock contract is verified against `0.1.7-rc.2`; older DSH families are not assumed to support deletion. Upgrade Hub, Node Agent, and Connector together to use the new contract. Nodes without it remain usable and display an upgrade notice in [session management](session-management.md).
+
 Each Hub release records the exact DSH package family used to build and test the Connector. A future release may support more than one family, but each family must have its own adapter tests for session listing, history, answer submission, tool/skill execution, questions, cancellation, settings, and event streams. When an upstream release removes an imported package or changes a Remote method, the release is incompatible until those tests pass.
 
 The version shown by a node is informational; capability negotiation remains authoritative. The Hub must reject a capability descriptor whose contract version or schema hash is not supported, even when the DSH version string looks newer.

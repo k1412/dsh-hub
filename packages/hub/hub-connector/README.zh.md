@@ -26,6 +26,8 @@ Node Agent 请求权威重新同步时，Connector 只替换仅所有者可访�
 
 ## 已知限制与延期工作
 
+在已验证的 JSONL Runtime 上，Connector 会声明 `dsh.session-lifecycle`，提供归档浏览、取消归档、可恢复的回收站、恢复和永久删除。回收站元数据持久保存，并按 Runtime 隔离。永久删除会检查运行任务、拒绝仍被打开的 Session，并在清理所有日志代次前取得 DSH 原生的内核写锁。操作流程和重启要求见[会话管理](../../../docs/hub/session-management.zh.md)。旧版 Runtime 不声明此能力。
+
 - Connector 必须运行在提供兼容 Host `apiProxy` 与 Typert Gateway 的 DSH Context 中。标准 Profile 会提供这些 Service；其他组合必须显式组合它们及其前置依赖。Connector 不能附加到不相关的 DSH 进程，也不会推断两个进程共享实时状态。
 - Node Agent 必须使用能够读取仅所有者可访问 IPC 密钥并连接已配置本地端点的操作系统账户运行。
 - 调度器只保护单个 Runtime 内的控制延迟，不会取消一个仍然有效的批量读取。Hub 会单独报告浏览器等待超时，而持久命令仍可在稍后完成并参与对账。

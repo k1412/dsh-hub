@@ -27,6 +27,7 @@ Sessions and files stay on their original machine. Local DSH Web, the desktop cl
 | Connect a home NAS or laptop | Each node connects outbound to Hub; no public node IP, port forwarding, or exposed local DSH Web listener |
 | Recover after a plugin update | Check versions and update history in Node plugins; managed updates keep rollback points automatically |
 | Remove stale listings from an unused machine | Clear an offline node's Hub cache directly; revoking a node also removes its discovery index |
+| Recover archives or delete unwanted Sessions | Use [Session management](docs/hub/session-management.md) to browse archives, restore trash, or confirm permanent deletion of source logs |
 
 Hub is for **an individual or one trusted operator**. An authenticated operator has the full authority of the Node Agent account, including files, terminals, and plugin management. It does not offer separate workspace permissions for multiple users.
 

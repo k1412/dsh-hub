@@ -9,6 +9,14 @@
   color: var(--dsw-alias-label-primary);
 }
 
+.sessionFilters, .sessionActions { display: flex; flex-wrap: wrap; gap: 8px; }
+.sessionActions { justify-content: flex-end; margin-top: 12px; }
+.sessionIdentity { min-width: 0; }
+.sessionIdentity h4, .sessionIdentity p, .sessionIdentity small { overflow-wrap: anywhere; }
+.sessionIdentity small, .sessionHelp { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 19px; }
+.notice { margin: 0; color: var(--dsw-alias-state-success-primary); font-size: 13px; }
+ul.cardList { margin: 0; padding: 0; list-style: none; }
+
 .pageHeader,
 .blockHeader,
 .cardTop,

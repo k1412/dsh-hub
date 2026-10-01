@@ -63,6 +63,20 @@ export interface HubRuntime {
   capabilities: HubCapabilityDescriptor[]
 }
 
+/** Source-owned session lifecycle row; ids are local to the selected Runtime. */
+export interface HubLifecycleSession {
+  sessionId: string
+  title?: string
+  workspacePath?: string
+  updatedAt: number
+  running: boolean
+  eventSequence: number
+  status: 'active' | 'archived' | 'trash' | 'purged'
+  deletedAt?: number
+  purgeAvailable: boolean
+}
+export interface HubLifecycleInventory { sessions: HubLifecycleSession[]; nextCursor?: string }
+
 /** One unconsumed enrollment reservation without its one-time secret. */
 export interface PendingEnrollment {
   nodeId: string

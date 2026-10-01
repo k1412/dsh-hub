@@ -6,6 +6,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import { HubNodesSection } from './HubNodesSection.tsx'
 import { HubPluginsSection } from './HubPluginsSection.tsx'
+import { HubSessionsSection } from './HubSessionsSection.tsx'
 import { HubRuntimePicker } from './HubRuntimePicker.tsx'
 import { HubSettingsTarget } from './HubSettingsTarget.tsx'
 import { en, zh, type HubSettingsLocaleKey } from './locales.ts'
@@ -66,6 +67,10 @@ export function apply(ctx: ClientContext): void {
     inject: injectSettingsRefresh,
   }, HubSettingsTarget))
   ctx.slots.inject('settings.section', function* () {
+    yield ctx.slots.register({
+      name: 'settings.section', id: 'hub-sessions', order: 25, locale: NS,
+      label: () => t('sessionsNav'), inject: () => ({ refreshSessions: () => ctx.emit('connection/reset') }),
+    }, HubSessionsSection)
     yield ctx.slots.register({
       name: 'settings.section',
       id: 'hub-nodes',

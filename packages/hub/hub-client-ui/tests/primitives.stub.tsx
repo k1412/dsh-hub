@@ -1,5 +1,11 @@
 import { createElement, type ReactNode } from 'react'
 
+export function Modal({ open, title, description, children, footer }: {
+  open: boolean; title: string; description?: string; children?: ReactNode; footer?: ReactNode
+}): ReactNode {
+  return open ? createElement('div', { role: 'dialog', 'aria-label': title }, description, children, footer) : null
+}
+
 interface MenuItem {
   id: string
   label: ReactNode

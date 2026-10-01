@@ -47,6 +47,25 @@ const sessionSummary = z.strictObject({
   eventSequence: z.number().int().nonnegative(),
 })
 
+const lifecycleStatus = z.enum(['active', 'archived', 'trash', 'purged'])
+const lifecycleReceipt = z.strictObject({ sessionId: id, status: lifecycleStatus, deletedAt: z.number().int().positive().optional() })
+
+/** Node-owned archive, recoverable trash, and explicit transcript erasure. */
+export const sessionLifecycleCapability = capability('dsh.session-lifecycle', [
+  {
+    name: 'inventory', idempotency: 'read',
+    request: z.strictObject({ status: z.enum(['all', 'active', 'archived', 'trash']).default('all'), query: z.string().max(1_024).default(''), cursor: z.string().max(512).optional(), limit: z.number().int().min(1).max(500).default(100) }),
+    response: z.strictObject({ sessions: z.array(sessionSummary.extend({ status: lifecycleStatus, deletedAt: z.number().int().positive().optional(), purgeAvailable: z.boolean() })).max(500), nextCursor: z.string().max(512).optional() }),
+  },
+  ...(['archive', 'unarchive', 'trash'] as const).map(name => ({
+    name, idempotency: 'reconcile' as const, request: z.strictObject({ sessionId: id }), response: lifecycleReceipt,
+  })),
+  ...(['restore', 'purge'] as const).map(name => ({
+    name, idempotency: 'reconcile' as const,
+    request: z.strictObject({ sessionId: id, deletedAt: z.number().int().positive() }), response: lifecycleReceipt,
+  })),
+], [])
+
 const terminalOutput = z.strictObject({
   terminalId: id,
   sequence: z.number().int().positive(),
@@ -446,6 +465,7 @@ export const filesCapability = capability('dsh.files', [
 /** All contracts implemented by the complete Connector profile. */
 export const hubCapabilityContracts: readonly HubCapabilityContract[] = [
   sessionsCapability,
+  sessionLifecycleCapability,
   terminalsCapability,
   pluginsCapability,
   snapshotsCapability,

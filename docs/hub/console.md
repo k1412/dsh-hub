@@ -11,6 +11,7 @@ Use the overview to find work and Settings in the lower-left menu to manage mach
 | Change models, permissions, or Agents | Select Current Runtime at the top of Settings first |
 | Add or revoke a machine, clear offline listings | Settings → Hub nodes |
 | Inspect plugin versions, update, or recover | Settings → Node plugins; select Management target first |
+| Browse archives, restore, or delete Sessions | Settings → Session management; filter by node and status |
 
 These steps use Hub's pinned official Web components. Interface changes in newer DSH releases may not yet be included; see [compatibility](compatibility.md).
 
@@ -32,7 +33,7 @@ An offline node may still have previously discovered workspaces in the list. Thi
 - **Temporarily offline:** retain the entries and resume after DSH and Node Agent reconnect.
 - **Only want stale listings gone:** find the offline node in Settings → Hub nodes and select Clear Hub cache (`清理 Hub 缓存`). Hub clears it locally without contacting the node; entries can synchronize again after reconnection.
 - **Retiring the machine:** revoke it. Hub disconnects it and clears its discovery index; revoke its Access Service Token separately.
-- **Permanently deleting an actual session:** bring the node online and use the session deletion action. Clearing the index and revoking a node both preserve the node's original data.
+- **Deleting an actual Session:** select Delete in Settings → Session management to move it to recoverable trash, then confirm permanent deletion separately in Trash. Its owning node must be online; see [Session management](session-management.md) for steps and write-lock limitations. Clearing the index and revoking a node both preserve the node's original data.
 
 ## Check Current Runtime before changing Settings
 

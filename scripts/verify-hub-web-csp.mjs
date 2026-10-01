@@ -29,6 +29,38 @@ const fixtureRuntimes = [
   { nodeId: 'fixture-second', runtimeId: 'desktop', dshVersion: 'fixture', connectorVersion: 'fixture', online: true, lastSeenAt: 1,
     capabilities: [{ name: 'dsh.web', version: '1.0.0', operations: [{ name: 'fetch' }] }] },
 ]
+for (const runtime of fixtureRuntimes) runtime.capabilities.push({
+  name: 'dsh.session-lifecycle', version: '1.0.0',
+  operations: ['inventory', 'archive', 'unarchive', 'trash', 'restore', 'purge'].map(name => ({ name })),
+})
+const lifecycleRows = new Map(fixtureRuntimes.map((runtime, index) => [runtime.nodeId, [{
+  sessionId: 'same-session', title: `Fixture conversation ${index === 0 ? 'A' : 'B'}`,
+  workspacePath: `/projects/${index === 0 ? 'a' : 'b'}`, updatedAt: index + 1,
+  running: false, eventSequence: 1, status: index === 0 ? 'active' : 'archived', purgeAvailable: true,
+}]]))
+const lifecycleCommands = new Map()
+const lifecycleCalls = []
+
+function lifecycleResult(input) {
+  const rows = lifecycleRows.get(input.nodeId)
+  if (!rows || !fixtureRuntimes.some(runtime => runtime.nodeId === input.nodeId && runtime.runtimeId === input.runtimeId)) {
+    throw new Error('lifecycle fixture target mismatch')
+  }
+  lifecycleCalls.push(input)
+  const payload = input.payload ?? {}
+  if (input.operation === 'inventory') return { sessions: rows.filter(row => row.status === payload.status
+    && `${row.title} ${row.workspacePath} ${row.sessionId}`.toLowerCase().includes((payload.query ?? '').toLowerCase())) }
+  const row = rows.find(candidate => candidate.sessionId === payload.sessionId)
+  if (!row) throw new Error('lifecycle fixture session missing')
+  if (input.operation === 'archive') row.status = 'archived'
+  else if (input.operation === 'unarchive') row.status = 'active'
+  else if (input.operation === 'trash') { row.status = 'trash'; row.deletedAt = Date.now() }
+  else if (input.operation === 'restore' || input.operation === 'purge') {
+    if (payload.deletedAt !== row.deletedAt) throw new Error('lifecycle fixture trash generation mismatch')
+    row.status = input.operation === 'purge' ? 'purged' : 'active'
+  } else throw new Error('lifecycle fixture operation unknown')
+  return { sessionId: row.sessionId, status: row.status, ...(row.deletedAt === undefined ? {} : { deletedAt: row.deletedAt }) }
+}
 
 function recordTiming(name, startedAt) {
   const elapsedMs = Math.round((performance.now() - startedAt) * 100) / 100
@@ -91,6 +123,24 @@ const server = createServer((request, response) => {
       response.statusCode = 200
       response.setHeader('Content-Type', 'application/json; charset=utf-8')
       response.end('{"enrollments":[]}')
+      return
+    }
+    if (request.method === 'POST' && url.pathname === '/hub/v1/commands') {
+      const chunks = []
+      for await (const chunk of request) chunks.push(chunk)
+      const input = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+      if (input.capability !== 'dsh.session-lifecycle') throw new Error('unsupported fixture capability')
+      const result = lifecycleResult(input)
+      const command = { commandId: `ui-lifecycle-${lifecycleCommands.size + 1}`, status: 'ok', result }
+      lifecycleCommands.set(command.commandId, command)
+      response.setHeader('Content-Type', 'application/json; charset=utf-8')
+      response.end(JSON.stringify({ command }))
+      return
+    }
+    const commandMatch = /^\/hub\/v1\/commands\/([^/]+)$/u.exec(url.pathname)
+    if (commandMatch !== null && lifecycleCommands.has(commandMatch[1])) {
+      response.setHeader('Content-Type', 'application/json; charset=utf-8')
+      response.end(JSON.stringify(request.method === 'POST' ? { acknowledged: true } : { command: lifecycleCommands.get(commandMatch[1]) }))
       return
     }
     if (request.method !== 'GET' && request.method !== 'HEAD') {
@@ -174,6 +224,44 @@ try {
     ].join('\n')}`)
   }
   process.stdout.write('Hub Web: strict CSP boot and directory flow verified\n')
+
+  // Exercise the production bundle, real Settings outlet, and destructive
+  // confirmation at two simultaneous owners sharing the same local Session id.
+  await page.locator('button[aria-haspopup="dialog"]').click()
+  await page.getByRole('button', { name: /^会话管理$|^Session management$/u }).click()
+  const manager = page.getByRole('region', { name: /^会话管理$|^Session management$/u })
+  await manager.getByText('Fixture conversation A', { exact: true }).waitFor()
+  await manager.getByRole('button', { name: /^已归档$|^Archived$/u }).click()
+  await manager.getByText('Fixture conversation B', { exact: true }).waitFor()
+  await manager.getByRole('button', { name: /^取消归档$|^Unarchive$/u }).click()
+  await manager.getByRole('button', { name: /^正常$|^Active$/u }).click()
+  const secondRow = manager.locator('li').filter({ hasText: 'Fixture conversation B' })
+  await secondRow.waitFor()
+  async function trashSecondRow() {
+    await secondRow.getByRole('button', { name: /^删除$|^Delete$/u }).click()
+    await page.getByRole('dialog', { name: /^删除会话$|^Delete session$/u })
+      .getByRole('button', { name: /^删除$|^Delete$/u }).click()
+    await manager.getByRole('button', { name: /^回收站$|^Trash$/u }).click()
+    await secondRow.waitFor()
+  }
+  await trashSecondRow()
+  await secondRow.getByRole('button', { name: /^恢复$|^Restore$/u }).click()
+  await manager.getByRole('button', { name: /^正常$|^Active$/u }).click()
+  await secondRow.waitFor()
+  await trashSecondRow()
+  await secondRow.getByRole('button', { name: /^永久删除$|^Delete permanently$/u }).click()
+  const permanent = page.getByRole('dialog', { name: /^永久删除会话$|^Delete session permanently$/u })
+  const purgeButton = permanent.getByRole('button', { name: /^永久删除$|^Delete permanently$/u })
+  if (!await purgeButton.isDisabled()) throw new Error('permanent erase did not require a separate confirmation')
+  await permanent.getByRole('checkbox').check()
+  await purgeButton.click()
+  await secondRow.waitFor({ state: 'detached' })
+  if (lifecycleRows.get('fixture-node')[0].status !== 'active'
+    || lifecycleRows.get('fixture-second')[0].status !== 'purged'
+    || lifecycleCalls.some(call => call.operation !== 'inventory' && call.nodeId !== 'fixture-second')) {
+    throw new Error('session management crossed Runtime ownership')
+  }
+  process.stdout.write('Hub Web: archive, restore, trash, permanent confirmation, and two-owner routing verified\n')
 
   const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, locale: 'zh-CN' })
   await mobile.context().addCookies([loginCookie])
@@ -263,6 +351,13 @@ try {
   if (!await settings.isVisible()) {
     throw new Error('Hub Web closed Settings while changing its Runtime target')
   }
+  await mobile.getByRole('button', { name: /^会话管理$|^Session management$/u }).click()
+  const mobileManager = mobile.getByRole('region', { name: /^会话管理$|^Session management$/u })
+  await mobileManager.getByText('Fixture conversation A', { exact: true }).waitFor()
+  if (await mobile.evaluate(() => document.documentElement.scrollWidth > innerWidth)) {
+    throw new Error('session management overflowed the mobile viewport')
+  }
+  if (pageErrors.length > 0 || mobileErrors.length > 0) throw new Error(`Session management raised errors: ${[...pageErrors, ...mobileErrors].join('\n')}`)
   if (mobileErrors.length > 0) {
     throw new Error(`Hub Web mobile UI raised page errors:\n${mobileErrors.join('\n')}`)
   }

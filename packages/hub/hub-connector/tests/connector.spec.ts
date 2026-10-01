@@ -11,6 +11,7 @@ import { HubConnectorServer } from '../../hub-node-agent/src/ipc-server.ts'
 import type { HubEnvelopeBody } from '@k1412/dsh-hub-protocol'
 import { detectDshVersion, HubConnector, normalizeEventFrame } from '../src/index.ts'
 import * as HubConnectorPlugin from '../src/index.ts'
+import type { SessionLifecycle } from '../src/session-lifecycle.ts'
 
 const roots: string[] = []
 const servers: HubConnectorServer[] = []
@@ -56,6 +57,40 @@ function testGateway(): TestGateway {
 }
 
 describe('Hub Connector coexistence', () => {
+  it('hides trash from source indexes and both Web RPC carriers, and rejects stale conversation URLs', async () => {
+    const lifecycle = {
+      hidden: (id: string) => id === 'removed',
+      assertAvailable: (id: unknown) => { if (id === 'removed') throw new Error('session is in trash') },
+    } as unknown as SessionLifecycle
+    const invoke = vi.fn(async () => ({ items: [
+      { sessionId: 'kept', updatedAt: 1, running: false },
+      { sessionId: 'removed', updatedAt: 2, running: false },
+    ] }))
+    const connector = new HubConnector(undefined, { invoke }, {
+      ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: 'default', dshVersion: '0.1.7-rc.2', reconnectMaximumMs: 1_000,
+    }, lifecycle)
+    const methods = connector as unknown as {
+      listSessions(): Promise<Array<{ sessionId: string }>>
+      invokeWeb(operation: string, value: unknown): Promise<{ body: string }>
+    }
+    expect(await methods.listSessions()).toMatchObject([{ sessionId: 'kept' }])
+    for (const method of ['session.list', 'session/list']) {
+      const response = await methods.invokeWeb('fetch', {
+        method: 'POST', path: `/api/${method}`, headers: [['content-type', 'application/json']],
+        body: JSON.stringify({ type: 'client-request', rpcId: method, method,
+          payload: method.includes('/') ? { args: { _request: {} } } : {} }),
+      })
+      expect(JSON.parse(response.body)).toMatchObject({ result: { ok: true, value: { items: [{ sessionId: 'kept' }] } } })
+    }
+    const count = invoke.mock.calls.length
+    const response = await methods.invokeWeb('fetch', {
+      method: 'POST', path: '/api/session/prompt', headers: [['content-type', 'application/json']],
+      body: JSON.stringify({ type: 'client-request', rpcId: 'stale', method: 'session/prompt',
+        payload: { args: { request: { sessionId: 'removed', content: [] } } } }),
+    })
+    expect(JSON.parse(response.body)).toMatchObject({ result: { ok: false, error: { message: 'session is in trash' } } })
+    expect(invoke.mock.calls.length).toBe(count)
+  })
   it('bridges the pinned Web directory picker to current DSH Remote methods', async () => {
     const listing = { path: '/home/dsh', home: '/home/dsh', crumbs: [], entries: [
       { name: 'work', path: '/home/dsh/work', hidden: false },

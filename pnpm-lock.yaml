@@ -126,6 +126,9 @@ importers:
       '@k1412/dsh-hub-protocol':
         specifier: workspace:^
         version: link:../hub-protocol
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: 4.0.1

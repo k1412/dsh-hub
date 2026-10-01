@@ -26,6 +26,8 @@ None; Connector transport records do not enter model requests.
 
 ## Known Limitations and Deferred Work
 
+On verified JSONL runtimes, Connector advertises `dsh.session-lifecycle` for archive browsing, unarchive, recoverable trash, restore, and permanent deletion. Trash metadata is durable and scoped to one Runtime. Permanent deletion checks active tasks, refuses an attached Session, and acquires DSH's native kernel write lock before erasing every log generation. See [session management](../../../docs/hub/session-management.md) for the operator flow and restart requirement. Older runtimes omit this capability.
+
 - Connector must run in a DSH Context that provides compatible Host `apiProxy` and Typert Gateway services. A standard profile provides them; another composition must compose those services and prerequisites explicitly. Connector cannot attach to an unrelated DSH process or infer that two processes share live state.
 - Node Agent must run under an operating-system account that can read the owner-only IPC secret and reach the configured local endpoint.
 - The scheduler protects control latency inside one Runtime, but it does not cancel a valid bulk read. Hub reports timed-out browser waits separately, while the durable command remains available for late completion and reconciliation.
