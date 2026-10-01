@@ -108,13 +108,14 @@ function flowResult(method, payload, url, webRpcId) {
         flowHistory.set(request.sessionId, events)
         flowSessions.find(row => row.sessionId === request.sessionId).blank = false
         setTimeout(() => {
-          for (const event of events) for (const socket of downlinks.clients) {
-            if (socket.flowMux) socket.send(JSON.stringify({ type: 'server-request', method: 'session/event', rpcId: `fixture-event-${event.seq}`, payload: { type: 'session/event', sessionId: request.sessionId, event } }))
-          }
+          void (async () => { for (const event of events) await connector.publishWebMux({ rpcId: `fixture-event-${event.seq}`, payload: { type: 'session/event', sessionId: request.sessionId, event } }) })()
         }, 50)
       }
       return { accepted: true }
     } }, { ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: owner.runtimeId, dshVersion: '0.1.7-rc.2', reconnectMaximumMs: 1_000 })
+    connector.send = async frame => {
+      for (const socket of downlinks.clients) if (socket.flowMux) socket.send(JSON.stringify(frame.body.payload))
+    }
     return connector.invokeWeb('fetch', { method: 'POST', path: '/api/session.prompt', headers: [['content-type', 'application/json']],
       body: JSON.stringify({ type: 'client-request', rpcId: webRpcId, method: 'session.prompt', payload })
     }).then(response => { const result = JSON.parse(response.body).result; if (!result.ok) throw new Error(result.error.message); return result.value })

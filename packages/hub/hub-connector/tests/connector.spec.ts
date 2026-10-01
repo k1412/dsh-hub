@@ -444,6 +444,9 @@ describe('Hub Connector coexistence', () => {
   })
 
   it('normalizes current Gateway event frames for the legacy Web stream envelope', () => {
+    expect(normalizeEventFrame({ type: 'projection', sessionId: 's1', key: 'plan', value: { pending: false }, seq: 7 })).toMatchObject({
+      payload: { type: 'session/projection', sessionId: 's1', key: 'plan', value: { pending: false }, seq: 7 },
+    })
     expect(normalizeEventFrame({ type: 'ready', clientId: 'client-1', host: { home: '/workspace' } })).toBeUndefined()
     expect(normalizeEventFrame({ type: 'emit', event: 'api-session/status', args: [{ sessionId: 's1', running: true }] })).toMatchObject({
       payload: { type: 'api-session/status', args: [{ sessionId: 's1', running: true }] },
@@ -458,6 +461,49 @@ describe('Hub Connector coexistence', () => {
         sessionId: 's1', questions: [{ id: 'confirm', question: 'Continue?' }],
       },
     })
+  })
+
+  it('forwards actual Context Session events on two Remote-only owners and removes listeners on disposal', async () => {
+    const targets = await Promise.all(['node-a', 'node-b', 'legacy'].map(async owner => {
+      const root = await mkdtemp(join(tmpdir(), 'hub-native-events-')); roots.push(root)
+      const secretFile = join(root, 'connector.secret'); const endpoint = join(root, 'agent.sock')
+      const secret = generateHubIpcSecret(); await writeFile(secretFile, `${secret}\n`, { mode: 0o600 })
+      const bodies: HubEnvelopeBody[] = []
+      const server = new HubConnectorServer(endpoint, secret, `${owner}-boot-12345678`, {
+        connected: () => undefined, body: (_runtime, body) => { bodies.push(body) }, disconnected: () => undefined,
+      }); servers.push(server); await server.listen()
+      const context = new Context(); contexts.push(context)
+      context.provide('typertGateway', {
+        invoke: async () => ({ items: [] }),
+        stream: async ({ signal }: { signal: AbortSignal }) => idle(signal),
+      })
+      context.provide('sessionPersistence', {} as never)
+      context.provide('workspaceRegistry', { archivedSessionIds: [], list: () => [] } as never)
+      context.provide('sessions', { get: () => undefined } as never)
+      if (owner === 'legacy') context.provide('apiProxy', {
+        sessions: { list: async () => ({ result: { ok: true, value: { items: [] } } }) },
+        events: { mux: (_request: unknown, signal: AbortSignal) => idle(signal), host: (_request: unknown, signal: AbortSignal) => idle(signal) },
+      } as never)
+      await context.plugin(HubConnectorPlugin, { ipcEndpoint: endpoint, secretFile, runtimeId: owner, dshVersion: owner === 'legacy' ? '0.1.0-rc.6' : '0.1.7-rc.2', reconnectMaximumMs: 1_000 })
+      await vi.waitFor(() => { expect(bodies.some(body => body.type === 'stream.frame' && body.stream === 'index'), owner).toBe(true) })
+      return { owner, context, bodies }
+    }))
+    for (const target of targets) {
+      const emit = target.context as unknown as { emit(event: string, session: { id: string }, record: unknown): void }
+      emit.emit('session/event', { id: 'same-session' }, { type: 'assistant/message', seq: 3, data: { owner: target.owner } })
+    }
+    const events = (target: typeof targets[number]) => target.bodies.filter(body => body.type === 'stream.frame' && body.stream === 'mux')
+    await vi.waitFor(() => { expect(events(targets[0]!)).toHaveLength(1); expect(events(targets[1]!)).toHaveLength(1) })
+    for (const target of targets.slice(0, 2)) expect(events(target)[0]).toMatchObject({ runtimeId: target.owner, payload: {
+      type: 'server-request', method: 'session/event', payload: { type: 'session/event', sessionId: 'same-session', event: { data: { owner: target.owner } } },
+    } })
+    expect(events(targets[2]!)).toHaveLength(0)
+    for (const target of targets) {
+      await target.context.fiber.dispose()
+      const count = events(target).length
+      ;(target.context as unknown as { emit(event: string, session: { id: string }, record: unknown): void }).emit('session/event', { id: 'same-session' }, {})
+      expect(events(target)).toHaveLength(count)
+    }
   })
 
   it('answers a current Remote waterfall through $events/result', async () => {

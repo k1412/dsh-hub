@@ -85,6 +85,9 @@ interface NormalizedEventFrame {
 export function normalizeEventFrame(frame: unknown): NormalizedEventFrame | undefined {
   if (typeof frame !== 'object' || frame === null) return undefined
   const value = frame as Record<string, unknown>
+  if (value.type === 'projection' && typeof value.sessionId === 'string' && typeof value.key === 'string' && typeof value.seq === 'number') {
+    return { rpcId: rpcId(), payload: { ...value, type: 'session/projection' } }
+  }
   if (typeof value.rpcId === 'string' && typeof value.payload === 'object' && value.payload !== null) {
     const payload = value.payload as Record<string, unknown>
     if (typeof payload.type === 'string') return { rpcId: value.rpcId, payload: payload as NormalizedEventFrame['payload'] }
@@ -204,6 +207,7 @@ export const inject = ['typertGateway']
 
 interface ActiveIpc {
   socket: Socket
+  accepted: boolean
   writes: Promise<void>
   streams: AbortController
   heartbeat: NodeJS.Timeout
@@ -483,7 +487,7 @@ export class HubConnector {
       socket.destroy(error instanceof Error ? error : new Error(String(error)))
     })
     const active: ActiveIpc = {
-      socket, writes: Promise.resolve(), streams, heartbeat, indexTimer: undefined, invocations,
+      socket, accepted: false, writes: Promise.resolve(), streams, heartbeat, indexTimer: undefined, invocations,
     }
     this.active = active
     socket.on('data', (chunk) => {
@@ -515,6 +519,7 @@ export class HubConnector {
             return
           }
           if (frame.type === 'ipc.accepted') {
+            active.accepted = true
             streamTask ??= this.pumpStreams(streams.signal).catch((error: unknown) => {
               if (!streams.signal.aborted) {
                 socket.destroy(error instanceof Error ? error : new Error(String(error)))
@@ -1114,6 +1119,28 @@ export class HubConnector {
     active.indexTimer.unref()
   }
 
+  /** Forward the existing Runtime's durable event, without opening another Agent. */
+  public async observeNativeSessionEvent(sessionId: string, event: unknown): Promise<void> {
+    const active = this.active
+    if (this.api?.events?.mux !== undefined || active?.accepted !== true) return
+    try {
+      await this.publishWebMux({ rpcId: rpcId(), payload: { type: 'session/event', sessionId, event } })
+      this.scheduleIndexRefresh()
+    } catch (error: unknown) {
+      active.socket.destroy(error instanceof Error ? error : new Error('native Session event forwarding failed'))
+    }
+  }
+
+  private async publishWebMux(event: NormalizedEventFrame): Promise<void> {
+    this.webMuxFrameSequence += 1
+    await this.send({ type: 'ipc.hub-body', body: {
+      type: 'stream.frame', runtimeId: this.config.runtimeId,
+      streamId: HubMessageId(jsonHash(`${this.config.runtimeId}:dsh.web:mux`).slice(0, 24)),
+      capability: 'dsh.web', stream: 'mux', frameSequence: this.webMuxFrameSequence,
+      payload: { type: 'server-request', rpcId: event.rpcId, method: event.payload.type, payload: event.payload } as unknown as HubJson,
+    } })
+  }
+
   private async pumpStreams(signal: AbortSignal): Promise<void> {
     const mux = this.api?.events?.mux !== undefined
       ? this.api.events.mux({ rpcId: rpcId(), payload: {} }, signal)
@@ -1133,21 +1160,7 @@ export class HubConnector {
         const normalized = normalizeEventFrame(frame)
         if (normalized === undefined) continue
         const event = await this.legacyWebFrame(normalized)
-        this.webMuxFrameSequence += 1
-        await this.send({ type: 'ipc.hub-body', body: {
-          type: 'stream.frame',
-          runtimeId: this.config.runtimeId,
-          streamId: HubMessageId(jsonHash(`${this.config.runtimeId}:dsh.web:mux`).slice(0, 24)),
-          capability: 'dsh.web',
-          stream: 'mux',
-          frameSequence: this.webMuxFrameSequence,
-          payload: {
-            type: 'server-request',
-            rpcId: event.rpcId,
-            method: event.payload.type,
-            payload: event.payload,
-          } as unknown as HubJson,
-        } })
+        await this.publishWebMux(event)
         if (event.payload.type !== 'session/event') continue
         // dsh.web:mux is the official UI's canonical live event lane. Sending
         // the same session event again through dsh.sessions:events doubles the
@@ -1262,10 +1275,16 @@ function mountConnector(ctx: Context, config: Config): () => Promise<void> {
     dshVersion: config.dshVersion ?? '',
     reconnectMaximumMs: config.reconnectMaximumMs ?? 30_000,
   }, lifecycle, modelSync)
+  const disposeNativeEvents = api?.events?.mux !== undefined ? undefined
+    : (ctx as unknown as { on(event: string, listener: (session: { id: string }, event: unknown) => void, options: { global: boolean }): () => void })
+      .on('session/event', (session, event) => {
+        void connector.observeNativeSessionEvent(session.id, event)
+      }, { global: true })
   const task = connector.run(controller.signal).catch((error: unknown) => {
     if (!controller.signal.aborted) ctx.logger.error(`Hub Connector stopped: ${String(error)}`)
   })
   return async () => {
+    disposeNativeEvents?.()
     modelSync?.close()
     controller.abort(new Error('Hub Connector disposed'))
     await task
