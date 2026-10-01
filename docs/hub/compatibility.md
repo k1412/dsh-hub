@@ -25,6 +25,8 @@ The pinned selector's `session.models` call is adapted to the current `session.m
 
 The pinned history UI's `session.history` call is adapted to the current `session.page` using the observed `session.projections.asOfSeq` as a valid log cut. Backward pagination and the tail page's projection baseline are preserved. Legacy ApiProxy history remains authoritative. Connector waits for its Runtime's dependencies and backs off after clean IPC closure as well as errors, preventing startup failures from flooding Runtime notifications.
 
+Current Workspace exposes a `workspace.follow` baseline rather than a unary `workspace.list`. The adapter reads the complete initial snapshot and immediately closes that stream, preserving each node's Workspace order, archive set, and pinned set. Legacy nodes retain their native list method.
+
 Archive browsing, trash, restore, and permanent deletion are Hub extensions exposed by the negotiated `dsh.session-lifecycle` capability. Their JSONL storage and write-lock contract is verified against `0.1.7-rc.2`; older DSH families are not assumed to support deletion. Upgrade Hub, Node Agent, and Connector together to use the new contract. Nodes without it remain usable and display an upgrade notice in [session management](session-management.md).
 
 Each Hub release records the exact DSH package family used to build and test the Connector. A future release may support more than one family, but each family must have its own adapter tests for session listing, history, answer submission, tool/skill execution, questions, cancellation, settings, and event streams. When an upstream release removes an imported package or changes a Remote method, the release is incompatible until those tests pass.

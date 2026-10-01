@@ -98,6 +98,30 @@ describe('Hub Connector coexistence', () => {
       expect(attempts).toBe(1)
     } finally { controller.abort(); await task.catch(() => undefined) }
   })
+  it('reads current Workspace follow baselines for concurrent nodes and releases both generations', async () => {
+    const closed: string[] = []
+    const targets = ['node-a', 'node-b'].map(owner => {
+      const value = { items: [{ workspaceId: 'shared-workspace', path: `/${owner}`, sessionIds: [] }], archivedSessionIds: [], pinnedSessionIds: [] }
+      const connector = new HubConnector(undefined, { stream: async ({ namespace, method, args, signal }) => {
+        expect({ namespace, method, args }).toEqual({ namespace: 'workspace', method: 'follow', args: {} })
+        return (async function* () { try { yield { type: 'baseline', value }; throw new Error('a unary read must not follow updates') }
+          finally { expect(signal?.aborted).toBe(true); closed.push(owner) } })()
+      } }, { ipcEndpoint: '/unused', secretFile: '/unused', runtimeId: owner, dshVersion: '0.1.7-rc.2', reconnectMaximumMs: 1_000 })
+      return { value, bridge: connector as unknown as { webRemote(endpoint: string, payload: unknown): Promise<unknown> } }
+    })
+    for (const endpoint of ['workspace.list', 'workspace/list']) {
+      const results = await Promise.all(targets.map(target => target.bridge.webRemote(endpoint, endpoint.includes('/') ? { args: {} } : {})))
+      expect(results).toEqual(targets.map(target => target.value))
+    }
+    expect(closed).toEqual(['node-a', 'node-b', 'node-a', 'node-b'])
+    const native = vi.fn(async () => ({ result: { ok: true, value: targets[0]?.value } }))
+    const stream = vi.fn(async () => { throw new Error('legacy must keep the native list') })
+    const legacy = new HubConnector({ workspace: { list: native } }, { stream }, { ipcEndpoint: '/unused', secretFile: '/unused',
+      runtimeId: 'legacy', dshVersion: '0.1.0-rc.6', reconnectMaximumMs: 1_000 }) as unknown as { webRemote(endpoint: string, payload: unknown): Promise<unknown> }
+    await expect(legacy.webRemote('workspace.list', {})).resolves.toEqual(targets[0]?.value)
+    expect(stream).not.toHaveBeenCalled()
+  })
+
   it('loads and paginates pinned histories through current pages with an observed cursor on simultaneous nodes', async () => {
     const targets = ['node-a', 'node-b'].map(owner => {
       const projections = { asOfSeq: 7, values: { owner } }

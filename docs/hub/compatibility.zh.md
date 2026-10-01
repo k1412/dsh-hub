@@ -25,6 +25,8 @@ Hub 1.0.4 最初基于 `0.1.0-rc.7` Host API 家族构建并测试。当前 Conn
 
 内置历史界面的 `session.history` 调用会适配为新版 `session.page`，使用先读取的 `session.projections.asOfSeq` 作为有效日志截点，并保留向前分页和尾页的投影基线。旧版 ApiProxy 历史服务仍是权威来源。Connector 等待所属版本的依赖初始化；本地 IPC 即使正常关闭也会退避重连，避免启动失败产生通知风暴。
 
+新版工作区没有 `workspace.list` 单次读取接口。适配层从 `workspace.follow` 读取完整初始快照后立即关闭该流，保留节点各自的工作区顺序、归档和置顶集合；旧版节点继续使用原生列表接口。
+
 归档浏览、回收站、恢复和永久删除属于 Hub 扩展，通过协商后的 `dsh.session-lifecycle` 能力提供。JSONL 存储和写锁约定已针对 `0.1.7-rc.2` 验证，不会假定旧版 DSH 支持删除。使用此新约定时应一起更新 Hub、Node Agent 和 Connector。没有此能力的节点仍可正常使用，并在[会话管理](session-management.zh.md)中显示升级提示。
 
 每个 Hub 发布版都记录 Connector 实际构建和测试所用的 DSH 包家族。未来版本可以同时支持多个家族，但每个家族都必须拥有独立适配测试，覆盖会话列表、历史、回答提交、工具/Skill 执行、提问卡片、取消、设置和事件流。上游删除导入包或改变 Remote 方法后，在这些测试通过前都不能宣称兼容。

@@ -653,6 +653,20 @@ export class HubConnector {
     const service = this.api?.[namespace] as Record<string, ((request: unknown, signal?: AbortSignal) => Promise<unknown>)> | undefined
     const legacy = service?.[method]
     if (legacy !== undefined) return unwrap(await legacy({ rpcId: rpcId(), payload }, signal) as RpcResponse<unknown>)
+    if (namespace === 'workspace' && method === 'list' && this.gateway.stream !== undefined) {
+      // Current Workspace has a follow baseline instead of a unary list.
+      // Close this read-only generation as soon as its complete snapshot arrives.
+      const controller = new AbortController()
+      const lifetime = signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal])
+      const source = await this.gateway.stream({ namespace: 'workspace', method: 'follow', args: {}, signal: lifetime })
+      const iterator = source[Symbol.asyncIterator]()
+      try {
+        const first = await iterator.next()
+        const frame = first.value as { type?: string; value?: unknown } | undefined
+        if (first.done || frame?.type !== 'baseline') throw new Error('Workspace follow did not provide a baseline')
+        return frame.value
+      } finally { controller.abort(); await iterator.return?.() }
+    }
     if (namespace === 'sessions' && method === 'history') {
       // The pinned UI reads ApiProxy history, while current DSH requires a
       // bounded page at an observed durable cursor. Never invent a future cut.
@@ -694,6 +708,7 @@ export class HubConnector {
     const args = (carrier.args ?? carrier) as Record<string, unknown>
     const request = (args.request ?? args) as Record<string, unknown>
     this.lifecycle?.assertAvailable(request.sessionId)
+    if (/^workspace[./]list$/u.test(endpoint)) return this.apiCall('workspace', 'list', 'workspace.list', request)
     if (/^session[./](models|history)$/u.test(endpoint)) {
       const method = endpoint.slice(8)
       return this.apiCall('sessions', method, `session.${method}`, request)
@@ -1131,7 +1146,7 @@ export async function apply(ctx: Context, config: Config): Promise<() => Promise
     const fiber = ctx.inject(['sessionPersistence', 'workspaceRegistry', 'sessions'], child => mountConnector(child, config))
     return async () => { await fiber.dispose() }
   }
-  if (version !== undefined) {
+  if (version?.startsWith('0.1.0-') === true) {
     // Legacy ApiProxy activates after Gateway and its own dependency graph.
     // Capturing ctx.get('apiProxy') early would pin undefined forever and route
     // the baseline through Remote endpoints the legacy release does not own.
