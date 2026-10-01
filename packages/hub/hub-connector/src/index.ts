@@ -60,6 +60,19 @@ interface SessionSummary {
   projections?: { values?: unknown; asOfSeq?: number }
 }
 
+interface ModelSelection {
+  provider: string
+  model: string
+  reasoningEffort?: string
+}
+
+interface ModelCatalog {
+  default: ModelSelection
+  routableProviders: string[]
+  groups: unknown[]
+  failures: unknown[]
+}
+
 interface RpcResponse<T> { result: { ok: boolean; value?: T; error?: { message: string; code?: string } } }
 
 interface NormalizedEventFrame {
@@ -625,6 +638,19 @@ export class HubConnector {
     const service = this.api?.[namespace] as Record<string, ((request: unknown, signal?: AbortSignal) => Promise<unknown>)> | undefined
     const legacy = service?.[method]
     if (legacy !== undefined) return unwrap(await legacy({ rpcId: rpcId(), payload }, signal) as RpcResponse<unknown>)
+    if (namespace === 'sessions' && method === 'models') {
+      // Current DSH separates the Host-wide catalog from the durable Session
+      // selection. Rebuild the pinned selector's value without resuming an Agent.
+      const [catalog, projections] = await Promise.all([
+        this.remote('session.modelCatalog', {}, signal) as Promise<ModelCatalog>,
+        this.remote('session.projections', { request: { sessionId: payload.sessionId } }, signal) as Promise<{
+          values?: { modelSelection?: { next: ModelSelection | null } }
+        } | null>,
+      ])
+      const current = projections?.values?.modelSelection?.next ?? catalog.default
+      return { current, routable: catalog.routableProviders.includes(current.provider),
+        groups: catalog.groups, failures: catalog.failures }
+    }
     // Typert names each method parameter. Session and Workspace mutations
     // take a single request object, unlike Settings and Commands.
     const args = namespace === 'sessions'
@@ -639,6 +665,9 @@ export class HubConnector {
     const args = (carrier.args ?? carrier) as Record<string, unknown>
     const request = (args.request ?? args) as Record<string, unknown>
     this.lifecycle?.assertAvailable(request.sessionId)
+    if (/^session[./]models$/u.test(endpoint)) {
+      return this.apiCall('sessions', 'models', 'session.models', request)
+    }
     // The pinned Web UI still speaks ApiProxy's host directory verbs. Current
     // DSH exports the same browse data through the directoryPicker namespace.
     // Keep an actual legacy Host service authoritative on older runtimes.

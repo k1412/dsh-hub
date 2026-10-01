@@ -57,6 +57,67 @@ function testGateway(): TestGateway {
 }
 
 describe('Hub Connector coexistence', () => {
+  it('rebuilds the pinned model selector from the current catalog and Session projection', async () => {
+    const selected = { provider: 'configured', model: 'session-model', reasoningEffort: 'high' }
+    const catalog = { default: { provider: 'configured', model: 'default-model' }, routableProviders: ['configured'],
+      groups: [{ id: 'configured', name: 'Provider', models: [{ id: 'session-model', name: 'Session model' }] }],
+      failures: [{ id: 'offline', name: 'Unavailable', message: 'catalog unavailable' }] }
+    let next: typeof selected | null = selected
+    const invoke = vi.fn(async ({ method, args }: { method: string; args: Record<string, unknown> }) => {
+      if (method === 'modelCatalog') { expect(args).toEqual({}); return catalog }
+      if (method === 'projections') { expect(args).toEqual({ request: { sessionId: 'same-session' } }); return { values: { modelSelection: { next } } } }
+      if (method === 'selectModel') { expect(args).toEqual({ request: { sessionId: 'same-session', ...selected } }); return { selected } }
+      throw new Error(`removed Remote must not be called: ${method}`)
+    })
+    const connector = new HubConnector(undefined, { invoke }, { ipcEndpoint: '/unused', secretFile: '/unused',
+      runtimeId: 'default', dshVersion: '0.1.7-rc.2', reconnectMaximumMs: 1_000 })
+    const bridge = connector as unknown as { invokeWeb(operation: string, value: unknown): Promise<{ body: string }> }
+    const request = async (method: string, payload: unknown) => {
+      const response = await bridge.invokeWeb('fetch', { method: 'POST', path: `/api/${method}`,
+        headers: [['content-type', 'application/json']], body: JSON.stringify({ type: 'client-request', rpcId: 'models-probe', method, payload }) })
+      return (JSON.parse(response.body) as { result: unknown }).result
+    }
+    for (const method of ['session.models', 'session/models']) {
+      await expect(request(method, method.includes('/') ? { args: { request: { sessionId: 'same-session' } } } : { sessionId: 'same-session' }))
+        .resolves.toEqual({ ok: true, value: { current: selected, routable: true, groups: catalog.groups, failures: catalog.failures } })
+    }
+    await expect(request('session.selectModel', { sessionId: 'same-session', ...selected })).resolves.toEqual({ ok: true, value: { selected } })
+    next = null
+    await expect(request('session.models', { sessionId: 'same-session' })).resolves.toMatchObject({ value: { current: catalog.default } })
+    catalog.routableProviders = []
+    await expect(request('session.models', { sessionId: 'same-session' })).resolves.toMatchObject({ value: { routable: false } })
+  })
+
+  it('keeps simultaneous model catalogs and the same Session id scoped to each node Runtime', async () => {
+    const targets = ['node-a', 'node-b'].map(owner => {
+      const invoke = vi.fn(async ({ method }: { method: string }) => method === 'modelCatalog'
+        ? { default: { provider: owner, model: `${owner}-model` }, routableProviders: [owner],
+          groups: [{ id: owner, models: [{ id: `${owner}-model` }] }], failures: [] }
+        : { values: { modelSelection: { next: null } } })
+      const connector = new HubConnector(undefined, { invoke }, { ipcEndpoint: '/unused', secretFile: '/unused',
+        runtimeId: owner, dshVersion: '0.1.7-rc.2', reconnectMaximumMs: 1_000 })
+      return { owner, invoke, bridge: connector as unknown as { webRemote(endpoint: string, payload: unknown): Promise<unknown> } }
+    })
+    const results = await Promise.all(targets.map(target => target.bridge.webRemote('session.models', { sessionId: 'same-session' })))
+    results.forEach((result, index) => {
+      const target = targets[index]; if (target === undefined) throw new Error('missing target')
+      expect(result).toMatchObject({ current: { provider: target.owner, model: `${target.owner}-model` }, groups: [{ id: target.owner }] })
+      expect(target.invoke.mock.calls).toContainEqual([expect.objectContaining({ method: 'projections', args: { request: { sessionId: 'same-session' } } })])
+    })
+  })
+
+  it('preserves the legacy model directory on older Runtime APIs', async () => {
+    const value = { current: { provider: 'legacy', model: 'old-model' }, routable: true, groups: [], failures: [] }
+    const models = vi.fn(async () => ({ result: { ok: true, value } }))
+    const invoke = vi.fn(async () => { throw new Error('current catalog must not replace a legacy service') })
+    const connector = new HubConnector({ sessions: { models } }, { invoke }, { ipcEndpoint: '/unused', secretFile: '/unused',
+      runtimeId: 'legacy', dshVersion: '0.1.0-rc.7', reconnectMaximumMs: 1_000 })
+    const bridge = connector as unknown as { webRemote(endpoint: string, payload: unknown): Promise<unknown> }
+    await expect(bridge.webRemote('session.models', { sessionId: 'legacy-session' })).resolves.toEqual(value)
+    expect(invoke).not.toHaveBeenCalled()
+    expect(models).toHaveBeenCalledOnce()
+  })
+
   it('waits for current Runtime storage services before advertising lifecycle support', async () => {
     const root = await mkdtemp(join(tmpdir(), 'hub-delayed-services-')); roots.push(root)
     const secretFile = join(root, 'connector.secret'); const endpoint = join(root, 'agent.sock')

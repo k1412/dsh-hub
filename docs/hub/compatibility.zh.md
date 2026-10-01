@@ -21,6 +21,8 @@ Hub 1.0.4 最初基于 `0.1.0-rc.7` Host API 家族构建并测试。当前 Conn
 
 ## 升级策略
 
+内置模型选择器的 `session.models` 调用会适配为新版 `session.modelCatalog` 与 `session.projections` 读取。适配层保留每个 Session 的下一次模型选择，未配置的会话使用所属 Runtime 的部署默认模型，并保留提供方分组、推理参数和单独提供方的失败信息。模型切换继续使用 `session.selectModel`，由适配层包装命名的 `request` 参数。已有的旧版 ApiProxy 模型服务仍是权威来源。
+
 归档浏览、回收站、恢复和永久删除属于 Hub 扩展，通过协商后的 `dsh.session-lifecycle` 能力提供。JSONL 存储和写锁约定已针对 `0.1.7-rc.2` 验证，不会假定旧版 DSH 支持删除。使用此新约定时应一起更新 Hub、Node Agent 和 Connector。没有此能力的节点仍可正常使用，并在[会话管理](session-management.zh.md)中显示升级提示。
 
 每个 Hub 发布版都记录 Connector 实际构建和测试所用的 DSH 包家族。未来版本可以同时支持多个家族，但每个家族都必须拥有独立适配测试，覆盖会话列表、历史、回答提交、工具/Skill 执行、提问卡片、取消、设置和事件流。上游删除导入包或改变 Remote 方法后，在这些测试通过前都不能宣称兼容。
