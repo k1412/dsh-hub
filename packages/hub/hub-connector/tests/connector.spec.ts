@@ -57,6 +57,28 @@ function testGateway(): TestGateway {
 }
 
 describe('Hub Connector coexistence', () => {
+  it('waits for current Runtime storage services before advertising lifecycle support', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hub-delayed-services-')); roots.push(root)
+    const secretFile = join(root, 'connector.secret'); const endpoint = join(root, 'agent.sock')
+    const secret = generateHubIpcSecret(); await writeFile(secretFile, `${secret}\n`, { mode: 0o600 })
+    const server = new HubConnectorServer(endpoint, secret, 'delayed-services-agent', {
+      connected: () => undefined, body: () => undefined, disconnected: () => undefined,
+    }); servers.push(server); await server.listen()
+    const context = new Context(); contexts.push(context)
+    context.provide('typertGateway', testGateway())
+    await context.plugin(HubConnectorPlugin, { ipcEndpoint: endpoint, secretFile, runtimeId: 'delayed-runtime',
+      dshVersion: '0.1.7-rc.2', reconnectMaximumMs: 1_000 })
+    expect(server.baselines()).toEqual([])
+    context.provide('sessionPersistence', { name: 'session-persistence-jsonl', config: { root },
+      stat: async () => undefined, resolveCurrentLog: async () => undefined, acquireWriteLease: async () => ({ release: async () => undefined }),
+    } as never)
+    context.provide('workspaceRegistry', { archivedSessionIds: [], archiveSession: async () => undefined,
+      unarchiveSession: async () => undefined, list: () => [],
+    } as never)
+    expect(server.baselines()).toEqual([])
+    context.provide('sessions', { get: () => undefined } as never)
+    await vi.waitFor(() => { expect(server.baselines()[0]?.capabilities.some(capability => capability.name === 'dsh.session-lifecycle')).toBe(true) })
+  })
   it('hides trash from source indexes and both Web RPC carriers, and rejects stale conversation URLs', async () => {
     const lifecycle = {
       hidden: (id: string) => id === 'removed',

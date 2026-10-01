@@ -1068,7 +1068,18 @@ export class HubConnector {
 }
 
 /** Mount one Connector into the same Context as the current DSH Remote gateway. */
-export function apply(ctx: Context, config: Config): () => Promise<void> {
+export async function apply(ctx: Context, config: Config): Promise<() => Promise<void>> {
+  const version = config.dshVersion?.trim() || process.env.DSH_HUB_DSH_VERSION?.trim() || await detectDshVersion()
+  if (version === '0.1.7-rc.2') {
+    // Gateway starts before persistence and the durable registry. A one-time
+    // ctx.get() at that point would silently omit the lifecycle capability.
+    const fiber = ctx.inject(['sessionPersistence', 'workspaceRegistry', 'sessions'], child => mountConnector(child, config))
+    return async () => { await fiber.dispose() }
+  }
+  return mountConnector(ctx, config)
+}
+
+function mountConnector(ctx: Context, config: Config): () => Promise<void> {
   const controller = new AbortController()
   // DSH 0.1.7 removes the legacy apiProxy service. Read it through Cordis'
   // optional service accessor so the Remote-only runtime does not throw while
