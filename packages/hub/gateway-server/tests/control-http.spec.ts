@@ -9,8 +9,13 @@ it('keeps legacy nodes usable, gates control by operator and persists directiona
     const payload={source:a.id,target:b.id,workspace:'/delegated',capabilities:'discover,task.start,task.read,task.cancel',expiresAt:String(Date.now()+60000)}
     expect((await f.request('/control/grants',{operator:true,method:'POST',headers:{origin:f.publicUrl,'content-type':'application/json'},body:JSON.stringify(payload)})).status).toBe(303)
     expect(f.gateway.store.grants()).toMatchObject([{source:a.id,target:b.id,sourceRuntime:'runtime-A',targetRuntime:'runtime-B'}])
-    expect((await f.request('/control/grants',{operator:true,method:'POST',headers:{origin:'http://attacker.invalid','content-type':'application/json'},body:JSON.stringify({...payload,source:b.id,target:a.id})})).status).toBe(403)
     const grant=f.gateway.store.grants()[0]!
+    for(const origin of ['http://attacker.invalid','null',undefined]){
+      expect((await f.request('/control/grants',{operator:true,method:'POST',headers:{...(origin ? {origin} : {}),'content-type':'application/json'},body:JSON.stringify({...payload,source:b.id,target:a.id})})).status).toBe(403)
+      expect((await f.request('/control/grants',{operator:true,method:'POST',headers:{...(origin ? {origin} : {}),'content-type':'application/json'},body:JSON.stringify({revoke:grant.id})})).status).toBe(403)
+      expect(f.gateway.store.grants()).toEqual([grant])
+      expect(f.gateway.store.auditRows()).toHaveLength(1)
+    }
     expect((await f.request('/control/grants',{operator:true,method:'POST',headers:{origin:f.publicUrl,'content-type':'application/json'},body:JSON.stringify({revoke:grant.id})})).status).toBe(303)
     expect(f.gateway.store.grants()).toEqual([])
     expect(f.gateway.store.auditRows()).toHaveLength(2)

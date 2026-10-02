@@ -100,10 +100,15 @@ pnpm run gateway:test
 pnpm run check
 pnpm run build
 DSH_NATIVE_ROOT=/path/to/installed-dsh pnpm exec tsx packages/hub/gateway-node/tests/delegation-native-smoke.mts
+pnpm exec playwright install chromium webkit
+GATEWAY_BROWSER_TEST=1 pnpm exec vitest run packages/hub/gateway-server/tests/control-browser.spec.ts packages/hub/gateway-server/tests/forms.spec.ts
 ```
 
 单元测试包含两个 carrier 的并行原生/控制流、方向/Runtime/代次/撤销校验、节点
 作业隔离和恢复。原生测试使用已安装 DSH 与 fixture LLM，避免真实模型费用。
+真实 Chromium/WebKit 表单测试通过浏览器原生导航和提交创建、撤销 A→B 授权，核对
+Runtime、工作区、能力、到期时间及审计，并验证目标节点插件按钮的操作和状态回显。
+测试不伪造 Origin 或 Referer；跨站、缺失和 null Origin 的管理写入仍被拒绝且无副作用。
 本地 carrier 延迟不代表 Tailscale/Tailcat 互联网延迟；另用真实 Tailcat helper 在同一测试主机验证；
 这些测试不证明跨地域性能或生产部署就绪。
 

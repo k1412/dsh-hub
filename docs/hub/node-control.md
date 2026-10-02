@@ -119,11 +119,17 @@ pnpm run gateway:test
 pnpm run check
 pnpm run build
 DSH_NATIVE_ROOT=/path/to/installed-dsh pnpm exec tsx packages/hub/gateway-node/tests/delegation-native-smoke.mts
+pnpm exec playwright install chromium webkit
+GATEWAY_BROWSER_TEST=1 pnpm exec vitest run packages/hub/gateway-server/tests/control-browser.spec.ts packages/hub/gateway-server/tests/forms.spec.ts
 ```
 
 Tests cover two simultaneous native/control carriers, direction/Runtime/generation/
 revocation checks and isolated recoverable management journals. Native tests use installed
-DSH with a fixture LLM to avoid model fees. Loopback latency does not establish Internet
+DSH with a fixture LLM to avoid model fees. Real Chromium/WebKit tests use native navigation
+and form submission to create and revoke A→B grants, checking Runtime identities, workspace,
+capabilities, expiry and audit records, then verify the target node's plugin button and status.
+Tests do not forge Origin or Referer; cross-site, missing and null Origin management writes
+remain rejected without side effects. Loopback latency does not establish Internet
 Tailscale/Tailcat latency. Real Tailcat helpers are also exercised on one test host. These tests do not establish
 cross-region performance or production deployment readiness.
 
