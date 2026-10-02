@@ -57,6 +57,36 @@ const request = (g: typeof experiment, path: string, authorized = true): Promise
     ...(authorized ? { 'x-experiment-operator': 'yes' } : {}) } }, res => ok(new Response(Readable.toWeb(res) as ReadableStream<Uint8Array>, { status: res.statusCode })))
   req.on('error', fail); req.end()
 })
+// Real shared registry, separate outbound Hub tunnels; no additional host watcher.
+async function events(g: typeof experiment, nodeId: string) {
+  const signal = AbortSignal.timeout(20_000)
+  const response = await g.hub.peers.get(nodeId)!.tunnel.fetch(new Request(`http://${nodeId}.hub.localhost/plugins/events`, { signal }))
+  assert.equal(response.status, 200)
+  assert.match(response.headers.get('content-type')!, /^text\/event-stream/)
+  const reader = response.body!.getReader(), decoder = new TextDecoder()
+  let buffered = ''
+  const next = async (): Promise<{type:string;id?:string;graph?:{entries:Array<{id:string}>}}> => {
+    for (;;) {
+      const end = buffered.indexOf('\n\n')
+      if (end >= 0) {
+        const block = buffered.slice(0, end); buffered = buffered.slice(end + 2)
+        const data = block.split('\n').find(line => line.startsWith('data: '))
+        if (data) return JSON.parse(data.slice(6))
+        continue
+      }
+      const chunk = await reader.read()
+      if (chunk.done) throw new Error('SSE ended before expected frame')
+      buffered += decoder.decode(chunk.value, {stream:true})
+    }
+  }
+  const graph = await next()
+  assert.equal(graph.type, 'graph')
+  const ids = graph.graph!.entries.map(row => row.id)
+  assert.equal(new Set(ids).size, ids.length)
+  assert.equal(ids.filter(id => id === '@k1412/dsh-gateway-node').length, 1)
+  return { next, graph, cancel: () => reader.cancel().catch(() => {}) }
+}
+let sseIsolationPassed = false
 let passed = false
 try {
   for (const label of ['alpha', 'beta']) {
@@ -75,6 +105,31 @@ try {
     const ready = await message(child, 'ready'); assert(Number(ready.entries) >= 64); pluginCounts.push(Number(ready.entries)); assert(ready.plugin, 'Shipped experiment client must be registered')
     nodes.push({ id: connections[0]!.id, baselineId: connections[1]!.id, child })
   }
+  await timed('sse-two-runtime-two-hub-isolation', async () => {
+    for (const node of nodes) {
+      const [left, right] = await Promise.all([events(experiment, node.id), events(baseline, node.baselineId)])
+      assert.deepEqual(left.graph, right.graph, 'Both named instances must use the same native registry')
+      const rebuild = async () => { const ack = message(node.child, 'rebuilt'); node.child.send({command:'rebuilt'}); await ack }
+      await rebuild()
+      for (const stream of [left, right]) { assert.equal((await stream.next()).type, 'rebuilt'); stream.graph = await stream.next(); assert.equal(stream.graph.type, 'graph') }
+      await left.cancel()
+      await rebuild()
+      assert.equal((await right.next()).id, '@k1412/dsh-gateway-node', 'Cancelling one Hub stream must preserve the other')
+      right.graph = await right.next(); assert.equal(right.graph.type, 'graph')
+      const reopened = await events(experiment, node.id)
+      assert.deepEqual(reopened.graph, right.graph, 'Reopened SSE sends the full current graph')
+      const down = message(node.child, 'disconnected'); node.child.send({command:'disconnect'}); await down
+      await reopened.cancel()
+      await rebuild()
+      assert.equal((await right.next()).type, 'rebuilt', 'Disconnecting one Hub must preserve the other subscription')
+      right.graph = await right.next(); assert.equal(right.graph.type, 'graph')
+      const up = message(node.child, 'reconnected'); node.child.send({command:'reconnect'}); await up
+      const recovered = await events(experiment, node.id)
+      assert.deepEqual(recovered.graph, right.graph)
+      await Promise.all([recovered.cancel(), right.cancel()])
+    }
+    sseIsolationPassed = true
+  })
   assert.equal((await request(experiment, '/sessions', false)).status, 401)
   assert.equal((await request(baseline, '/sessions')).status, 404)
   assert(!(await (await request(baseline, '/')).text()).includes('href="/sessions"'))
@@ -177,7 +232,7 @@ try {
   throw error
 } finally {
   const metrics = Object.fromEntries(Object.entries(timings).map(([name, times]) => { times.sort((a,b)=>a-b); return [name, { samples: times.length, p50Ms: times[Math.ceil(times.length*.5)-1], p95Ms: times[Math.ceil(times.length*.95)-1], maxMs: times.at(-1) }] }))
-  const report = { passed, browser: browserName, actualNativeRuntime: true, realBrowser: true, actualOverlay: false,
+  const report = { passed, browser: browserName, actualNativeRuntime: true, realBrowser: true, actualOverlay: false, sseIsolationPassed,
     baseline: 'feature disabled on the same candidate gateway/node package; not the deployed initial release',
     localBudgetsMs: { rpcAndDirectory: 3000, nativeBrowserAndHistory: 5000 },
     model: 'fixture-no-cost', officialClientPluginsPerRuntime: pluginCounts.map(n => n - 1), experimentalClientPluginsPerRuntime: 1, runtimeCount: 2, namedGatewayInstancesPerRuntime: 2, simultaneousHubConnectionsPerRuntime: 2, metrics, errors }

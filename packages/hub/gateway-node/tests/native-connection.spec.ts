@@ -23,7 +23,7 @@ describe.skipIf(!root)('published DSH native carrier integration', () => {
     connection.fetch.register({ path: '/api/fixture/binary', methods: ['POST'], requestBody: 'streaming', fetch: async (request: Request) => new Response(request.body, { headers: { 'content-type': 'application/octet-stream' } }) })
     const runtime = {
       connection,
-      clientModules: { graph: () => ({ entries: [], batches: [] }), fetchBundle: async () => new Response('not found', { status: 404 }) },
+      clientModules: { graph: () => ({ rev: 'native-test', entries: [], batches: [] }), onGraphChanged: () => () => {}, onRebuilt: () => () => {}, fetchBundle: async () => new Response('not found', { status: 404 }) },
       typertGateway: { wireStream: { open: async () => { throw new Error('not used') }, failure: (error: unknown) => ({ code: 'internal', message: String(error), details: {} }) } },
       emit: (name: string, rows: unknown[]) => ctx.emit(name, rows),
     }

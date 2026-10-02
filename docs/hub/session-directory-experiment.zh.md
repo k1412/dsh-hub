@@ -82,7 +82,7 @@ pnpm exec tsx packages/hub/gateway-session-directory/src/benchmark-cli.ts
 
 实验版已纳入基础 Gateway `fd110b2fe4`：带有超时上限与校验和检查的流式安装器下载、运行镜像 CA 证书、实际安装原生客户端的 Chromium/WebKit CI、符合条件的静态代码 gzip，以及仅用于原生版本化资源的私有不可变缓存。命名实例安装、会话意图和目录鉴权继续保留。CI 同时在 Chromium 与 WebKit 运行基础原生浏览器测试和实验双 Runtime 测试。
 
-双实例测试现在拒绝重复客户端图 ID，并要求恰好一个实验导航模块。两个命名 Gateway 激活均不注册 HMR 服务。测试禁用了官方 `client-hmr`；这验证模块唯一性，不代表已验证实时 HMR/SSE。原生 `/plugins/events` 转发仍等待独立的基础版修复，本次不将它报告为已完成。
+双实例测试现在拒绝重复客户端图 ID，并要求恰好一个实验导航模块。两个命名 Gateway 激活均不注册 HMR 服务。测试禁用了官方 `client-hmr` 的 host 文件监听。基础修复 `4720972a83` 直接通过共享的公共 `clientModules.graph/onGraphChanged/onRebuilt` registry 提供 `/plugins/events`。每条 SSE 自行持有订阅、有界队列和清理逻辑；没有新增 host watcher 或 Web listener。已固定发布版 rc.2 `PluginsEventFrame` 类型开发依赖及 lockfile。
 
 WebKit 保留与 Chromium 相同的手机宽度、精确会话、浏览器零错误及五轮重连断言。其可选目录截图改存 HTML 证据，因为 Playwright 的 WebKit 截图准备会注入内联样式，被目录 CSP 拒绝。产品 CSP 保持不变。本地实测结果及其与真实覆盖网络、部署性能的区别记录在私有交接报告中。
 
@@ -95,3 +95,7 @@ WebKit 保留与 Chromium 相同的手机宽度、精确会话、浏览器零错
 | 关闭功能的历史打开 / Feature-disabled history open | 6 | 222.22 | 475.58 |
 | 指定历史点击 / Exact history click | 6 | 355.66 | 555.66 |
 | 重连后历史点击 / History click after reconnect | 5 | 401.27 | 570.99 |
+
+SSE gate 使用两个真实 Runtime 和各自同时连接的两个 Hub tunnel，检查初始 graph 一致、实际临时产物重建通知、取消与断线隔离，以及重连后的完整当前 graph。另一个真实 carrier 测试使用缩短为 150 ms 的时限验证生产 HTTP deadline 路径：到期只释放该流，重新打开会发送 graph。生产仍保留 120 秒 HTTP deadline；原生 EventSource 重连后获取最新完整 graph，不保留事件重放缓冲。本地 gate 未等待完整 120 秒，也不声称实测了原生浏览器自动重连时间。端到端文件监听仍由既有 Runtime 负责。
+
+SSE 同步后的 Chromium 与 WebKit 复验均通过：两份报告的 `sseIsolationPassed=true`，浏览器错误为零，目录各完成五轮重连。双 Runtime / 双 Hub SSE 隔离场景耗时分别为 49.33 ms (chromium) / 78.47 ms (webkit)。这是单样本本地场景耗时，不是单个事件延迟，也不是真实覆盖网络测量。

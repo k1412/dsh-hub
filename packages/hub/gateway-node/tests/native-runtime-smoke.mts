@@ -28,6 +28,13 @@ process.env.DSH_TELEMETRY_DISABLED = '1'
 const require = createRequire(join(installed, 'package.json'))
 const load = async (name: string) => import(pathToFileURL(require.resolve(name)).href)
 const app = await load('@deepseek-ai/dsh-app-boot')
+const eventFixture = join(work, 'hmr-fixture')
+await mkdir(eventFixture)
+await writeFile(join(eventFixture, 'package.json'), JSON.stringify({ name: '@gateway-smoke/hmr-fixture', type: 'module',
+  exports: { '.': './index.mjs', './client': './client.js', './package.json': './package.json' }, dsh: { client: { platform: 'web', inject: [] } } }))
+await writeFile(join(eventFixture, 'index.mjs'), 'export function apply() {}\n')
+const fixtureBundle = 'globalThis.__ModuleLoader__.load({id:"@gateway-smoke/hmr-fixture",factory(){return {apply(){}};}});\n'
+await writeFile(join(eventFixture, 'client.js'), fixtureBundle)
 await writeFile(join(work, 'cordis.yml'), '[]\n')
 await symlink(join(installed, 'node_modules'), join(work, 'node_modules'))
 const patches = [
@@ -40,6 +47,7 @@ const patches = [
   { id: 'workspace-controller', config: { documentsDirectory: join(work, 'documents') } },
   { id: 'directory-picker', disabled: true },
   { insert: [{ id: 'qa-directory-browse-host', name: '@deepseek-ai/dsh-host-directory-picker-browse' }, { id: 'qa-directory-browse', name: '@deepseek-ai/dsh-client-ui-directory-picker-browse' }] },
+  { insert: [{ id: 'qa-hmr-fixture', name: join(eventFixture, 'index.mjs') }] },
 ]
 const ctx = await app.boot('gateway-smoke', join(work, 'cordis.yml'), patches, undefined, pathToFileURL(join(installed, 'package.json')).href)
 const { LlmAdapter } = await load('@deepseek-ai/dsh-llm')
@@ -111,6 +119,33 @@ const port = (hub.address() as { port: number }).port
 const node = new WebSocket(`ws://127.0.0.1:${port}/_node`)
 await new Promise<void>((resolve, reject) => { node.once('open', resolve); node.once('error', reject) })
 const serving = serveSurface(node, surface)
+assert(tunnel)
+const events = await tunnel.fetch(new Request('http://native/plugins/events'))
+assert.equal(events.status, 200)
+assert(events.headers.get('content-type')?.startsWith('text/event-stream'))
+const eventReader = events.body!.getReader()
+const eventDecoder = new TextDecoder()
+let pendingEvents = ''
+const nextEvent = async () => {
+  while (true) {
+    const boundary = pendingEvents.indexOf('\n\n')
+    if (boundary >= 0) {
+      const frame = pendingEvents.slice(0, boundary); pendingEvents = pendingEvents.slice(boundary + 2)
+      if (frame.startsWith('data: ')) return JSON.parse(frame.slice(6))
+      continue
+    }
+    const chunk = await eventReader.read()
+    assert(!chunk.done, 'The native plugin event channel ended unexpectedly')
+    pendingEvents += eventDecoder.decode(chunk.value, { stream: true })
+  }
+}
+assert.deepEqual(await nextEvent(), { type: 'graph', graph: ctx.clientModules.graph() })
+await writeFile(join(eventFixture, 'client.js'), fixtureBundle + '// actual temporary plugin rebuild\n')
+const rebuiltRevision = ctx.clientModules.rebuilt('@gateway-smoke/hmr-fixture')
+assert(rebuiltRevision)
+assert.deepEqual(await nextEvent(), { type: 'rebuilt', id: '@gateway-smoke/hmr-fixture', rev: rebuiltRevision })
+assert.deepEqual(await nextEvent(), { type: 'graph', graph: ctx.clientModules.graph() })
+await eventReader.cancel()
 const browser = await (browserName === 'webkit' ? webkit : chromium).launch({ headless: true })
 const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, deviceScaleFactor: 1 })
 page.setDefaultTimeout(8000)
@@ -183,7 +218,7 @@ try {
   assert(!body.includes('Failed to load plugins'), 'Native plugin boot must succeed')
   assert.equal(errors.length, 0, `Unexpected native browser errors: ${errors.join('\n')}`)
   assert(await page.locator('textarea,[contenteditable="true"]').count() > 0, 'Native mobile composer must be present')
-  process.stdout.write(`${JSON.stringify({ ok: true, browser: browserName, nativeWebListener: false, scopedCordisPlugin: true, officialClientPlugins: entries.length, mobileComposer: true, fullAccess: true, modelSelection: true, prompt: true, historyAfterReload: true, browserFileUpload: true, nativeFileDownload: true, fileBytes: 65_537, limitations, artifacts })}\n`)
+  process.stdout.write(`${JSON.stringify({ ok: true, browser: browserName, nativeWebListener: false, scopedCordisPlugin: true, officialClientPlugins: entries.length - 1, nativePluginEvents: true, rebuiltPluginEvent: true, graphChangedEvent: true, mobileComposer: true, fullAccess: true, modelSelection: true, prompt: true, historyAfterReload: true, browserFileUpload: true, nativeFileDownload: true, fileBytes: 65_537, limitations, artifacts })}\n`)
 } catch (error) {
   await writeFile(join(artifacts, 'browser-report.json'), JSON.stringify({ ok: false, browser: browserName, error: String(error), body: await page.locator('body').innerText(), errors, limitations }, null, 2))
   await page.screenshot({ path: join(artifacts, 'failed-mobile.png'), fullPage: true })

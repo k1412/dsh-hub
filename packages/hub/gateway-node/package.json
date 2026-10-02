@@ -46,6 +46,9 @@
       "immediately": true
     }
   },
+  "devDependencies": {
+    "@deepseek-ai/dsh-client-hmr": "0.1.7-rc.2"
+  },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4",
     "@deepseek-ai/schemastery": "~3.18.4",

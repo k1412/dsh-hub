@@ -1,7 +1,7 @@
 /** Real published Runtime fixture; only network overlay and model inference are local fixtures. */
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
-import { mkdir, writeFile, symlink, cp, rename } from 'node:fs/promises'
+import { mkdir, writeFile, appendFile, symlink, cp, rename } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
 const installed = process.env.DSH_NATIVE_ROOT
@@ -87,5 +87,6 @@ process.send?.({ ready: true, entries: ctx.clientModules.graph().entries.length,
 process.on('message', (message: { command: string }) => { void (async () => {
   if (message.command === 'disconnect') { await experimental.close(); process.send?.({ disconnected: true }) }
   if (message.command === 'reconnect') { await experimental.connect(); process.send?.({ reconnected: true }) }
+  if (message.command === 'rebuilt') { await appendFile(join(pkg, 'lib/client.js'), '\n// isolated fixture artifact rebuild\n'); ctx.clientModules.rebuilt('@k1412/dsh-gateway-node'); process.send?.({ rebuilt: true }) }
   if (message.command === 'stop') { await ctx.fiber.dispose(); process.exit(0) }
 })().catch(() => { process.send?.({ error: true }) }) })
