@@ -68,7 +68,7 @@ export async function createFixture(options: { password?: boolean; originSecret?
       const req = httpRequest({ agent: false, hostname: '127.0.0.1', port: publicPort, path, method: rest.method ?? 'GET', headers: Object.fromEntries(headers), signal: rest.signal ?? AbortSignal.timeout(5000) }, res => {
         const responseHeaders = new Headers()
         for (const [key, value] of Object.entries(res.headers)) if (value !== undefined) for (const item of Array.isArray(value) ? value : [value]) responseHeaders.append(key, item)
-        resolve(new Response(rest.method === 'HEAD' || [204, 205, 304].includes(res.statusCode!) ? null : Readable.toWeb(res) as ReadableStream<Uint8Array>, { status: res.statusCode, headers: responseHeaders }))
+        resolve(new Response(rest.method === 'HEAD' || [204, 205, 304].includes(res.statusCode!) ? null : Readable.toWeb(res) as ReadableStream<Uint8Array>, { status: res.statusCode ?? 502, headers: responseHeaders }))
       })
       req.on('error', reject)
       if (rest.body instanceof ReadableStream) Readable.fromWeb(rest.body as import('node:stream/web').ReadableStream).pipe(req)
@@ -83,7 +83,7 @@ export async function createFixture(options: { password?: boolean; originSecret?
     node.carrier = serveSurface(socket, node.surface)
     await until(() => gateway.peers.has(node.id))
   }
-  async function addNode(label: string) {
+  async function addNode(label: string, bundles?: (request: Request) => Promise<Response>) {
     const invitation = gateway.store.invite('tailcat', 'ws://fixture.invalid', label)
     const input = { inviteToken: invitation.token, clientId: randomBytes(12).toString('hex'), credential: randomBytes(32).toString('base64url'), name: label, dshVersion: options.sessionDirectory ? '0.1.7-rc.2' : 'fixture', runtimeId: `runtime-${label}` }
     const reply = await enroll(input)
@@ -132,7 +132,7 @@ export async function createFixture(options: { password?: boolean; originSecret?
       connection = native; node.disposeRuntime = () => ctx.fiber.dispose()
     }
     node.surface = new NodeSurface({ distIndex: join(dir, 'web/index.html'), renderIndex: html => html.replace('OWNER', label), runtime: {
-      connection, clientModules: { fetchBundle: async () => new Response(`export default ${JSON.stringify(label)}`, { headers: { 'content-type': 'text/javascript' } }) },
+      connection, clientModules: { fetchBundle: bundles ?? (async () => new Response(`export default ${JSON.stringify(label)}`, { headers: { 'content-type': 'text/javascript' } })) },
       typertGateway: { wireStream: {
         open: async (endpoint, _payload, uplink, _peer, signal) => {
           if (endpoint === 'fixture/fail') throw new Error('Fixture native method failed')

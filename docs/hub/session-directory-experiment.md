@@ -61,7 +61,8 @@ Host activation uses public `ctx.get()` for optional `appReady` and `webServer`;
 ```sh
 pnpm run check
 pnpm run build
-DSH_NATIVE_ROOT=/path/to/installed-rc2 pnpm run gateway:session:native
+DSH_NATIVE_ROOT=/path/to/installed-rc2 DSH_NATIVE_BROWSER=chromium pnpm run gateway:session:native
+DSH_NATIVE_ROOT=/path/to/installed-rc2 DSH_NATIVE_BROWSER=webkit pnpm run gateway:session:native
 pnpm exec tsx packages/hub/gateway-session-directory/src/benchmark-cli.ts
 ```
 
@@ -76,3 +77,21 @@ Private handoff evidence records exact timings, sample counts, checks and enviro
 ## Maintenance tradeoff
 
 A durable Hub session index is unnecessary: on-demand native listing plus short-lived metadata eliminates index migrations, reconciliation, tombstones and history retention. Costs are full-list reads, fan-out tail latency, no offline catalog/stable global cursor, the small pinned native carrier adapter and the official-client navigation plugin. Browser-only fan-out would move separate-origin authorization/CORS/lifecycle complexity into the browser. Keep this explicitly labeled experiment separate from the lower-maintenance node-only baseline.
+
+## Base synchronization and current limits
+
+The experiment incorporates base gateway `fd110b2fe4`: streaming installer downloads with bounded timeouts and checksum checks, runtime-image CA certificates, installed native Chromium/WebKit CI, gzip for eligible static code and private immutable caching only for native versioned assets. Named-instance installation, session intents and directory authorization remain active. The CI runs both baseline native-browser tests and experimental dual-Runtime tests on Chromium and WebKit.
+
+The dual-instance fixture now rejects duplicate client graph IDs and requires exactly one experimental navigation module. Neither named Gateway activation registers an HMR service. The fixture disables official `client-hmr`; this verifies module uniqueness, not live HMR/SSE correctness. Native `/plugins/events` forwarding is a separate pending base fix and is not claimed as complete here.
+
+WebKit preserves the same mobile-width, exact-session, zero-browser-error and five-cycle reconnect assertions as Chromium. Its optional directory screenshot is replaced with HTML evidence because Playwright's WebKit screenshot preparation injects an inline stylesheet rejected by the directory CSP. The product CSP is unchanged. Measured local results and the distinction from real overlay/deployment performance remain in the private handoff report.
+
+Local revalidation after base synchronization: both browser gates passed with zero browser errors and 5/5 reconnect cycles; each uses two real rc.2 Runtimes and two named connections per Runtime. Full check passed 284 tests (3 optional tests skipped), and build passed. Values below are loopback p95 milliseconds, with fixture inference; small samples and concurrent local gate load preclude production or speedup claims.
+
+| 指标 / Metric | n | Chromium p95 ms | WebKit p95 ms |
+|---|---:|---:|---:|
+| 目录页面 / Directory page | 15 | 23.00 | 24.77 |
+| 双节点并发 listing / Two-node concurrent listing | 15 | 3.93 | 8.02 |
+| 关闭功能的历史打开 / Feature-disabled history open | 6 | 222.22 | 475.58 |
+| 指定历史点击 / Exact history click | 6 | 355.66 | 555.66 |
+| 重连后历史点击 / History click after reconnect | 5 | 401.27 | 570.99 |

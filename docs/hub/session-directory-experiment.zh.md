@@ -61,7 +61,8 @@ Host 激活对可选的 `appReady`、`webServer` 使用公开 `ctx.get()`；受�
 ```sh
 pnpm run check
 pnpm run build
-DSH_NATIVE_ROOT=/path/to/installed-rc2 pnpm run gateway:session:native
+DSH_NATIVE_ROOT=/path/to/installed-rc2 DSH_NATIVE_BROWSER=chromium pnpm run gateway:session:native
+DSH_NATIVE_ROOT=/path/to/installed-rc2 DSH_NATIVE_BROWSER=webkit pnpm run gateway:session:native
 pnpm exec tsx packages/hub/gateway-session-directory/src/benchmark-cli.ts
 ```
 
@@ -76,3 +77,21 @@ pnpm exec tsx packages/hub/gateway-session-directory/src/benchmark-cli.ts
 ## 维护成本
 
 不需要持久 Hub 会话索引：按需原生列表加短期元数据缓存，消除了索引迁移、同步对账、删除标记和历史保留。代价是完整列表读取、扇出尾延迟、没有离线目录或稳定全局游标，以及小型固定版本原生载体适配器和官方客户端导航插件。浏览器直接扇出会将跨源认证、CORS 和生命周期复杂度转移至浏览器。保持本实验明确标记，并与维护成本更低的节点基线分开。
+
+## 基础版同步与当前限制
+
+实验版已纳入基础 Gateway `fd110b2fe4`：带有超时上限与校验和检查的流式安装器下载、运行镜像 CA 证书、实际安装原生客户端的 Chromium/WebKit CI、符合条件的静态代码 gzip，以及仅用于原生版本化资源的私有不可变缓存。命名实例安装、会话意图和目录鉴权继续保留。CI 同时在 Chromium 与 WebKit 运行基础原生浏览器测试和实验双 Runtime 测试。
+
+双实例测试现在拒绝重复客户端图 ID，并要求恰好一个实验导航模块。两个命名 Gateway 激活均不注册 HMR 服务。测试禁用了官方 `client-hmr`；这验证模块唯一性，不代表已验证实时 HMR/SSE。原生 `/plugins/events` 转发仍等待独立的基础版修复，本次不将它报告为已完成。
+
+WebKit 保留与 Chromium 相同的手机宽度、精确会话、浏览器零错误及五轮重连断言。其可选目录截图改存 HTML 证据，因为 Playwright 的 WebKit 截图准备会注入内联样式，被目录 CSP 拒绝。产品 CSP 保持不变。本地实测结果及其与真实覆盖网络、部署性能的区别记录在私有交接报告中。
+
+基础版同步后的本地复验：两种浏览器均通过，浏览器错误为零，重连各为 5/5；每次使用两个真实 rc.2 Runtime，每个 Runtime 有两个命名连接。完整 check 通过 284 项测试（跳过 3 项可选测试），build 通过。下表为本地回环 p95 毫秒，模型推理为 fixture；样本较少且本地同时运行其他检查，不能据此声称生产性能或加速。
+
+| 指标 / Metric | n | Chromium p95 ms | WebKit p95 ms |
+|---|---:|---:|---:|
+| 目录页面 / Directory page | 15 | 23.00 | 24.77 |
+| 双节点并发 listing / Two-node concurrent listing | 15 | 3.93 | 8.02 |
+| 关闭功能的历史打开 / Feature-disabled history open | 6 | 222.22 | 475.58 |
+| 指定历史点击 / Exact history click | 6 | 355.66 | 555.66 |
+| 重连后历史点击 / History click after reconnect | 5 | 401.27 | 570.99 |

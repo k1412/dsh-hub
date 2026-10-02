@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import { randomBytes } from 'node:crypto'
-import { chromium } from 'playwright'
+import { chromium, webkit } from 'playwright'
 import { createGateway } from '../../gateway-server/src/server.ts'
 import { nativeList } from '../src/native-rpc.ts'
 const installed = process.env.DSH_NATIVE_ROOT
@@ -27,11 +27,18 @@ async function gateway(experiment: boolean) {
 }
 const experiment = await gateway(true), baseline = await gateway(false)
 const children: ChildProcess[] = []
-const browser = await chromium.launch({ headless: true })
+const browserName = process.env.DSH_NATIVE_BROWSER ?? 'chromium'
+if (!['chromium', 'webkit'].includes(browserName)) throw new Error('DSH_NATIVE_BROWSER must be chromium or webkit')
+const browser = await (browserName === 'webkit' ? webkit : chromium).launch({ headless: true })
 const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true,
   extraHTTPHeaders: { 'x-experiment-operator': 'yes' } })
 const page = await context.newPage(); page.setDefaultTimeout(20_000)
 const errors: string[] = []
+await page.addInitScript(() => {
+  document.addEventListener('securitypolicyviolation', event => {
+    console.error(`CSP ${event.violatedDirective}: ${event.blockedURI}; ${event.sourceFile}:${event.lineNumber}`)
+  })
+})
 page.on('pageerror', error => errors.push(error.message))
 page.on('console', message => { if (message.type() === 'error' && !message.location().url.endsWith('/open-in-app/apps')) errors.push(message.text()) })
 const timings: Record<string, number[]> = {}
@@ -156,7 +163,11 @@ try {
   await page.locator('#gateway-session-intent[data-state="error"]').waitFor()
   await page.goto(`${experiment.publicUrl}/sessions`, { waitUntil: 'domcontentloaded' })
   assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'Mobile directory must not overflow horizontally')
-  await page.screenshot({ path: join(work, 'directory-mobile.png'), fullPage: true })
+  // Playwright WebKit screenshot preparation injects an inline `body {}`
+  // stylesheet, violating this page's strict CSP. Keep CSP/error assertions
+  // unchanged; capture HTML instead of that optional image on WebKit.
+  if (browserName === 'chromium') await page.screenshot({ path: join(work, 'directory-mobile.png'), fullPage: true })
+  else await writeFile(join(work, 'directory-mobile.html'), await page.content())
   assert.equal(errors.length, 0, errors.join('\n'))
   for (const [name, values] of Object.entries(timings)) { const budget = name.includes('browser') || name.includes('history') || name.includes('ready') ? 5000 : 3000; assert(Math.max(...values) < budget, `${name} exceeded ${budget} ms local budget`) }
   passed = true
@@ -166,7 +177,7 @@ try {
   throw error
 } finally {
   const metrics = Object.fromEntries(Object.entries(timings).map(([name, times]) => { times.sort((a,b)=>a-b); return [name, { samples: times.length, p50Ms: times[Math.ceil(times.length*.5)-1], p95Ms: times[Math.ceil(times.length*.95)-1], maxMs: times.at(-1) }] }))
-  const report = { passed, actualNativeRuntime: true, realBrowser: true, actualOverlay: false,
+  const report = { passed, browser: browserName, actualNativeRuntime: true, realBrowser: true, actualOverlay: false,
     baseline: 'feature disabled on the same candidate gateway/node package; not the deployed initial release',
     localBudgetsMs: { rpcAndDirectory: 3000, nativeBrowserAndHistory: 5000 },
     model: 'fixture-no-cost', officialClientPluginsPerRuntime: pluginCounts.map(n => n - 1), experimentalClientPluginsPerRuntime: 1, runtimeCount: 2, namedGatewayInstancesPerRuntime: 2, simultaneousHubConnectionsPerRuntime: 2, metrics, errors }

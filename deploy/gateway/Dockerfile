@@ -25,7 +25,9 @@ ENV NODE_ENV=production \
     DSH_GATEWAY_NETWORK_BIN=/opt/dsh-gateway/bin \
     DSH_GATEWAY_STATE_DIRECTORY=/var/lib/dsh-gateway \
     DSH_GATEWAY_TAILSCALE_MODE=managed
-RUN groupadd --gid 10001 dsh-gateway \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 dsh-gateway \
     && useradd --uid 10001 --gid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin dsh-gateway \
     && mkdir -p /app/downloads /var/lib/dsh-gateway /opt/dsh-gateway/bin \
     && chown -R 10001:10001 /app /var/lib/dsh-gateway

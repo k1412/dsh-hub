@@ -79,6 +79,9 @@ await ctx.sessionController.rename({ sessionId: created.sessionId, title: `Direc
 const handles = (globalThis as unknown as { __gatewayFixtureConnections: Map<string, {ready:Promise<void>;connect():Promise<void>;close():Promise<void>}> }).__gatewayFixtureConnections
 if (!handles || handles.size !== 2) throw new Error('Both named Gateway plugin instances must activate inside one Runtime')
 await Promise.all([...handles.values()].map(h => h.ready))
+const graphIds = ctx.clientModules.graph().entries.map((entry: {id:string}) => entry.id)
+if (new Set(graphIds).size !== graphIds.length) throw new Error('Named host instances must not duplicate browser module registrations')
+if (graphIds.filter((id: string) => id === '@k1412/dsh-gateway-node').length !== 1) throw new Error('Exactly one navigation client must serve both named instances')
 const experimental = handles.get(connections[0]!.id)!
 process.send?.({ ready: true, entries: ctx.clientModules.graph().entries.length, plugin: ctx.clientModules.graph().entries.some((e: {id:string})=>e.id === '@k1412/dsh-gateway-node'), sessionId: created.sessionId })
 process.on('message', (message: { command: string }) => { void (async () => {

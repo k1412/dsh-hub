@@ -250,7 +250,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright install --with-deps chromium webkit
       - name: Install verified upstream contract fixture
         run: npm install --prefix "$RUNNER_TEMP/dsh-native" --ignore-scripts --no-audit --no-fund @deepseek-ai/dsh@0.1.7-rc.2
       - name: Native transport and two-node server tests
@@ -265,8 +265,15 @@ jobs:
       - name: Experiment / real rc.2 exact-session browser and two Runtime owners
         env:
           DSH_NATIVE_ROOT: ${{ runner.temp }}/dsh-native
-          DSH_DIRECTORY_REPORT: .artifacts/gateway-session-directory.json
-        run: pnpm run gateway:session:native
+        run: |
+          DSH_NATIVE_BROWSER=chromium DSH_DIRECTORY_REPORT=.artifacts/gateway-session-directory-chromium.json pnpm run gateway:session:native
+          DSH_NATIVE_BROWSER=webkit DSH_DIRECTORY_REPORT=.artifacts/gateway-session-directory-webkit.json pnpm run gateway:session:native
+      - name: Complete installed native UI on Chromium and WebKit
+        env:
+          DSH_NATIVE_ROOT: ${{ runner.temp }}/dsh-native
+        run: |
+          DSH_NATIVE_BROWSER=chromium DSH_NATIVE_ARTIFACTS=.artifacts/gateway-native-chromium pnpm exec tsx packages/hub/gateway-node/tests/native-runtime-smoke.mts
+          DSH_NATIVE_BROWSER=webkit DSH_NATIVE_ARTIFACTS=.artifacts/gateway-native-webkit pnpm exec tsx packages/hub/gateway-node/tests/native-runtime-smoke.mts
       - uses: actions/upload-artifact@v7
         if: always()
         with:
