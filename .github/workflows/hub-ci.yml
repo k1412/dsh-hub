@@ -256,6 +256,7 @@ jobs:
       - name: Native transport and two-node server tests
         env:
           DSH_NATIVE_ROOT: ${{ runner.temp }}/dsh-native
+          GATEWAY_BROWSER_TEST: '1'
         run: pnpm run gateway:test
       - run: pnpm run gateway:build
       - name: Desktop and mobile, latency, disconnect and restart
