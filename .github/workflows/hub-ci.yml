@@ -121,7 +121,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright install --with-deps chromium webkit
       - run: pnpm run hub:web:build
       - name: Verify desktop/mobile interactions and record UI timings
         run: DSH_HUB_UI_BENCHMARK_JSON=.artifacts/ui-performance.json pnpm run hub:web:csp:verify
@@ -262,6 +262,12 @@ jobs:
         env:
           DSH_NATIVE_ROOT: ${{ runner.temp }}/dsh-native
         run: pnpm run gateway:browser
+      - name: Complete installed native UI on Chromium and WebKit
+        env:
+          DSH_NATIVE_ROOT: ${{ runner.temp }}/dsh-native
+        run: |
+          DSH_NATIVE_BROWSER=chromium DSH_NATIVE_ARTIFACTS=.artifacts/gateway-native-chromium pnpm exec tsx packages/hub/gateway-node/tests/native-runtime-smoke.mts
+          DSH_NATIVE_BROWSER=webkit DSH_NATIVE_ARTIFACTS=.artifacts/gateway-native-webkit pnpm exec tsx packages/hub/gateway-node/tests/native-runtime-smoke.mts
       - uses: actions/upload-artifact@v7
         if: always()
         with:

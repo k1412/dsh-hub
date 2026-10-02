@@ -68,7 +68,7 @@ export async function createFixture(options: { password?: boolean; originSecret?
       const req = httpRequest({ agent: false, hostname: '127.0.0.1', port: publicPort, path, method: rest.method ?? 'GET', headers: Object.fromEntries(headers), signal: rest.signal ?? AbortSignal.timeout(5000) }, res => {
         const responseHeaders = new Headers()
         for (const [key, value] of Object.entries(res.headers)) if (value !== undefined) for (const item of Array.isArray(value) ? value : [value]) responseHeaders.append(key, item)
-        resolve(new Response(rest.method === 'HEAD' || [204, 205, 304].includes(res.statusCode!) ? null : Readable.toWeb(res) as ReadableStream<Uint8Array>, { status: res.statusCode, headers: responseHeaders }))
+        resolve(new Response(rest.method === 'HEAD' || [204, 205, 304].includes(res.statusCode!) ? null : Readable.toWeb(res) as ReadableStream<Uint8Array>, { status: res.statusCode ?? 502, headers: responseHeaders }))
       })
       req.on('error', reject)
       if (rest.body instanceof ReadableStream) Readable.fromWeb(rest.body as import('node:stream/web').ReadableStream).pipe(req)

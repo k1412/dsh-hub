@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { WebSocket } from 'ws'
 import { afterEach, describe, expect, it } from 'vitest'
+import { BINARY_TEST_TIMEOUT_MS, BINARY_TRANSFER_TIMEOUT_MS, verifyBinaryTransfer } from '../../gateway-transport/tests/binary-probe.ts'
 import { createFixture, until, uploadRequest, type FixtureNode } from './fixture.ts'
 
 type Fixture = Awaited<ReturnType<typeof createFixture>>
@@ -87,14 +88,13 @@ describe('Gateway actual HTTP/ws integration with independent Runtime surfaces',
   })
 
   it('streams exact binary bytes and cancels upload/download while another node remains available', async () => {
-    const f = await setup(); const [a, b] = await Promise.all([f.addNode('A'), f.addNode('B')])
+    const f = await setup({ requestTimeoutMs: BINARY_TRANSFER_TIMEOUT_MS }); const [a, b] = await Promise.all([f.addNode('A'), f.addNode('B')])
     const bytes = randomBytes(768 * 1024 + 19)
     for (const n of [a, b]) {
       let offset = 0
       const body = new ReadableStream<Uint8Array>({ pull(c) { if (offset === bytes.length) c.close(); else { const end = Math.min(offset + 8191, bytes.length); c.enqueue(bytes.subarray(offset, end)); offset = end } } })
-      const response = await f.request('/api/upload', { node: n, method: 'POST', headers: { origin: f.nodeOrigin(n.id) }, body, duplex: 'half' } as RequestInit & { node: FixtureNode })
+      const response = await verifyBinaryTransfer(`server ${n.label} upload + echo`, signal => f.request('/api/upload', { node: n, method: 'POST', headers: { origin: f.nodeOrigin(n.id) }, body, duplex: 'half', signal } as RequestInit & { node: FixtureNode }), bytes, () => ({ hub: f.gateway.peers.get(n.id)?.tunnel.health, node: n.carrier.health }))
       expect(response.headers.get('x-runtime-owner')).toBe(n.label)
-      expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes)
     }
     const prior = a.cancelled
     const download = await f.request('/api/download', { node: a }); const reader = download.body!.getReader()
@@ -106,7 +106,7 @@ describe('Gateway actual HTTP/ws integration with independent Runtime surfaces',
     await until(() => a.cancelled > beforeUpload)
     expect(await (await f.request('/api/identity', { node: b })).json()).toMatchObject({ node: 'B' })
     await until(() => [...f.gateway.peers.values()].every(p => p.tunnel.health.inflightRequests === 0))
-  })
+  }, BINARY_TEST_TIMEOUT_MS)
 
   it('settles native mux failures and keeps simultaneous streams owned by the correct node', async () => {
     const f = await setup(); const [a, b] = await Promise.all([f.addNode('A'), f.addNode('B')])
@@ -167,11 +167,11 @@ describe('Gateway actual HTTP/ws integration with independent Runtime surfaces',
 
 describe.skipIf(!process.env.DSH_NATIVE_ROOT)('published rc.2 native Connection through actual Gateway', () => {
   it('streams published native fetch upload/download for two Runtime instances and cancels cleanly', async () => {
-    const f = await setup({ nativeRoot: process.env.DSH_NATIVE_ROOT }); const nodes = await Promise.all([f.addNode('native-A'), f.addNode('native-B')])
+    const f = await setup({ nativeRoot: process.env.DSH_NATIVE_ROOT! }); const nodes = await Promise.all([f.addNode('native-A'), f.addNode('native-B')])
     await Promise.all(nodes.map(async node => {
       const bytes = randomBytes(256 * 1024 + 7)
       const response = await f.request('/api/upload', { node, method: 'POST', headers: { origin: f.nodeOrigin(node.id), 'content-type': 'application/octet-stream' }, body: bytes })
-      expect(response.status).toBe(200); expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes)
+      expect(response.status).toBe(200); expect(Buffer.from(await response.arrayBuffer()).equals(bytes), 'Published native bytes differ').toBe(true)
       const before = node.cancelled; const download = await f.request('/api/download', { node }); const reader = download.body!.getReader()
       expect((await reader.read()).value?.byteLength).toBeGreaterThan(0); await reader.cancel(); await until(() => node.cancelled > before)
       const uploads = node.uploads; const cancelled = node.cancelled; const upload = uploadRequest(f, node); upload.write(bytes.subarray(0, 32768))
