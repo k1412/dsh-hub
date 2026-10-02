@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -54,7 +54,7 @@ describe('native delegation adapter', () => {
     const task: Result = await f.adapter.handle('task.start', f.input)
     const created = vi.mocked(f.ctx.agents.create).mock.calls[0]![0]
     expect(created.agentOptions).toEqual({ provider: 'target-provider', model: 'target-model', maxTokens: 8192 })
-    expect(created.meta).toEqual({ cwd: f.root, origin: 'subagent', delegationDepth: 1 })
+    expect(created.meta).toEqual({ cwd: await realpath(f.root), origin: 'subagent', delegationDepth: 1 })
     expect(created.sessionId).not.toBe(f.input.sourceSession)
     const job = f.jobs.get(created.sessionId)!
     await expect(tool.execute(args, { agent: job.agent, signal: exec.signal })).rejects.toThrow('Recursive')
