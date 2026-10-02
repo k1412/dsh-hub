@@ -99,7 +99,11 @@ describe.skipIf(process.env.GATEWAY_BROWSER_TEST !== '1').each([
       const response = await submit(page, '生成安装命令', '/invites')
       expect(fixture.posts.at(-1)?.origin).toBe(fixture.origin)
       expect(response.status()).toBe(200)
-      expect(await page.getByRole('heading', { name: `连接 browser-${mode}`, exact: true }).isVisible()).toBe(true)
+      // A response event reports headers, before WebKit necessarily commits
+      // the new document. Wait for the actual result UI within its own budget.
+      const heading = page.getByRole('heading', { name: `连接 browser-${mode}`, exact: true })
+      await heading.waitFor({ state: 'visible', timeout: 2000 })
+      expect(await heading.isVisible()).toBe(true)
       const command = await page.locator('pre').textContent()
       const token = /--invite '([A-Za-z0-9_-]{43})'/.exec(command ?? '')?.[1]
       expect(token).toBeTruthy()
