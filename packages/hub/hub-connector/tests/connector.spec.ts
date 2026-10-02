@@ -1351,7 +1351,11 @@ describe('Hub Connector coexistence', () => {
     await running
   })
 
-  it('reopens ApiProxy streams on resync so a pending question is replayed', async () => {
+  it('reopens ApiProxy streams on resync so a pending question is replayed', async ({ onTestFinished }) => {
+    // Exercise the largest legal first backoff (999ms), rather than randomly
+    // fitting reconnect + IPC authentication inside waitFor's 1000ms default.
+    const jitter = vi.spyOn(Math, 'random').mockReturnValue(0.999)
+    onTestFinished(() => { jitter.mockRestore() })
     const root = await mkdtemp(join(tmpdir(), 'dsh-hub-connector-resync-'))
     roots.push(root)
     const endpoint = join(root, 'agent.sock')
@@ -1399,9 +1403,31 @@ describe('Hub Connector coexistence', () => {
 
     let connections = 0
     const bodies: HubEnvelopeBody[] = []
+    const questionFrames = () => bodies.filter(body => body.type === 'stream.frame'
+      && body.capability === 'dsh.web'
+      && body.stream === 'mux'
+      && typeof body.payload === 'object'
+      && body.payload !== null
+      && !Array.isArray(body.payload)
+      && body.payload.method === 'question/requested')
+    const firstQuestion = Promise.withResolvers<void>()
+    const replayedQuestion = Promise.withResolvers<void>()
+    const waitForDelivery = async (delivery: Promise<void>) => {
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      try {
+        await Promise.race([delivery, new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error('Pending question was not delivered within the reconnect budget')), 3000)
+        })])
+      } finally { clearTimeout(timeout) }
+    }
     const server = new HubConnectorServer(endpoint, secret, 'agent-boot-id-resync', {
       connected: () => { connections += 1 },
-      body: (_runtimeId, body) => { bodies.push(body) },
+      body: (_runtimeId, body) => {
+        bodies.push(body)
+        const count = questionFrames().length
+        if (count === 1) firstQuestion.resolve()
+        if (count >= 2) replayedQuestion.resolve()
+      },
       disconnected: () => undefined,
     })
     servers.push(server)
@@ -1416,27 +1442,22 @@ describe('Hub Connector coexistence', () => {
     const controller = new AbortController()
     const running = connector.run(controller.signal)
 
-    const questionFrames = () => bodies.filter(body => body.type === 'stream.frame'
-      && body.capability === 'dsh.web'
-      && body.stream === 'mux'
-      && typeof body.payload === 'object'
-      && body.payload !== null
-      && !Array.isArray(body.payload)
-      && body.payload.method === 'question/requested')
-    await vi.waitFor(() => { expect(questionFrames()).toHaveLength(1) })
-    expect(await server.send('default', {
-      type: 'runtime.resync-required', runtimeId: 'default', reason: 'retention-exceeded',
-    })).toBe(true)
-    await vi.waitFor(() => {
+    try {
+      await waitForDelivery(firstQuestion.promise)
+      expect(questionFrames()).toHaveLength(1)
+      expect(await server.send('default', {
+        type: 'runtime.resync-required', runtimeId: 'default', reason: 'retention-exceeded',
+      })).toBe(true)
+      await waitForDelivery(replayedQuestion.promise)
       expect(connections).toBeGreaterThanOrEqual(2)
       expect(muxSubscriptions).toBeGreaterThanOrEqual(2)
       expect(questionFrames().length).toBeGreaterThanOrEqual(2)
-    })
-    expect(questionFrames()[1]).toMatchObject({
-      payload: { rpcId: 'question-rpc-resync-0001', method: 'question/requested' },
-    })
-
-    controller.abort(new Error('test complete'))
-    await running
+      expect(questionFrames()[1]).toMatchObject({
+        payload: { rpcId: 'question-rpc-resync-0001', method: 'question/requested' },
+      })
+    } finally {
+      controller.abort(new Error('test complete'))
+      await running.catch(error => { if (error !== controller.signal.reason) throw error })
+    }
   })
 })
