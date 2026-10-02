@@ -1,0 +1,28 @@
+# Host mode reads the host identity without calling up, login or serve.
+# Sharing the network namespace lets the helper bind only to the Tailnet IP.
+services:
+  hub:
+    build:
+      context: ../..
+      dockerfile: deploy/gateway/Dockerfile
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      PORT: ${DSH_GATEWAY_PORT:-8080}
+      DSH_GATEWAY_PRIVATE_PORT: ${DSH_GATEWAY_PRIVATE_PORT:-8081}
+      DSH_GATEWAY_OVERLAY_PORT: ${DSH_GATEWAY_OVERLAY_PORT:-${DSH_GATEWAY_PRIVATE_PORT:-8081}}
+      DSH_GATEWAY_TAILSCALE_MODE: host
+      DSH_GATEWAY_TAILSCALE_SOCKET: /var/run/tailscale/tailscaled.sock
+      DSH_GATEWAY_STATE_DIRECTORY: /var/lib/dsh-gateway
+      DSH_GATEWAY_PUBLIC_URL: ${DSH_GATEWAY_PUBLIC_URL:?Set the public HTTPS Hub origin}
+      DSH_GATEWAY_DOWNLOAD_URL: ${DSH_GATEWAY_DOWNLOAD_URL:-}
+      DSH_GATEWAY_OWNER_PASSWORD: ${DSH_GATEWAY_OWNER_PASSWORD:-}
+      DSH_GATEWAY_CF_TEAM_DOMAIN: ${DSH_GATEWAY_CF_TEAM_DOMAIN:-}
+      DSH_GATEWAY_CF_AUDIENCE: ${DSH_GATEWAY_CF_AUDIENCE:-}
+      DSH_GATEWAY_OPERATOR_EMAILS: ${DSH_GATEWAY_OPERATOR_EMAILS:-}
+      DSH_GATEWAY_ORIGIN_SECRET: ${DSH_GATEWAY_ORIGIN_SECRET:-}
+    volumes:
+      - hub-state:/var/lib/dsh-gateway
+      - /var/run/tailscale/tailscaled.sock:/var/run/tailscale/tailscaled.sock:ro
+volumes:
+  hub-state:

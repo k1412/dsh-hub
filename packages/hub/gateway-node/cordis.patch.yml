@@ -1,0 +1,4 @@
+# Uses the profile's existing Runtime and its matching native frontend.
+- insert:
+    - id: gateway-node
+      name: '@k1412/dsh-gateway-node'

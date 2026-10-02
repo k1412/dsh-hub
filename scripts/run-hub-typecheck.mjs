@@ -23,6 +23,11 @@ const projects = [
   'packages/hub/hub-client-ui/tsconfig.json',
   'packages/hub/hub-server/tsconfig.json',
   'apps/hub-web/tsconfig.json',
+  'packages/hub/gateway-network/tsconfig.json',
+  'packages/hub/gateway-transport/tsconfig.json',
+  'packages/hub/gateway-node/tsconfig.json',
+  'packages/hub/gateway-server/tsconfig.json',
+
 ]
 
 process.stdout.write('hub typecheck: refresh project-reference declarations\n')

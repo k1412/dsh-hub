@@ -1,0 +1,13 @@
+{
+  "name": "@k1412/dsh-gateway-server",
+  "version": "2.0.0-alpha.1",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@k1412/dsh-gateway-network": "workspace:*",
+    "@k1412/dsh-gateway-transport": "workspace:*",
+    "@k1412/dsh-hub-server": "workspace:*",
+    "ws": "^8.21.0"
+  }
+}

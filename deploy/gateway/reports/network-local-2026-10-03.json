@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "time": "2026-10-02T17:31:34.821Z",
+  "versions": {
+    "tailscale": "1.102.4",
+    "tailcat": "0.7.0"
+  },
+  "scope": "real-overlay-local-host",
+  "limitations": [
+    "Two isolated node connection identities share one physical test host; this is not a two-machine DSH workflow test.",
+    "Tailscale reuses the logged-in host daemon and targets its own Tailnet IP; results do not measure a WAN path.",
+    "Latency includes the selected CLI adapter and HTTP exchange; model generation is not measured."
+  ],
+  "configuration": {
+    "requestsPerNode": 40,
+    "concurrencyPerNode": 4,
+    "reconnectCycles": 3,
+    "hubRestartCycles": 1,
+    "payloadBytes": 16384,
+    "timeoutMs": 15000
+  },
+  "modes": {
+    "tailcat": {
+      "topology": "two-clients-one-host-real-tailcat",
+      "attempts": 90,
+      "successes": 90,
+      "failures": 0,
+      "failureRate": 0,
+      "p50Ms": 4.25,
+      "p95Ms": 6243.14,
+      "successfulNodeReconnects": 6,
+      "expectedNodeReconnects": 6,
+      "successfulHubRestarts": 1,
+      "expectedHubRestarts": 1,
+      "connectP50Ms": 15.31,
+      "connectP95Ms": 20.33,
+      "recoveryP50Ms": 6270.27,
+      "recoveryP95Ms": 7746.22,
+      "probeServerStatePreserved": true,
+      "status": "passed",
+      "successfulInitialHandshakes": 2,
+      "steadyP50Ms": 4.12,
+      "steadyP95Ms": 14.06,
+      "initialHandshakeP50Ms": 4639.33,
+      "initialHandshakeP95Ms": 4644.59
+    },
+    "tailscale": {
+      "topology": "host-self-tailnet-via-tailscale-nc",
+      "attempts": 90,
+      "successes": 90,
+      "failures": 0,
+      "failureRate": 0,
+      "p50Ms": 4.3,
+      "p95Ms": 15.84,
+      "successfulNodeReconnects": 6,
+      "expectedNodeReconnects": 6,
+      "successfulHubRestarts": 1,
+      "expectedHubRestarts": 1,
+      "connectP50Ms": 16.48,
+      "connectP95Ms": 26.72,
+      "recoveryP50Ms": 27.24,
+      "recoveryP95Ms": 47.24,
+      "probeServerStatePreserved": true,
+      "status": "passed",
+      "successfulInitialHandshakes": 2,
+      "steadyP50Ms": 4.27,
+      "steadyP95Ms": 15.84,
+      "initialHandshakeP50Ms": 6.46,
+      "initialHandshakeP95Ms": 10.14
+    }
+  }
+}

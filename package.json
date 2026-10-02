@@ -1,6 +1,6 @@
 {
   "name": "@k1412/dsh-hub",
-  "version": "1.0.4",
+  "version": "2.0.0-alpha.1",
   "description": "Self-hosted multi-node control plane for DeepSeek Harness",
   "license": "MIT",
   "private": true,
@@ -14,8 +14,8 @@
     "apps/hub-web"
   ],
   "scripts": {
-    "build": "pnpm run hub:web:build && pnpm run hub:server:build && pnpm run hub:release:pack",
-    "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run docs:check && pnpm run repo:check && pnpm run hub:web:build && pnpm run hub:web:csp:verify && pnpm run hub:server:verify && pnpm run hub:release:pack && pnpm run hub:release:verify",
+    "build": "pnpm run hub:web:build && pnpm run hub:server:build && pnpm run hub:release:pack && pnpm run gateway:build",
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run docs:check && pnpm run repo:check && pnpm run hub:web:build && pnpm run hub:web:csp:verify && pnpm run hub:server:verify && pnpm run hub:release:pack && pnpm run hub:release:verify && pnpm run gateway:build && pnpm run gateway:browser",
     "clean": "node scripts/clean.mjs",
     "typecheck": "node scripts/run-hub-typecheck.mjs",
     "lint": "oxlint packages/hub apps/hub-web scripts",
@@ -32,7 +32,10 @@
     "hub:server:build": "node scripts/build-hub-server.mjs",
     "hub:server:verify": "pnpm run hub:server:build && node scripts/verify-hub-server.mjs",
     "hub:release:pack": "node scripts/build-hub-release.mjs",
-    "hub:release:verify": "node scripts/verify-hub-release.mjs"
+    "hub:release:verify": "node scripts/verify-hub-release.mjs",
+    "gateway:build": "node scripts/build-gateway.mjs",
+    "gateway:test": "vitest run packages/hub/gateway-server/tests packages/hub/gateway-network/tests packages/hub/gateway-node/tests packages/hub/gateway-transport/tests",
+    "gateway:browser": "node scripts/verify-gateway-browser.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",

@@ -6,6 +6,26 @@
 [![Release](https://img.shields.io/github/v/release/k1412/dsh-hub?display_name=tag)](https://github.com/k1412/dsh-hub/releases)
 [![License](https://img.shields.io/github/license/k1412/dsh-hub)](LICENSE)
 
+## v2 分支：原生节点网关
+
+本分支正在重写为简单的节点入口：Hub 提供节点列表、添加／撤销和网络设置；打开节点后使用该节点已安装的官方 DSH 前端、插件及同一个现有 Runtime。每节点使用独立浏览器源，不聚合会话或项目，也不代理本地 Web 监听器。
+
+邀请只选择 **Tailscale 或 Tailcat**。Hub 镜像包含两种工具，支持托管 Tailscale 登录；节点安装所选工具并持久化配对。完整边界、端点、验证记录和待验收项见[原生网关设计](docs/hub/gateway-design.zh.md)。本地门禁和夹具测试已通过，完整生产 DSH 浏览器及部署验收仍待完成。
+
+### v2 快速开始
+
+使用独立的 [Compose 应用](deploy/gateway/compose.yaml)，保留已有 v1 服务。在受保护的环境配置中设置 `DSH_GATEWAY_PUBLIC_URL`，并选择完整的 Cloudflare Access 配置或至少 16 字符的 `DSH_GATEWAY_OWNER_PASSWORD`；生产使用 HTTPS。然后在仓库根目录运行：
+
+```sh
+docker compose -p dsh-gateway-v2 -f deploy/gateway/compose.yaml up -d --build
+```
+
+默认只向宿主回环地址发布浏览器端口。配置 HTTPS 代理、管理域名与每节点子域名及证书；私有 agent 端口 `8081` 不得发布。Access 保护的入口需配置安装器可访问的下载源。进入“连接设置”完成所选网络准备，再添加节点，在现有 DSH 用户下运行邀请命令，按提示重载原 Runtime。部署与回滚细节以设计文档为准。
+
+## v1 旧版工作台文档
+
+以下内容保留用于现有 v1 服务的维护；其中的会话聚合、模型同步、截图和部署路径不描述 v2。
+
 **把电脑、NAS 和服务器上的 DSH，放进一个浏览器。**
 
 在电脑上开始的任务，出门后用手机继续；让 NAS 执行长任务，同时在另一台机器的项目里写代码。DSH Hub 为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 提供统一入口：查看各台机器的工作区和会话，选择任务在哪台机器运行，并从同一处管理节点、插件和恢复点。
