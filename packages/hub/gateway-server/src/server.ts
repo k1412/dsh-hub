@@ -55,10 +55,17 @@ async function body(request: IncomingMessage, limit = 16_384): Promise<Record<st
   }
   return Object.fromEntries(new URLSearchParams(raw))
 }
+function documentReferrerPolicy(type: string, disposition = ''): string {
+  // no-referrer makes HTML form POSTs send Origin:null, including same-origin
+  // submissions. Preserve their Origin while withholding cross-origin referrers.
+  return /^(?:text\/html|application\/xhtml\+xml)(?:\s*;|$)/i.test(type)
+    && !/^attachment(?:\s*;|$)/i.test(disposition) ? 'same-origin' : 'no-referrer'
+}
 function response(res: ServerResponse, status: number, value: string | object, type?: string): void {
   const json = typeof value !== 'string'
-  res.writeHead(status, { 'content-type': type ?? (json ? 'application/json; charset=utf-8' : 'text/html; charset=utf-8'),
-    'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer',
+  const contentType = type ?? (json ? 'application/json; charset=utf-8' : 'text/html; charset=utf-8')
+  res.writeHead(status, { 'content-type': contentType,
+    'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': documentReferrerPolicy(contentType),
     ...(json || type ? {} : { 'content-security-policy': "default-src 'self'; style-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" }) })
   res.end(json ? JSON.stringify(value) : value)
 }
@@ -169,7 +176,9 @@ export function createGateway(options: GatewayOptions) {
     const reply = await peer.tunnel.fetch(new Request(url, init))
     const out: Record<string, string> = {}
     reply.headers.forEach((value, key) => { if (!/^(connection|transfer-encoding|set-cookie)$/i.test(key)) out[key] = value })
-    out['referrer-policy'] = 'no-referrer'; out['x-content-type-options'] = 'nosniff'
+    out['referrer-policy'] = reply.status >= 300 && reply.status < 400 ? 'no-referrer'
+      : documentReferrerPolicy(out['content-type'] ?? '', out['content-disposition'])
+    out['x-content-type-options'] = 'nosniff'
     // Compress only installed browser code on this hop. APIs, events, downloads
     // and pre-encoded/ranged representations retain their native byte contract.
     const pluginCode = pluginCodeUrl(url)
