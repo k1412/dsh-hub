@@ -75,12 +75,12 @@ export function startNodeConnector(options: {
         url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
         url.searchParams.set('nodeId', config.nodeId)
         websocket = new WebSocket(url, {
-          headers: { ...(options.control ? { 'x-dsh-control': '1', 'x-dsh-control-capabilities': options.control.capabilities.join(',') } : {}), authorization: `Bearer ${config.credential}`, 'x-dsh-version': metadata.dshVersion,
+          headers: { ...(options.control ? { 'x-dsh-control': '2', 'x-dsh-control-capabilities': options.control.capabilities.join(',') } : {}), authorization: `Bearer ${config.credential}`, 'x-dsh-version': metadata.dshVersion,
             'x-dsh-runtime': metadata.runtimeId, 'x-dsh-name': encodeURIComponent(metadata.name) },
           handshakeTimeout: 15_000, maxPayload: 262144, perMessageDeflate: false,
         })
         let controlAccepted = false
-        websocket.once('upgrade', response => { controlAccepted = response.headers['x-dsh-control'] === '1' })
+        websocket.once('upgrade', response => { controlAccepted = response.headers['x-dsh-control'] === '2' })
         const socket = websocket
         const stop = () => { socket.terminate() }
         controller.signal.addEventListener('abort', stop, { once: true })

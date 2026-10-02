@@ -6,12 +6,15 @@ export type ControlHandler = (method: string, input: Record<string, unknown>, si
 export class ControlRPC {
   private pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>()
   private active = new Map<string, AbortController>()
-  private seen = new Set<string>()
+  private readonly nonce = randomUUID()
+  private nextSequence = 0
+  private remoteNonce: string | undefined
+  private remoteSequence = 0
   private dead = false
   constructor(private ws: WebSocket, private handler: ControlHandler, private timeout = 30_000) {
     ws.on('message', this.message); ws.once('close', this.close)
   }
-  get health() { return { pending: this.pending.size, active: this.active.size, replayEntries: this.seen.size } }
+  get health() { return { pending: this.pending.size, active: this.active.size, replayEntries: this.remoteNonce ? 1 : 0, receivedSequence: this.remoteSequence } }
   private send(frame: Record<string, unknown>) {
     const text = JSON.stringify({ control: 1, ...frame })
     if (this.dead || this.ws.readyState !== WebSocket.OPEN) throw new Error('control-disconnected')
@@ -20,7 +23,8 @@ export class ControlRPC {
   }
   call(method: string, input: Record<string, unknown>): Promise<unknown> {
     if (this.pending.size >= 16) return Promise.reject(new Error('control-capacity'))
-    const id = randomUUID()
+    if (this.nextSequence >= Number.MAX_SAFE_INTEGER) return Promise.reject(new Error('control-sequence-exhausted'))
+    const id = `${this.nonce}:${++this.nextSequence}`
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('control-timeout; query job before retrying')); }, this.timeout)
       timer.unref(); this.pending.set(id, { resolve, reject, timer })
@@ -40,10 +44,16 @@ export class ControlRPC {
       if ('error' in frame) pending.reject(new Error('Remote control refused or failed')); else pending.resolve(frame.result)
       return
     }
-    if (this.seen.has(id) || this.active.size >= 8 || this.seen.size >= 10000 || typeof frame.method !== 'string' || !frame.input || typeof frame.input !== 'object' || Array.isArray(frame.input)) {
+    const identity = /^([a-f0-9-]{36}):([1-9][0-9]{0,15})$/.exec(id)
+    const sequence = identity ? Number(identity[2]) : 0
+    const fresh = !!identity && Number.isSafeInteger(sequence) && sequence > this.remoteSequence && (!this.remoteNonce || this.remoteNonce === identity[1])
+    if (!fresh || typeof frame.method !== 'string' || !frame.input || typeof frame.input !== 'object' || Array.isArray(frame.input)) {
       try { this.send({ id, error: 'replay-or-capacity' }) } catch { /* closing */ } return
     }
-    this.seen.add(id)
+    // WebSocket preserves request order. Retaining a high-water mark rejects every old
+    // request forever without an ever-growing cache or an unsafe eviction window.
+    this.remoteNonce = identity?.[1]; this.remoteSequence = sequence
+    if (this.active.size >= 8) { try { this.send({ id, error: 'capacity' }) } catch { /* closing */ } return }
     const abort = new AbortController(); this.active.set(id, abort)
     const timer = setTimeout(() => abort.abort(), this.timeout); timer.unref()
     void Promise.resolve().then(() => this.handler(frame.method as string, frame.input as Record<string, unknown>, abort.signal)).then(result => {
@@ -55,6 +65,6 @@ export class ControlRPC {
     this.dead = true; this.ws.off('message', this.message); this.ws.off('close', this.close)
     for (const item of this.pending.values()) { clearTimeout(item.timer); item.reject(new Error('control-disconnected')) }
     for (const abort of this.active.values()) abort.abort()
-    this.pending.clear(); this.active.clear(); this.seen.clear()
+    this.pending.clear(); this.active.clear(); this.remoteNonce = undefined; this.remoteSequence = 0
   }
 }

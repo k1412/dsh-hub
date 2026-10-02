@@ -17,7 +17,6 @@ control: true
 delegationWorkspace: /srv/delegated
 trustedPackages:
   - example-dsh-plugin
-# updateExecutor: /usr/local/bin/dsh-update
 ```
 
 Create the workspace first. Omit delegationWorkspace for management only. Reload
@@ -27,9 +26,9 @@ management requires pluginManager. The compatibility target is DSH 0.1.7-rc.2.
 
 Open experimental management from node details. Inventory contains selected safe
 fields. Installations require exact versions and names in the node's trustedPackages;
-URL, path and git specs are rejected. Use `management.check` to inspect a version and
-`management.submit / plugin.install` to install. Enable/disable uses entryId; removal
-uses the package name. The connection plugin and critical management services are
+URL, path and git specs are rejected. Use the plugin table and “Check version” / “Install / update” buttons. The page shows
+installed versions, human-readable status and action buttons; protocol details remain
+collapsed. Grant expiry is selected in hours or days. The connection plugin and critical management services are
 protected. Changes use official pluginManager and the same profile persistence as
 the native CLI, retaining original YAML.
 
@@ -44,9 +43,11 @@ other changes or installations already applying can be too late to cancel. Offic
 failed/cancelled installs restore package.json and lockfile. Arbitrary removal does
 not promise rollback. Raw diagnostics remain local.
 
-DSH updates default to external-update-required, including Docker installations.
+All DSH lifecycle operations, including version checks and updates, require an online
+independent supervisor advertising lifecycle capability. They never fall back to the Runtime.
+This includes npm and Docker installations.
 The [deployment adapter](../../deploy/gateway/update-adapter.mjs) runs on the node or
-deployment host. Set DSH_UPDATE_CONFIG in the node environment to an administrator-owned
+deployment host. Set DSH_UPDATE_CONFIG in the independent supervisor environment to an administrator-owned
 JSON configuration:
 
 - stateDirectory and approvedVersions specify local journal storage and approved versions.
@@ -60,8 +61,9 @@ JSON configuration:
   implement pinned image sources, volume retention, single-container replacement and
   readiness checks. The adapter never pretends in-container npm updates are persistent.
 
-Supervisor restarts may terminate the caller, leaving its summary interrupted; inspect
-the deployment journal and actual version. Never mount Docker sockets into the Hub.
+Run the supervisor in a separate service/cgroup from DSH, so restarting DSH cannot kill
+the updater responsible for verification and rollback. A supervisor crash retains locks;
+inspect the deployment journal, subprocesses and actual version locally. Never mount Docker sockets into the Hub.
 Only the local administrator should own the executor and its configuration.
 
 ## Grants and tools
@@ -76,23 +78,30 @@ delegation fail. Remote tool output is marked untrusted; embedded instructions s
 not be followed. Workspace admission is **not a filesystem sandbox**. B executes with
 its local session permissions, so operators must authorize the target execution environment.
 
-Grants are checked at dispatch and before returning results. Revocation immediately
-blocks subsequent reads and attempts cancellation of tracked running tasks. Offline
-targets are retried after reconnect. Expiry is checked every 250ms. The Hub does not
-persist its running-task tracking table; after Hub restart, the target's ten-minute
-limit remains, but immediate cancellation of old tasks is not guaranteed.
+Grants are checked at dispatch and before returning results. The Hub renews a separate
+local B lease every 10 seconds only while the original source and target connections,
+Runtime identities, generations and grant remain valid. B uses a monotonic timer with
+a maximum 30-second lease. Hub loss/restart, source loss or revocation stops renewal;
+B requests cooperative cancellation and exposes the reason. Long grant expiry never
+replaces this lease. Reconnection does not resend prompts or adopt old tasks through
+idempotency replay. A blocked event loop or noncooperative native tool can delay actual
+termination; such tasks keep their active slot and report cancelRequested until idle.
 
 ## Protocol and limits
 
 Control RPC shares the existing authenticated outbound Tailscale or Tailcat WebSocket.
-Both sides negotiate x-dsh-control=1; otherwise no control frames are sent. Node,
+Both sides negotiate x-dsh-control=2; otherwise no control frames are sent. Node,
 Runtime and connection generation are bound to the authenticated connection. Frames
 are limited to 64KiB, with 16 pending calls and eight executing requests per side.
 Calls time out after 30 seconds and writes are never automatically retried. Native
-streams retain their window and channel limits. A connection accepts at most 10000
-control requests before reconnect is necessary. Delegation permits four active and
-256 retained tasks, 16384 prompt characters and 32768 result characters; archive locally
-when retention capacity is reached.
+streams retain their window and channel limits. Each connection uses a random nonce and monotonically increasing sequence; the receiver
+keeps one high-water mark, rejecting old requests without a growing replay cache.
+There is no 10000-request lifetime limit. Delegation permits four active and
+256 retained tasks, 16384 prompt characters and 32768 result characters. Terminal task
+metadata expires after seven days on admission. The administrator cleanup button
+(task.cleanup) can remove terminal records older than 24 hours. Active tasks and records
+within that minimum idempotency window are never removed; new admission is rejected
+while all 256 records remain protected. Native session history remains governed by DSH.
 
 ## Verification
 
@@ -106,8 +115,8 @@ DSH_NATIVE_ROOT=/path/to/installed-dsh pnpm exec tsx packages/hub/gateway-node/t
 Tests cover two simultaneous native/control carriers, direction/Runtime/generation/
 revocation checks and isolated recoverable management journals. Native tests use installed
 DSH with a fixture LLM to avoid model fees. Loopback latency does not establish Internet
-Tailscale/Tailcat latency. Real networks, soak testing and deployment updates require
-further isolated verification; these tests do not establish production readiness.
+Tailscale/Tailcat latency. Real Tailcat helpers are also exercised on one test host. These tests do not establish
+cross-region performance or production deployment readiness.
 
 ### Native verification performed on this branch
 
@@ -122,15 +131,15 @@ further isolated verification; these tests do not establish production readiness
   removal isolated to A and preserved original YAML comments.
 - Complete official browser smoke passed. Open in App still requires an upstream
   listener-only endpoint and remains unavailable remotely.
-- 9000 rounds, 18000 control calls plus concurrent native fetches: approximately
-  52 seconds, zero errors, no pending requests at completion. This bounded load test
+- 12000 rounds, 24000 control calls plus concurrent native fetches: with a separate
+  10026-call replay regression. See the release report for current timing and results. This bounded load test
   does not establish hours of stability. Measurements depend on machine and load.
 
 ```sh
 DSH_NATIVE_ROOT=/path/to/installed-dsh pnpm exec tsx packages/hub/gateway-node/tests/control-native-two-runtime.mts
 # Optionally set GATEWAY_CONTROL_TAILCAT_BIN_DIR to verified tailcat binaries
 DSH_NATIVE_ROOT=/path/to/installed-dsh DSH_TEST_PNPM=/path/to/pnpm.cjs pnpm exec tsx packages/hub/gateway-node/tests/management-native-smoke.mts
-CONTROL_SOAK_ROUNDS=9000 CONTROL_BENCHMARK_REPORT=/tmp/control-benchmark.json pnpm exec vitest run packages/hub/gateway-transport/tests/control.spec.ts
+CONTROL_SOAK_ROUNDS=12000 CONTROL_BENCHMARK_REPORT=/tmp/control-benchmark.json pnpm exec vitest run packages/hub/gateway-transport/tests/control.spec.ts
 ```
 
 ### Explicit limits
@@ -183,6 +192,36 @@ for local paths and these environment variables. Do not couple its lifetime to t
 
 Plugin and lifecycle operations share a local exclusive lock. Crashes retain the lock to
 prevent uncertain retries. An administrator can request management.recover through the
-supervisor only after the recorded owner PID has exited. Corrupt locks, live owners and
-PID reuse require local inspection. The deployment adapter also retains its own journal
+supervisor only for operations that cannot leave an executor behind and after the recorded owner PID
+has exited. Plugin installation and lifecycle locks require local subprocess/journal
+reconciliation even when that PID has exited. Corrupt locks and PID reuse also require
+local inspection. The deployment adapter also retains its own journal
 and lock; inspect interrupted updates and current locally before recovering them.
+
+## Durable management and executor contract
+
+The node fsyncs its operation reservation before any mutation. Journal write failures
+lock mutations and show persistence-failed; background failures do not reject into the
+Runtime. “Retry journal write” retries persistence without replaying the operation.
+An unreadable journal requires local repair and reload. Completion is exposed only
+after its durable write; restart-required means installed but not yet active.
+Exact plugin checks consult official inspect metadata or the configured registry when
+already installed. Successful installation must match the actual installed manifest;
+a failed update verifies restoration of the prior version.
+
+The supplied executor emits one JSON result on stdout: check reports availableVersion;
+install/apply reports installedVersion. Both must equal the requested exact version.
+Docker check and verify commands must emit `{ "version": "0.1.7-rc.2" }` for the
+available image and actual running installation respectively. Exit zero alone is not
+version verification. Docker first-install failure runs a configured cleanup argv array;
+without it the status is manual-recovery-required and locks remain. It never reports
+rolled-back without invoking rollback. The deployment owner must make cleanup and
+rollback verify their resulting deployment state.
+
+Management executor timeout leaves the executor running and the node locked for local
+reconciliation, including after process restart. Adapter command timeout may leave
+children alive, so the adapter retains its own lock and does not race rollback against
+them. Stop/reconcile all updater descendants, inspect both journals and the installed
+version before locally removing stale locks; never use the Gateway PID alone as proof.
+The default mutation timeout is five minutes; adapter commands default to four minutes.
+This conservative recovery policy favors avoiding concurrent updates over automatic recovery.

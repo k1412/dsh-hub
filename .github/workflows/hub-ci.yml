@@ -2,7 +2,7 @@ name: Hub CI
 
 on:
   push:
-    branches: [master, feat/minimal-node-gateway, experiment/session-directory]
+    branches: [master, feat/minimal-node-gateway, experiment/session-directory, experiment/node-control]
   pull_request:
   workflow_dispatch:
 
@@ -262,6 +262,12 @@ jobs:
         env:
           DSH_NATIVE_ROOT: ${{ runner.temp }}/dsh-native
         run: pnpm run gateway:browser
+      - name: Native control leases and isolated plugin management
+        env:
+          DSH_NATIVE_ROOT: ${{ runner.temp }}/dsh-native
+        run: |
+          pnpm exec tsx packages/hub/gateway-node/tests/control-native-two-runtime.mts
+          DSH_TEST_PNPM="$(readlink -f "$(command -v pnpm)")" pnpm exec tsx packages/hub/gateway-node/tests/management-native-smoke.mts
       - name: Complete installed native UI on Chromium and WebKit
         env:
           DSH_NATIVE_ROOT: ${{ runner.temp }}/dsh-native

@@ -24,7 +24,7 @@ it('keeps authenticated supervisor separate from native generation and usable af
   let socket:InstanceType<typeof WebSocket>|undefined
   try{
     const a=await f.addNode('A'),native=f.gateway.peers.get(a.id)
-    socket=new WebSocket(`ws://127.0.0.1:${f.privatePort}/supervise?nodeId=${a.id}`,{headers:{authorization:`Bearer ${a.credential}`,'x-dsh-runtime':'runtime-A','x-dsh-control':'1','x-dsh-control-capabilities':'lifecycle'}})
+    socket=new WebSocket(`ws://127.0.0.1:${f.privatePort}/supervise?nodeId=${a.id}`,{headers:{authorization:`Bearer ${a.credential}`,'x-dsh-runtime':'runtime-A','x-dsh-control':'2','x-dsh-control-capabilities':'lifecycle'}})
     await once(socket,'open')
     serveSurface(socket,{handle:async()=>new Response('',{status:404}),openMux:()=>{throw new Error('No Runtime')}},{control:true})
     const actions:unknown[]=[]
@@ -37,5 +37,41 @@ it('keeps authenticated supervisor separate from native generation and usable af
     await expect(control.call('peer.discover',{})).rejects.toThrow()
     await f.request(`/nodes/${a.id}/revoke`,{operator:true,method:'POST',headers:{origin:f.publicUrl}})
     expect(f.gateway.supervisors.has(a.id)).toBe(false)
+  }finally{socket?.terminate();await f.close()}
+})
+it('never routes lifecycle or version checks into a management-capable Runtime without a supervisor',async()=>{
+  const {default:WebSocket}=await import('ws'),{once}=await import('node:events')
+  const {ControlRPC,serveSurface}=await import('../../gateway-transport/src/index.ts')
+  const f=await createFixture();let socket:InstanceType<typeof WebSocket>|undefined
+  try{
+    const node=await f.addNode('A');await f.disconnect(node)
+    socket=new WebSocket(`ws://127.0.0.1:${f.privatePort}/connect?nodeId=${node.id}`,{headers:{authorization:`Bearer ${node.credential}`,'x-dsh-runtime':'runtime-A','x-dsh-control':'2','x-dsh-control-capabilities':'management'}})
+    await once(socket,'open');serveSurface(socket,node.surface,{control:true})
+    const calls:unknown[]=[];const rpc=new ControlRPC(socket,async(method,input)=>{calls.push({method,input});return {version:'fixture',plugins:[],bundles:[],jobs:[]}})
+    for(const action of ['dsh.install','dsh.start','dsh.stop','dsh.uninstall','dsh.update']){
+      for(const method of ['management.submit','management.check']){
+        const result=await f.request(`/control/${node.id}`,{operator:true,method:'POST',headers:{origin:f.publicUrl,'content-type':'application/json'},body:JSON.stringify({method,action,target:'0.1.8',requestId:'no-fallback'})})
+        expect(result.status).not.toBe(200)
+      }
+    }
+    expect(calls).toEqual([])
+    expect((await f.request(`/control/${node.id}`,{operator:true})).status).toBe(200)
+    expect(calls).toHaveLength(1)
+    const cleanup={method:'task.cleanup',requestId:'unused-id',retentionMs:86400000}
+    expect((await f.request(`/control/${node.id}`,{method:'POST',headers:{origin:f.publicUrl,'content-type':'application/json'},body:JSON.stringify(cleanup)})).status).toBe(401)
+    expect((await f.request(`/control/${node.id}`,{operator:true,method:'POST',headers:{origin:f.publicUrl,'content-type':'application/json'},body:JSON.stringify(cleanup)})).status).toBe(200)
+    expect(calls.at(-1)).toEqual({method:'task.cleanup',input:{retentionMs:86400000}});rpc.close()
+  }finally{socket?.terminate();await f.close()}
+})
+it('leaves native access usable while refusing the older experimental control protocol',async()=>{
+  const {default:WebSocket}=await import('ws'),{once}=await import('node:events')
+  const f=await createFixture();let socket:InstanceType<typeof WebSocket>|undefined
+  try{
+    const node=await f.addNode('A');await f.disconnect(node)
+    socket=new WebSocket(`ws://127.0.0.1:${f.privatePort}/connect?nodeId=${node.id}`,{headers:{authorization:`Bearer ${node.credential}`,'x-dsh-runtime':'runtime-A','x-dsh-control':'1','x-dsh-control-capabilities':'management'}})
+    let accepted:unknown;socket.once('upgrade',res=>{accepted=res.headers['x-dsh-control']});await once(socket,'open')
+    expect(accepted).toBeUndefined();expect(f.gateway.peers.get(node.id)?.control).toBeUndefined()
+    expect((await f.request(`/control/${node.id}`,{operator:true})).status).toBe(409)
+    expect(f.gateway.peers.has(node.id)).toBe(true)
   }finally{socket?.terminate();await f.close()}
 })

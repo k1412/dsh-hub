@@ -35,8 +35,8 @@ async function fixture(runtimeId = 'runtime-b') {
   const options = { stateDirectory: join(root, 'state'), workspace: root, runtimeId, call }
   const native = await createDelegation(ctx, options); closers.push(native.close)
   const adapter = { ...native, handle: (method: string, input: Record<string, unknown>) => native.handle(method, input) as Promise<Result> }
-  const input = { sourceNode: 'node-a', sourceRuntime: 'runtime-a', sourceSession: 'session-a', targetRuntime: runtimeId, workspace: root, requestId: 'req-1', prompt: 'do work' }
-  const read = (taskId: string, overrides = {}) => { const { prompt: _, ...owner } = input; return adapter.handle('task.read', { ...owner, taskId, ...overrides }) }
+  const input = { sourceNode: 'node-a', sourceRuntime: 'runtime-a', sourceSession: 'session-a', targetRuntime: runtimeId, workspace: root, requestId: 'req-1', prompt: 'do work', authorizationLeaseMs: 30_000 }
+  const read = (taskId: string, overrides = {}) => { const { prompt: _, authorizationLeaseMs: _lease, ...owner } = input; return adapter.handle('task.read', { ...owner, taskId, ...overrides }) }
   return { root, tools, ctx, adapter, input, read, jobs, options, call }
 }
 
@@ -111,7 +111,7 @@ describe('native delegation adapter', () => {
     const tasks: Result[] = []
     for (let n = 0; n < delegationLimits.active; n++) tasks.push(await f.adapter.handle('task.start', { ...f.input, requestId: String(n) }))
     await expect(f.adapter.handle('task.start', f.input)).rejects.toThrow('limit')
-    const { prompt: _, ...owner } = f.input
+    const { prompt: _, authorizationLeaseMs: _lease, ...owner } = f.input
     await expect(f.adapter.handle('task.cancel', { ...owner, taskId: tasks[0].taskId, sourceSession: 'other' })).rejects.toThrow('owner')
     expect(await f.adapter.handle('task.cancel', { ...owner, taskId: tasks[0].taskId })).toMatchObject({ cancelRequested: true })
     await vi.waitFor(async () => expect(await f.read(tasks[0].taskId)).toMatchObject({ status: 'cancelled' }))
@@ -151,4 +151,100 @@ describe('native delegation adapter', () => {
     await f.adapter.close()
     await expect(f.adapter.handle('task.start', f.input)).rejects.toThrow('closed')
   })
+})
+
+describe('local authorization lease and retained tasks', () => {
+  it('requires a bounded lease and never registers renewal or cleanup as model tools', async () => {
+    const f = await fixture()
+    for (const authorizationLeaseMs of [undefined, 0, -1, 30_001, Infinity, NaN, '30000']) {
+      await expect(f.adapter.handle('task.start', { ...f.input, authorizationLeaseMs })).rejects.toThrow('lease')
+    }
+    expect([...f.tools.keys()]).not.toContain('task.renew')
+    expect([...f.tools.keys()]).not.toContain('task.cleanup')
+  })
+
+  it('expires independently of long grant and wall clock and exposes cooperative pending cancellation', async () => {
+    const f = await fixture()
+    const task = await f.adapter.handle('task.start', { ...f.input, authorizationLeaseMs: 50, authorizationExpiresAt: Date.now() + 600_000 })
+    const job = [...f.jobs.values()][0]!
+    vi.mocked(job.agent.cancel).mockImplementation(() => {})
+    const now = vi.spyOn(Date, 'now').mockReturnValue(0)
+    try {
+      await new Promise(resolve => setTimeout(resolve, 80))
+      expect(await f.read(task.taskId)).toMatchObject({ status: 'running', cancelRequested: true, cancellationReason: 'authorization-lease-expired' })
+      const { prompt: _, ...owner } = f.input
+      delete (owner as Partial<typeof owner>).authorizationLeaseMs
+      await f.adapter.handle('task.renew', { ...owner, taskId: task.taskId, authorizationLeaseMs: 30_000 })
+      expect(job.agent.send).toHaveBeenCalledOnce()
+      job.finish('partial', 'aborted')
+      await vi.waitFor(async () => expect(await f.read(task.taskId)).toMatchObject({ status: 'cancelled', cancellationReason: 'authorization-lease-expired' }))
+    } finally { now.mockRestore(); job.finish() }
+  })
+
+  it('renews a live lease without replaying the prompt and rejects cross-owner renewal', async () => {
+    const f = await fixture()
+    const task = await f.adapter.handle('task.start', { ...f.input, authorizationLeaseMs: 100 })
+    const { prompt: _, ...owner } = f.input
+    await expect(f.adapter.handle('task.renew', { ...owner, taskId: task.taskId, sourceSession: 'wrong' })).rejects.toThrow('owner')
+    await f.adapter.handle('task.renew', { ...owner, taskId: task.taskId, authorizationLeaseMs: 250 })
+    await new Promise(resolve => setTimeout(resolve, 130))
+    expect(await f.read(task.taskId)).toMatchObject({ status: 'running' })
+    expect([...f.jobs.values()][0]!.agent.send).toHaveBeenCalledOnce()
+    await vi.waitFor(async () => expect(await f.read(task.taskId)).toMatchObject({ status: 'cancelled', cancellationReason: 'authorization-lease-expired' }))
+  })
+
+  it('cleans only terminal tasks older than the immutable replay window and automatically reclaims seven-day records', async () => {
+    const f = await fixture()
+    const first = await f.adapter.handle('task.start', f.input)
+    ;[...f.jobs.values()][0]!.finish()
+    await vi.waitFor(async () => expect(await f.read(first.taskId)).toMatchObject({ status: 'completed' }))
+    await f.adapter.close()
+    const path = join(f.options.stateDirectory, (await readdir(f.options.stateDirectory)).find(name => name.endsWith('.json'))!)
+    const state = JSON.parse(await readFile(path, 'utf8'))
+    const old = { ...state.tasks[0], taskId: 'old', requestId: 'old', terminalAt: new Date(Date.now() - 8 * 86400_000).toISOString() }
+    const dayOld = { ...state.tasks[0], taskId: 'day-old', requestId: 'day-old', terminalAt: new Date(Date.now() - 2 * 86400_000).toISOString() }
+    state.tasks.push(old, dayOld)
+    await writeFile(path, JSON.stringify(state))
+    const next = await createDelegation(f.ctx, f.options); closers.push(next.close)
+    const running = await next.handle('task.start', { ...f.input, requestId: 'active' }) as Result
+    expect(await next.handle('task.cleanup', {})).toMatchObject({ removed: 0, retained: 3, active: 1 })
+    await expect(next.handle('task.cleanup', { retentionMs: delegationLimits.minimumRetentionMs - 1 })).rejects.toThrow('retention')
+    expect(await next.handle('task.cleanup', { retentionMs: delegationLimits.minimumRetentionMs })).toMatchObject({ removed: 1, retained: 2, active: 1 })
+    expect(await next.handle('task.start', f.input)).toMatchObject({ taskId: first.taskId, status: 'completed' })
+    expect(await next.handle('task.start', { ...f.input, requestId: 'active' })).toMatchObject({ taskId: running.taskId, status: 'running' })
+    expect(f.ctx.agents.create).toHaveBeenCalledTimes(2)
+  })
+})
+
+
+it('reclaims full retained capacity only after terminal replay retention expires', async () => {
+  const f = await fixture()
+  const task = await f.adapter.handle('task.start', f.input)
+  ;[...f.jobs.values()][0]!.finish()
+  await vi.waitFor(async () => expect(await f.read(task.taskId)).toMatchObject({ status: 'completed' }))
+  await f.adapter.close()
+  const path = join(f.options.stateDirectory, (await readdir(f.options.stateDirectory)).find(name => name.endsWith('.json'))!)
+  const state = JSON.parse(await readFile(path, 'utf8'))
+  state.tasks = Array.from({ length: delegationLimits.retained }, (_, index) => ({ ...state.tasks[0], taskId: `retained-${index}`, requestId: `retained-${index}` }))
+  await writeFile(path, JSON.stringify(state))
+  const full = await createDelegation(f.ctx, f.options); closers.push(full.close)
+  await expect(full.handle('task.start', f.input)).rejects.toThrow('limit')
+  expect(await full.handle('task.cleanup', { retentionMs: delegationLimits.minimumRetentionMs })).toMatchObject({ removed: 0, retained: 256 })
+  await full.close()
+  state.tasks[0].terminalAt = new Date(Date.now() - delegationLimits.retentionMs - 1000).toISOString()
+  await writeFile(path, JSON.stringify(state))
+  const available = await createDelegation(f.ctx, f.options); closers.push(available.close)
+  expect(await available.handle('task.start', f.input)).toMatchObject({ status: 'running' })
+  expect(await available.handle('task.cleanup', {})).toMatchObject({ removed: 0, retained: 256, active: 1 })
+})
+
+it('does not send a prompt when native admission outlasts its lease', async () => {
+  const f = await fixture()
+  const create = f.ctx.agents.create
+  vi.mocked(f.ctx.agents.create).mockImplementationOnce(async options => {
+    await new Promise(resolve => setTimeout(resolve, 40))
+    return create(options)
+  })
+  expect(await f.adapter.handle('task.start', { ...f.input, authorizationLeaseMs: 10 })).toMatchObject({ status: 'failed' })
+  expect([...f.jobs.values()][0]!.agent.send).not.toHaveBeenCalled()
 })

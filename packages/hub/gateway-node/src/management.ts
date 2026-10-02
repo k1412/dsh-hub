@@ -1,6 +1,7 @@
-import { mkdir, readFile, rename, writeFile, access, rm } from 'node:fs/promises'
+import { mkdir, readFile, rename, access, rm, open } from 'node:fs/promises'
 import { join, isAbsolute } from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn, execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { createHash } from 'node:crypto'
 
 interface Change { application: string; changed: boolean; error?: { code: string } }
@@ -8,54 +9,117 @@ export interface Manager {
   listPlugins(): Promise<Array<{ entryId: string; moduleName: string; enabled: boolean; fiberPhase: string | null; readOnlyReason?: string }>>
   listBundles(): Promise<Array<{ name: string; version?: string; enabled: boolean; removable: boolean }>>
   inspect(spec: string): Promise<{ status: string; problem?: string; name?: string; version?: string; bundle?: boolean | null }>
+  registries?(): Promise<{ registry: string | null; resolved: string | null }>
   installBundle(spec: string, options: { requestId: string }): Promise<Change>
   removeBundle(name: string): Promise<Change>
   setPluginEnabled(id: string, enabled: boolean): Promise<Change>
   cancelInstall(id: string): Promise<{ status: string }>
 }
-interface Job { id: string; fingerprint: string; action: string; target: string; status: string; createdAt: number; finishedAt?: number; application?: string; error?: string; previousVersion?: string; rollback?: string }
-export interface ManagementOptions { stateDirectory: string; lockDirectory?: string; version: string; manager?: Manager; trustedPackages: string[]; updateExecutor?: string; lifecycle?: boolean; installation?: 'npm' | 'docker' | 'external' }
+interface Job { id: string; fingerprint: string; action: string; target: string; status: string; createdAt: number; finishedAt?: number; application?: string; error?: string; previousVersion?: string; installedVersion?: string; rollback?: string }
+interface PackageVersion { name: string; version: string; bundle: boolean }
+export interface ManagementOptions {
+  stateDirectory: string; lockDirectory?: string; version: string; manager?: Manager; trustedPackages: string[]
+  updateExecutor?: string; lifecycle?: boolean; installation?: 'npm' | 'docker' | 'external'
+  /** Fault injection and deployment-specific authenticated registry lookup. */
+  persist?: (path: string, data: string) => Promise<void>
+  lookupVersion?: (name: string, version: string) => Promise<PackageVersion>
+  executorTimeoutMs?: number
+}
 const packageName = /^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/
 const version = /^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/
-/** Node-local journal contains operation identity and outcomes, never model settings or CLI output. */
+/** Write, fsync, atomically replace, then sync the directory before acknowledging durability. */
+export async function persistManagement(path: string, data: string): Promise<void> {
+  const file = await open(`${path}.tmp`, 'w', 0o600)
+  try { await file.writeFile(data); await file.sync() } finally { await file.close() }
+  await rename(`${path}.tmp`, path)
+  if (process.platform !== 'win32') { const directory = await open(join(path, '..'), 'r'); try { await directory.sync() } finally { await directory.close() } }
+}
 export async function createManagement(options: ManagementOptions) {
   await mkdir(options.stateDirectory, { recursive: true, mode: 0o700 })
   const lockDirectory = options.lockDirectory ?? join(options.stateDirectory, 'operation.lock')
-  const file = join(options.stateDirectory, 'management-jobs.json')
-  let jobs: Job[] = []
-  try { jobs = JSON.parse(await readFile(file, 'utf8')) as Job[] } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  const file = join(options.stateDirectory, 'management-jobs.json'), persist = options.persist ?? persistManagement
+  let jobs: Job[] = [], journalUnreadable = false
+  try { jobs = JSON.parse(await readFile(file, 'utf8')) as Job[]; if (!Array.isArray(jobs) || jobs.some(job => !job || typeof job.id !== 'string')) { jobs = []; throw new Error('Invalid journal') } } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') journalUnreadable = true }
   for (const job of jobs) if (job.status === 'running') job.status = 'interrupted-review-required'
-  let active: Job | undefined
-  const snapshot = (job: Job) => ({ ...job, ...(active === job ? { status: 'running' } : {}) })
-  let saving = Promise.resolve()
-  const save = () => { const data = JSON.stringify(jobs); saving = saving.then(async () => { await writeFile(`${file}.tmp`, data, { mode: 0o600 }); await rename(`${file}.tmp`, file) }); return saving }
-  await save()
+  let active: Job | undefined, executing = false, persistenceFailed = journalUnreadable, uncertainExecutor = false
+  let saving: Promise<void> = Promise.resolve()
+  const save = () => {
+    const data = JSON.stringify(jobs)
+    const next = saving.then(() => persist(file, data))
+    // A failed write cannot poison later recovery writes; callers still see its rejection.
+    saving = next.catch(() => {})
+    return next.catch(error => { persistenceFailed = true; throw error })
+  }
+  const snapshot = (job: Job) => ({ ...job, ...(active === job ? { status: persistenceFailed ? 'persistence-failed' : uncertainExecutor ? 'executor-recovery-required' : 'running' } : {}) })
+  if (!journalUnreadable) await save().catch(() => {}) // Keep the Runtime available, but fail closed on mutations.
   if (options.installation && !['npm','docker','external'].includes(options.installation)) throw new Error('Invalid installation type')
   let installation = options.installation ?? 'external'
   try { await access('/.dockerenv'); installation = 'docker' } catch { /* non-container */ }
   const manager = options.manager
   const protectedModule = (name: string) => /gateway-node|dsh-plugin-manager|dsh-connection|dsh-client-modules|dsh-typert-gateway/.test(name)
+  async function inspectExact(name: string, target: string): Promise<PackageVersion> {
+    if (options.lookupVersion) return options.lookupVersion(name, target)
+    const inspected = await manager?.inspect(`${name}@${target}`)
+    if (inspected?.status === 'accepted') return { name: inspected.name ?? '', version: inspected.version ?? '', bundle: inspected.bundle === true }
+    if (inspected?.problem !== 'already-installed') throw new Error('version-check-refused')
+    const registries = await manager?.registries?.()
+    if (!registries) throw new Error('Exact registry lookup unavailable')
+    const registry = registries.registry ?? registries.resolved
+    const { stdout } = await promisify(execFile)('npm', ['view', `${name}@${target}`, '--json', ...(registry ? [`--registry=${registry}`] : [])], { timeout: 30000, maxBuffer: 262144 })
+    const value = JSON.parse(stdout) as { name?: string; version?: string; dsh?: { bundle?: unknown } }
+    return { name: value.name ?? '', version: value.version ?? '', bundle: !!value.dsh?.bundle }
+  }
+  async function checked(name: string, target: string): Promise<PackageVersion> {
+    const value = await inspectExact(name, target)
+    if (value.name !== name || value.version !== target || !value.bundle) throw new Error('version-or-bundle-check-failed')
+    return value
+  }
+  async function executor(action: string, target: string, id: string, mutating: boolean): Promise<Record<string, unknown>> {
+    if (!options.lifecycle || !options.updateExecutor || !isAbsolute(options.updateExecutor)) throw new Error('independent-supervisor-required')
+    return new Promise((resolve, reject) => {
+      const child = spawn(options.updateExecutor as string, [action, target, id], { stdio: ['ignore','pipe','ignore'], shell: false })
+      let output = '', overflow = false
+      child.stdout.on('data', bytes => { if (output.length + bytes.length > 65536) overflow = true; else output += bytes.toString() })
+      const timer = setTimeout(() => {
+        // Do not kill just the adapter and orphan its npm/deployment children. Keep the
+        // mutation locked for explicit local executor reconciliation, even across restart.
+        if (mutating) uncertainExecutor = true
+        reject(new Error('executor-timeout-manual-recovery'))
+      }, options.executorTimeoutMs ?? (mutating ? 300000 : 30000)); timer.unref()
+      child.once('error', error => { clearTimeout(timer); reject(error) })
+      child.once('close', code => {
+        clearTimeout(timer)
+        let result: Record<string, unknown>
+        try { result = JSON.parse(output) as Record<string, unknown> } catch { if (mutating) uncertainExecutor = true; reject(new Error('executor-result-unverifiable')); return }
+        if (overflow || result.status === 'manual-recovery-required' || result.status === 'rollback-failed') { if (mutating) uncertainExecutor = true; reject(new Error('executor-manual-recovery')); return }
+        if (code !== 0) { reject(new Error('executor-failed')); return }
+        if (['apply','install','check'].includes(action) && (action === 'check' ? result.availableVersion : result.installedVersion) !== target) { reject(new Error('executor-version-mismatch')); return }
+        resolve(result)
+      })
+    })
+  }
   async function run(job: Job, input: Record<string, unknown>) {
     let result: Change
     if (job.action.startsWith('dsh.')) {
-      if (!options.updateExecutor || !isAbsolute(options.updateExecutor)) throw new Error('external-update-required')
-      await new Promise<void>((resolve, reject) => {
-        const child = spawn(options.updateExecutor as string, [job.action === 'dsh.update' ? 'apply' : job.action.slice(4), job.target, job.id], { stdio: 'ignore', shell: false, timeout: 300000 })
-        child.once('error', reject); child.once('exit', code => code === 0 ? resolve() : reject(new Error('update-failed-review-node-journal')))
-      })
-      result = { changed: true, application: job.action === 'dsh.update' ? 'restart-required' : 'applied' }
+      const observed = await executor(job.action === 'dsh.update' ? 'apply' : job.action.slice(4), job.target, job.id, true)
+      if (typeof observed.installedVersion === 'string') job.installedVersion = observed.installedVersion
+      result = { changed: true, application: 'applied' }
     } else {
       if (!manager) throw new Error('unsupported-plugin-manager')
       if (job.action === 'plugin.install') {
         const previous = (await manager.listBundles()).find(bundle => bundle.name === input.package)
-        const inspection = await manager.inspect(job.target)
-        const updating = !!previous?.version && inspection.status === 'refused' && inspection.problem === 'already-installed'
-        if (!updating && (inspection.status !== 'accepted' || !inspection.bundle || inspection.name !== input.package || inspection.version !== input.version)) throw new Error('version-or-bundle-check-failed')
+        await checked(String(input.package), String(input.version))
         if (previous?.version) { job.previousVersion = previous.version; await save() }
         result = await manager.installBundle(job.target, { requestId: job.id })
-        if (['failed','cancelled'].includes(result.application) && previous?.version && previous.version !== input.version) {
+        if (!['failed','cancelled'].includes(result.application)) {
+          const installed = (await manager.listBundles()).find(bundle => bundle.name === input.package)?.version
+          if (installed !== input.version) result = { changed: true, application: 'failed', error: { code: 'installed-version-mismatch' } }
+          else if (typeof installed === 'string') job.installedVersion = installed
+        }
+        if (['failed','cancelled'].includes(result.application) && previous?.version && version.test(previous.version) && previous.version !== input.version) {
           const rollback = await manager.installBundle(`${String(input.package)}@${previous.version}`, { requestId: `${job.id}-rollback` })
-          job.rollback = ['applied','restart-required'].includes(rollback.application) ? 'restored-previous-version' : 'rollback-failed'
+          const restored = (await manager.listBundles()).find(bundle => bundle.name === input.package)?.version
+          job.rollback = ['applied','restart-required'].includes(rollback.application) && restored === previous.version ? 'restored-previous-version' : 'rollback-failed'
         }
       } else if (job.action === 'plugin.remove') result = await manager.removeBundle(job.target)
       else if (job.action === 'plugin.enable' || job.action === 'plugin.disable') {
@@ -64,29 +128,33 @@ export async function createManagement(options: ManagementOptions) {
         result = await manager.setPluginEnabled(job.target, job.action === 'plugin.enable')
       } else throw new Error('unsupported-action')
     }
-    job.application = result.application; job.status = result.application === 'failed' ? 'failed' : result.application === 'cancelled' ? 'cancelled' : 'completed'
+    job.application = result.application
+    job.status = result.application === 'restart-required' ? 'restart-required' : result.application === 'failed' ? 'failed' : result.application === 'cancelled' ? 'cancelled' : 'completed'
     if (result.error) job.error = result.error.code
   }
+  async function finish() {
+    await save()
+    if (!uncertainExecutor) { await rm(lockDirectory, { recursive: true }); active = undefined }
+  }
   return { async handle(method: string, input: Record<string, unknown>): Promise<unknown> {
-    if (method === 'management.inventory') return { version: options.version, installation, runtimeLifecycle: options.lifecycle ? ['dsh.install','dsh.start','dsh.stop','dsh.uninstall','dsh.update'] : 'external-supervisor-required', update: options.updateExecutor ? 'executor' : 'external-update-required', plugins: manager ? (await manager.listPlugins()).map(p => ({ entryId: p.entryId, moduleName: p.moduleName, enabled: p.enabled, phase: p.fiberPhase, protected: !!p.readOnlyReason || protectedModule(p.moduleName) })) : [], bundles: manager ? (await manager.listBundles()).map(p => ({ name: p.name, version: p.version, enabled: p.enabled, removable: p.removable && !protectedModule(p.name) })) : [], jobs: jobs.slice(-100).map(snapshot), supported: !!manager }
+    if (method === 'management.inventory') return { version: options.version, installation, persistence: persistenceFailed ? 'persistence-failed' : 'healthy', recovery: uncertainExecutor ? 'manual-executor-reconciliation-required' : null, runtimeLifecycle: options.lifecycle ? ['dsh.install','dsh.start','dsh.stop','dsh.uninstall','dsh.update'] : 'external-supervisor-required', update: options.lifecycle && options.updateExecutor ? 'executor' : 'external-supervisor-required', plugins: manager ? (await manager.listPlugins()).map(p => ({ entryId: p.entryId, moduleName: p.moduleName, enabled: p.enabled, phase: p.fiberPhase, protected: !!p.readOnlyReason || protectedModule(p.moduleName) })) : [], bundles: manager ? (await manager.listBundles()).map(p => ({ name: p.name, version: p.version, enabled: p.enabled, removable: p.removable && !protectedModule(p.name) })) : [], jobs: jobs.slice(-100).map(snapshot), supported: !!manager }
+    if (method === 'management.retry-persistence') {
+      if (journalUnreadable) throw new Error('Unreadable journal; repair locally and reload')
+      if (executing || uncertainExecutor) throw new Error('Operation or executor requires reconciliation')
+      await save(); persistenceFailed = false
+      if (active) await finish()
+      return { status: 'journal-durable; no-operation-replayed' }
+    }
     if (method === 'management.check') {
-      if (input.action === 'dsh.update') {
-        const target = String(input.target ?? '')
-        if (!version.test(target) || !options.updateExecutor || !isAbsolute(options.updateExecutor)) throw new Error('external-update-required')
-        await new Promise<void>((resolve, reject) => {
-          const child = spawn(options.updateExecutor as string, ['check', target, 'check-request'], { stdio: 'ignore', shell: false, timeout: 30000 })
-          child.once('error', reject); child.once('exit', code => code === 0 ? resolve() : reject(new Error('update-check-failed')))
-        })
-        return { target, status: 'available-and-locally-approved' }
-      }
+      if (String(input.action).startsWith('dsh.')) return executor('check', String(input.target), 'check-request', false)
       const name = String(input.package ?? ''), target = String(input.version ?? '')
       if (!packageName.test(name) || !version.test(target) || !options.trustedPackages.includes(name) || !manager) throw new Error('untrusted-or-unsupported')
-      const result = await manager.inspect(`${name}@${target}`)
-      return { status: result.status, problem: result.problem, name: result.name, version: result.version, bundle: result.bundle }
+      return { status: 'available', ...await checked(name, target) }
     }
     if (method === 'management.recover') {
       if (!options.lifecycle || active) throw new Error('Recovery requires idle supervisor')
-      const owner = JSON.parse(await readFile(join(lockDirectory, 'owner.json'), 'utf8')) as { pid: number }
+      const owner = JSON.parse(await readFile(join(lockDirectory, 'owner.json'), 'utf8')) as { pid: number; executorMayOutlive?: boolean }
+      if (owner.executorMayOutlive) throw new Error('Local executor journal/process reconciliation required; PID-only recovery forbidden')
       if (!Number.isSafeInteger(owner.pid) || owner.pid < 1) throw new Error('Invalid lock owner; inspect locally')
       try { process.kill(owner.pid, 0); throw new Error('Operation owner still alive') } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
       await rm(lockDirectory, { recursive: true }); return { status: 'recovered; inspect interrupted jobs before retrying' }
@@ -97,6 +165,7 @@ export async function createManagement(options: ManagementOptions) {
       return manager.cancelInstall(job.id)
     }
     if (method !== 'management.submit') throw new Error('unsupported')
+    if (persistenceFailed) throw new Error('persistence-failed; retry journal persistence before submitting')
     const id = String(input.requestId ?? ''), action = String(input.action ?? '')
     if (!/^[a-zA-Z0-9_-]{8,80}$/.test(id)) throw new Error('request-id-required')
     let target = String(input.target ?? '')
@@ -104,11 +173,9 @@ export async function createManagement(options: ManagementOptions) {
       const name = String(input.package ?? ''), v = String(input.version ?? '')
       if (!packageName.test(name) || !version.test(v) || !options.trustedPackages.includes(name) || protectedModule(name)) throw new Error('untrusted-package-or-version')
       target = `${name}@${v}`
-    } else if (['dsh.install','dsh.start','dsh.stop','dsh.uninstall'].includes(action)) {
-      if (!options.lifecycle || !options.updateExecutor) throw new Error('external-supervisor-required')
-      if (action === 'dsh.install' ? !version.test(target) : target !== 'current') throw new Error('Invalid lifecycle target')
-    } else if (action === 'dsh.update') {
-      if (!version.test(target) || !options.updateExecutor) throw new Error('external-update-required')
+    } else if (['dsh.install','dsh.start','dsh.stop','dsh.uninstall','dsh.update'].includes(action)) {
+      if (!options.lifecycle || !options.updateExecutor) throw new Error('independent-supervisor-required')
+      if (['dsh.install','dsh.update'].includes(action) ? !version.test(target) : target !== 'current') throw new Error('Invalid lifecycle target')
     } else if (!['plugin.remove','plugin.enable','plugin.disable'].includes(action) || !target || target.length > 256 || protectedModule(target)) throw new Error('unsupported-or-protected')
     const fingerprint = createHash('sha256').update(JSON.stringify({ action, target })).digest('hex')
     const previous = jobs.find(j => j.id === id)
@@ -116,10 +183,16 @@ export async function createManagement(options: ManagementOptions) {
     if (active) throw new Error('node-busy')
     if (jobs.length >= 10000) throw new Error('journal-capacity; archive locally')
     try { await mkdir(lockDirectory, { mode: 0o700 }) } catch { throw new Error('node-busy-or-interrupted-lock; inspect supervisor') }
-    await writeFile(join(lockDirectory, 'owner.json'), JSON.stringify({ pid: process.pid, requestId: id }), { mode: 0o600 })
     const job: Job = { id, fingerprint, action, target, status: 'running', createdAt: Date.now() }; active = job; jobs.push(job)
-    await save()
-    void run(job, input).catch(() => { job.status = 'failed'; job.error = 'operation-failed; inspect node locally' }).finally(async () => { job.finishedAt = Date.now(); await save(); await rm(lockDirectory, { recursive: true }); active = undefined }).catch(() => { /* Keep the node locked if its journal cannot persist the outcome. */ })
-    return { ...job }
+    try {
+      await persist(join(lockDirectory, 'owner.json'), JSON.stringify({ pid: process.pid, requestId: id, executorMayOutlive: action.startsWith('dsh.') || action === 'plugin.install' }))
+      await save()
+    } catch { persistenceFailed = true; job.status = 'failed'; job.error = 'reservation-not-durable; no-side-effect-started'; throw new Error('persistence-failed; no-side-effect-started') }
+    executing = true
+    void (async () => {
+      try { await run(job, input) } catch { job.status = 'failed'; job.error ??= 'operation-failed; inspect node locally' }
+      finally { executing = false; job.finishedAt = Date.now(); try { await finish() } catch { persistenceFailed = true } }
+    })()
+    return snapshot(job)
   } }
 }

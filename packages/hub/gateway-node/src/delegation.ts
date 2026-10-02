@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
@@ -32,15 +33,15 @@ export interface DelegationOptions {
   runtimeId: string
   call(method: string, input: Record<string, unknown>): Promise<unknown>
 }
-export const delegationLimits = Object.freeze({ active: 4, retained: 256, promptChars: 16_384, resultChars: 32_768, durationMs: 600_000 })
+export const delegationLimits = Object.freeze({ active: 4, retained: 256, promptChars: 16_384, resultChars: 32_768, durationMs: 600_000, leaseMs: 30_000, retentionMs: 7 * 86400_000, minimumRetentionMs: 86400_000 })
 type Status = 'starting' | 'running' | 'completed' | 'cancelled' | 'failed' | 'interrupted' | 'timed-out'
 interface Owner { sourceNode: string; sourceRuntime: string; sourceSession: string; targetRuntime: string; workspace: string }
 interface Task extends Owner {
-  taskId: string; sessionId: string; requestId: string; promptHash: string; status: Status
-  createdAt: string; result: string; truncated: boolean
+  leaseAdmissionId?: string; taskId: string; sessionId: string; requestId: string; promptHash: string; status: Status
+  createdAt: string; terminalAt?: string; cancellationReason?: string; result: string; truncated: boolean
 }
-interface Live { handle: NativeHandle; done: Promise<void>; timer: ReturnType<typeof setTimeout>; stop?: 'cancelled' | 'timed-out' }
-const methods = ['task.start', 'task.read', 'task.cancel']
+interface Live { handle: NativeHandle; done: Promise<void>; timer: ReturnType<typeof setTimeout>; leaseTimer: ReturnType<typeof setTimeout>; leaseDeadline: number; stop?: 'cancelled' | 'timed-out' }
+const methods = ['task.start', 'task.read', 'task.cancel', 'task.renew', 'task.cleanup']
 const ownerKeys = ['sourceNode', 'sourceRuntime', 'sourceSession', 'targetRuntime', 'workspace'] as const
 const active = (task: Task) => task.status === 'starting' || task.status === 'running'
 function record(value: unknown): Record<string, unknown> {
@@ -58,7 +59,7 @@ function keys(input: Record<string, unknown>, allowed: readonly string[]) {
 const hash = (text: string) => createHash('sha256').update(text).digest('hex')
 const owns = (task: Task, owner: Owner) => ownerKeys.every((key) => task[key] === owner[key])
 function view(task: Task) {
-  const output = { taskId: task.taskId, targetRuntime: task.targetRuntime, requestId: task.requestId, status: task.status, createdAt: task.createdAt, result: task.result, truncated: task.truncated }
+  const output = { leaseAdmissionId: task.leaseAdmissionId, taskId: task.taskId, targetRuntime: task.targetRuntime, requestId: task.requestId, status: task.status, createdAt: task.createdAt, result: task.result, truncated: task.truncated, cancellationReason: task.cancellationReason, cancelRequested: active(task) && !!task.cancellationReason }
   // Bound encoded bytes too: non-ASCII and JSON escaping can exceed a character limit.
   while (Buffer.byteLength(JSON.stringify(output)) > 48000 && output.result.length) { output.result = output.result.slice(0, Math.floor(output.result.length * 0.8)); output.truncated = true }
   return output
@@ -106,7 +107,9 @@ export async function createDelegation(ctx: DelegationContext, options: Delegati
         || !['starting', 'running', 'completed', 'cancelled', 'failed', 'interrupted', 'timed-out'].includes(value.status as string)) throw new Error('Invalid delegation metadata')
       const task = value as unknown as Task
       if (tasks.has(task.taskId)) throw new Error('Duplicate delegation metadata')
-      if (active(task)) task.status = 'interrupted'
+      if (active(task)) { task.status = 'interrupted'; task.cancellationReason = 'runtime-restarted'; task.terminalAt = new Date().toISOString() }
+      // Legacy terminal records start a fresh retention window on migration.
+      if (!task.terminalAt || !Number.isFinite(Date.parse(task.terminalAt))) task.terminalAt = new Date().toISOString()
       tasks.set(task.taskId, task)
     }
     await save()
@@ -148,10 +151,39 @@ export async function createDelegation(ctx: DelegationContext, options: Delegati
       task.status = running.stop ?? 'failed'
     } finally {
       clearTimeout(running.timer)
+      clearTimeout(running.leaseTimer)
       try { await running.handle.dispose() } catch { task.status = 'failed' }
+      task.terminalAt = new Date().toISOString()
       live.delete(task.taskId)
       await save()
     }
+  }
+  function leaseDuration(input: Record<string, unknown>) {
+    const value = input.authorizationLeaseMs
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > delegationLimits.leaseMs) throw new Error('Invalid authorization lease duration')
+    return value
+  }
+  function expire(task: Task, running: Live) {
+    if (running.stop) return
+    running.stop = 'cancelled'
+    task.cancellationReason = 'authorization-lease-expired'
+    running.handle.agent.cancel({ kind: 'user' })
+    void save().catch(() => {})
+  }
+  function armLease(task: Task, running: Live, duration: number) {
+    clearTimeout(running.leaseTimer)
+    running.leaseDeadline = performance.now() + duration
+    running.leaseTimer = setTimeout(() => expire(task, running), duration)
+    running.leaseTimer.unref()
+  }
+  async function cleanup(retentionMs = delegationLimits.retentionMs) {
+    if (!Number.isFinite(retentionMs) || retentionMs < delegationLimits.minimumRetentionMs || retentionMs > delegationLimits.retentionMs) throw new Error('Invalid task retention window')
+    let removed = 0
+    for (const [id, task] of tasks) {
+      if (!active(task) && !live.has(id) && task.terminalAt && Date.parse(task.terminalAt) <= Date.now() - retentionMs) { tasks.delete(id); removed++ }
+    }
+    if (removed) await save()
+    return { removed, retained: tasks.size, active: [...tasks.values()].filter(active).length, retentionMs }
   }
   async function ownerFor(input: Record<string, unknown>): Promise<Owner> {
     const owner = Object.fromEntries(ownerKeys.map((key) => [key, field(input, key, key === 'workspace' ? 4096 : 256)])) as unknown as Owner
@@ -162,13 +194,17 @@ export async function createDelegation(ctx: DelegationContext, options: Delegati
     if (owner.sourceRuntime === options.runtimeId && [...tasks.values()].some((task) => task.sessionId === owner.sourceSession)) throw new Error('Recursive delegation is forbidden')
     return owner
   }
-  async function handleInner(method: string, input: Record<string, unknown>): Promise<unknown> {
+  async function handleInner(method: string, input: Record<string, unknown>, receivedAt: number): Promise<unknown> {
     if (closed) throw new Error('Delegation is closed')
     if (!methods.includes(method)) throw new Error('Unsupported delegation method')
-    keys(record(input), [...ownerKeys, 'requestId', ...(method === 'task.start' ? ['prompt', 'authorizationExpiresAt'] : ['taskId'])])
+    if (method === 'task.cleanup') { keys(record(input), ['retentionMs']); if (input.retentionMs !== undefined && typeof input.retentionMs !== 'number') throw new Error('Invalid task retention window'); return cleanup(input.retentionMs as number | undefined) }
+    keys(record(input), [...ownerKeys, 'requestId', ...(method === 'task.start' ? ['prompt', 'authorizationExpiresAt', 'authorizationLeaseMs', 'leaseAdmissionId'] : method === 'task.renew' ? ['taskId', 'authorizationLeaseMs'] : ['taskId'])])
     const owner = await ownerFor(input)
     const requestId = field(input, 'requestId')
     if (method === 'task.start') {
+      const leaseMs = leaseDuration(input)
+      const leaseStarted = receivedAt
+      await cleanup()
       const expiresAt = input.authorizationExpiresAt === undefined ? Date.now() + delegationLimits.durationMs : Number(input.authorizationExpiresAt)
       if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) throw new Error('Delegation authorization expired')
       const prompt = field(input, 'prompt', delegationLimits.promptChars)
@@ -179,7 +215,7 @@ export async function createDelegation(ctx: DelegationContext, options: Delegati
         return view(existing)
       }
       if (live.size >= delegationLimits.active || tasks.size >= delegationLimits.retained) throw new Error('Delegation task limit reached')
-      const task: Task = { ...owner, taskId: randomUUID(), sessionId: randomUUID(), requestId, promptHash, status: 'starting', createdAt: new Date().toISOString(), result: '', truncated: false }
+      const task: Task = { ...owner, ...(input.leaseAdmissionId === undefined ? {} : { leaseAdmissionId: field(input, 'leaseAdmissionId') }), taskId: randomUUID(), sessionId: randomUUID(), requestId, promptHash, status: 'starting', createdAt: new Date().toISOString(), result: '', truncated: false }
       tasks.set(task.taskId, task)
       await save() // Durable reservation BEFORE any native side effect; crash never replays a prompt.
       let native: NativeHandle | undefined
@@ -188,11 +224,15 @@ export async function createDelegation(ctx: DelegationContext, options: Delegati
         native = await ctx.agents.create({ sessionId: task.sessionId, meta: { cwd: workspace, origin: 'subagent', delegationDepth: 1 }, agentOptions: { ...selection, maxTokens: 8192 } })
         task.status = 'running'
         await save()
+        if (performance.now() - leaseStarted >= leaseMs) throw new Error('Authorization lease expired during admission')
         native.agent.send({ id: randomUUID(), role: 'user', content: [{ type: 'text', text: prompt }], source: { kind: 'user', rpcId: requestId } }, 'next-turn', true)
-        const running: Live = { handle: native, done: Promise.resolve(), timer: setTimeout(() => {
+        const running: Live = { handle: native, done: Promise.resolve(), leaseTimer: undefined as unknown as ReturnType<typeof setTimeout>, leaseDeadline: 0, timer: setTimeout(() => {
+          if (running.stop) return
           running.stop = 'timed-out'
+          task.cancellationReason = 'task-deadline-exceeded'
           running.handle.agent.cancel({ kind: 'user' })
         }, Math.max(1, Math.min(delegationLimits.durationMs, expiresAt - Date.now()))) }
+        armLease(task, running, Math.max(1, leaseMs - (performance.now() - leaseStarted)))
         running.timer.unref()
         live.set(task.taskId, running)
         running.done = finish(task, running)
@@ -201,6 +241,7 @@ export async function createDelegation(ctx: DelegationContext, options: Delegati
       } catch {
         if (native) await native.dispose().catch(() => {})
         task.status = 'failed'
+        task.terminalAt = new Date().toISOString()
         await save()
       }
       return view(task)
@@ -208,8 +249,17 @@ export async function createDelegation(ctx: DelegationContext, options: Delegati
     const task = tasks.get(field(input, 'taskId'))
     if (!task || !owns(task, owner)) throw new Error('Delegation task not found for this owner')
     const running = live.get(task.taskId)
+    if (method === 'task.renew') {
+      const duration = leaseDuration(input) - (performance.now() - receivedAt)
+      if (running && !running.stop) {
+        if (duration <= 0 || performance.now() >= running.leaseDeadline) expire(task, running)
+        else armLease(task, running, duration)
+      }
+      return view(task)
+    }
     if (method === 'task.cancel' && running) {
       running.stop = 'cancelled'
+      task.cancellationReason ??= 'authorization-revoked-or-cancelled'
       running.handle.agent.cancel({ kind: 'user' })
       // Cancellation is requested immediately; poll task.read for final quiescent status.
       return { ...view(task), cancelRequested: true }
@@ -220,7 +270,8 @@ export async function createDelegation(ctx: DelegationContext, options: Delegati
     return view(task)
   }
   function handle(method: string, input: Record<string, unknown>) {
-    const next = serial.then(() => handleInner(method, input))
+    const receivedAt = performance.now()
+    const next = serial.then(() => handleInner(method, input, receivedAt))
     serial = next.catch(() => {})
     return next
   }

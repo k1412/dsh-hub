@@ -88,7 +88,7 @@ try {
     if (overlayEndpoint) { const network = await connectNodeNetwork({ mode: 'tailcat', endpoint: overlayEndpoint, stateDirectory: join(directory, 'overlay'), binDirectory: join(work, 'bin') }); overlays.push(network); carrierUrl = network.url.replace(/^http/, 'ws') }
     const {surface}=await createRuntimeSurface(ctx as RuntimeContext,pathToFileURL(join(installed,'package.json')).href)
     const connect = async () => {
-      const ws=new WebSocket(`${carrierUrl}/connect?nodeId=${node.id}`,{handshakeTimeout:20000,headers:{authorization:`Bearer ${credential}`,'x-dsh-runtime':`runtime-${label}`,'x-dsh-control':'1','x-dsh-control-capabilities':'delegation'}});sockets.push(ws);await once(ws,'open')
+      const ws=new WebSocket(`${carrierUrl}/connect?nodeId=${node.id}`,{handshakeTimeout:20000,headers:{authorization:`Bearer ${credential}`,'x-dsh-runtime':`runtime-${label}`,'x-dsh-control':'2','x-dsh-control-capabilities':'delegation'}});sockets.push(ws);await once(ws,'open')
       serveSurface(ws,surface,{control:true});rpc=new ControlRPC(ws,(method,input)=>delegation.handle(method,input))
     }
     await connect(); reconnectors.push(connect)
@@ -102,27 +102,69 @@ try {
   const owner={sourceNode,sourceRuntime:'runtime-A',sourceSession:sourceHandle.agent.id,targetRuntime:'runtime-B',workspace:targetWorkspace,requestId:'probe-read',taskId:trace[1]!.result.taskId}
   await assert.rejects(delegates[0]!.handle('task.read',{...owner,sourceSession:'another-session'}))
   const {taskId:_task,...startOwner}=owner
-  const repeated:any=await delegates[0]!.handle('task.start',{...startOwner,requestId:'model-call-2',prompt:'Produce target result'})
+  const repeated:any=await delegates[0]!.handle('task.start',{...startOwner,authorizationLeaseMs:30_000,requestId:'model-call-2',prompt:'Produce target result'})
   assert.equal(repeated.taskId,owner.taskId);assert.equal(targetCalls,2)
-  // Revocation while a real target model stream is running cancels through Hub reconciliation.
-  const running:any=await delegates[0]!.handle('task.start',{...startOwner,requestId:'revocation-probe',prompt:'Wait'})
-  // Track the same idempotent task through the actual source carrier with a registered source tool.
-  const result=await contexts[1].tools.execute({name:'peer_task_start',arguments:{targetNode,targetRuntime:'runtime-B',workspace:targetWorkspace,requestId:'revocation-probe',prompt:'Wait'},agent:sourceHandle.agent,callId:randomUUID(),signal:new AbortController().signal})
-  assert.equal(result.isError,false)
-  await poll(()=>targetCalls===3);hub.store.revokeGrant(activeGrant)
-  await poll(()=>cancelled)
-  await poll(()=>trace.length>=6)
-  await new Promise(r=>setTimeout(r,400))
-  const stopped:any=await delegates[0]!.handle('task.read',{...owner,taskId:running.taskId})
-  assert.equal(stopped.status,'cancelled')
-  const denied=await contexts[1].tools.execute({name:'peer_task_read',arguments:{targetNode,targetRuntime:'runtime-B',workspace:targetWorkspace,requestId:'revoked-read',taskId:running.taskId},agent:sourceHandle.agent,callId:randomUUID(),signal:new AbortController().signal})
+  const grant = (id:string) => hub.store.grant({id,source:sourceNode,target:targetNode,sourceRuntime:'runtime-A',targetRuntime:'runtime-B',workspace:targetWorkspace,capabilities:['discover','task.start','task.read','task.cancel'],expiresAt:Date.now()+600_000})
+  const start = async (requestId:string) => {
+    cancelled=false
+    const before=targetCalls
+    const result=await contexts[1].tools.execute({name:'peer_task_start',arguments:{targetNode,targetRuntime:'runtime-B',workspace:targetWorkspace,requestId,prompt:'Wait'},agent:sourceHandle.agent,callId:randomUUID(),signal:new AbortController().signal})
+    assert.equal(result.isError,false,JSON.stringify(result))
+    const task={...latest}
+    await poll(()=>targetCalls===before+1)
+    return task
+  }
+  const awaitCancelled = async (taskId:string,reason?:string) => {
+    const deadline=performance.now()+33_000
+    while(performance.now()<deadline) {
+      const task:any=await delegates[0]!.handle('task.read',{...owner,taskId})
+      if(task.status==='cancelled') { if(reason)assert.equal(task.cancellationReason,reason);assert(cancelled);return }
+      await new Promise(r=>setTimeout(r,25))
+    }
+    throw new Error('Local authorization lease failed to cooperatively cancel within 33 seconds')
+  }
+  // A live grant and both authenticated sockets keep the target alive beyond one lease.
+  hub.store.revokeGrant(activeGrant);grant('renewal-proof')
+  const renewed=await start('renewal-proof')
+  await new Promise(r=>setTimeout(r,31_000))
+  assert.equal((await delegates[0]!.handle('task.read',{...owner,taskId:renewed.taskId}) as any).status,'running')
+  hub.store.revokeGrant('renewal-proof')
+  await awaitCancelled(renewed.taskId,'authorization-revoked-or-cancelled')
+  const denied=await contexts[1].tools.execute({name:'peer_task_read',arguments:{targetNode,targetRuntime:'runtime-B',workspace:targetWorkspace,requestId:'revoked-read',taskId:renewed.taskId},agent:sourceHandle.agent,callId:randomUUID(),signal:new AbortController().signal})
   assert.equal(denied.isError,true)
+  console.log('native lease: renewal and revocation passed')
+
+  grant('source-disconnect')
+  const disconnected=await start('source-disconnect')
+  sockets[1]!.terminate();await poll(()=>!hub.peers.has(sourceNode))
+  await awaitCancelled(disconnected.taskId)
+  await reconnectors[1]!();await poll(()=>hub.peers.has(sourceNode))
+  hub.store.revokeGrant('source-disconnect')
+  console.log('native lease: source WebSocket disconnect passed')
+
+  grant('target-generation')
+  const generationTask=await start('target-generation')
   const previousGeneration=hub.peers.get(targetNode)?.generation
   sockets[0]!.terminate();await poll(()=>!hub.peers.has(targetNode))
-  await reconnectors[0]!();assert.notEqual(hub.peers.get(targetNode)?.generation,previousGeneration)
-  hub.store.grant({id:'reconnected-grant',source:sourceNode,target:targetNode,sourceRuntime:'runtime-A',targetRuntime:'runtime-B',workspace:targetWorkspace,capabilities:['discover','task.start','task.read','task.cancel'],expiresAt:Date.now()+60000})
-  const retry=await contexts[1].tools.execute({name:'peer_task_start',arguments:{targetNode,targetRuntime:'runtime-B',workspace:targetWorkspace,requestId:'model-call-2',prompt:'Produce target result'},agent:sourceHandle.agent,callId:randomUUID(),signal:new AbortController().signal})
-  assert.equal(retry.isError,false);assert.equal(latest.taskId,owner.taskId);assert.equal(targetCalls,3)
+  await reconnectors[0]!();await poll(()=>hub.peers.has(targetNode))
+  assert.notEqual(hub.peers.get(targetNode)?.generation,previousGeneration)
+  // Replay through the new generation must not reauthorize or resend an old task.
+  const beforeReplay=targetCalls
+  const retry=await contexts[1].tools.execute({name:'peer_task_start',arguments:{targetNode,targetRuntime:'runtime-B',workspace:targetWorkspace,requestId:'target-generation',prompt:'Wait'},agent:sourceHandle.agent,callId:randomUUID(),signal:new AbortController().signal})
+  assert.equal(retry.isError,false);assert.equal(latest.taskId,generationTask.taskId)
+  await awaitCancelled(generationTask.taskId,'authorization-lease-expired')
+  assert.equal(targetCalls,beforeReplay)
+  hub.store.revokeGrant('target-generation')
+  console.log('native lease: replacement target generation and no replay passed')
+
+  grant('hub-loss')
+  const orphan=await start('hub-loss')
+  const lossAt=performance.now()
+  await hub.close() // Actual Hub server/socket/timer shutdown; neither Runtime is closed.
+  await awaitCancelled(orphan.taskId,'authorization-lease-expired')
+  const hubLossCancellationMs=performance.now()-lossAt
+  assert(hubLossCancellationMs<=33_000)
+  console.log('native lease: actual Hub loss passed')
   const times=trace.map(t=>t.elapsedMs).sort((a,b)=>a-b)
-  console.log(JSON.stringify({ok:true,runtimes:2,realModelDrivenToolCalls:5,targetModelCalls:targetCalls,crossSessionDenied:true,revocationCancels:true,reconnectWithoutDuplicateExecution:true,nativeWebListeners:0,network:overlayEndpoint ? 'real Tailcat 0.7.0 encrypted carrier with two independent node helpers; same-host endpoints' : 'authenticated loopback WebSocket; overlay not exercised',p50Ms:times[Math.floor(times.length*.5)],p95Ms:times[Math.floor(times.length*.95)]}))
+  console.log(JSON.stringify({ok:true,runtimes:2,realModelDrivenToolCalls:5,targetModelCalls:targetCalls,crossSessionDenied:true,revocationCancels:true,renewalBeyond30Seconds:true,sourceSocketDisconnectCancels:true,newTargetGenerationExpires:true,actualHubLossCancels:true,hubLossCancellationMs,cooperativeCancellation:true,reconnectWithoutDuplicateExecution:true,nativeWebListeners:0,network:overlayEndpoint ? 'real Tailcat 0.7.0 encrypted carrier with two independent node helpers; same-host endpoints' : 'authenticated loopback WebSocket; overlay not exercised',p50Ms:times[Math.floor(times.length*.5)],p95Ms:times[Math.floor(times.length*.95)]}))
 } finally { await sourceHandle?.dispose();for(const d of delegates)await d.close();for(const s of sockets)s.terminate();await hub.close();for(const network of overlays)await network.close();await networkManager?.close();for(const ctx of contexts)await ctx.fiber.dispose();await rm(work,{recursive:true,force:true}) }

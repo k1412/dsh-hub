@@ -20,3 +20,46 @@ describe('directional control routing', () => {
     grants[0]!.expiresAt = 0; expect(await router.dispatch('a','a','peer.discover',{},new AbortController().signal)).toEqual([])
   })
 })
+
+describe('generation-bound authorization renewal', () => {
+  async function setup() {
+    const calls: { target: string; method: string; input: Record<string, unknown> }[] = []
+    const grants: Grant[] = ['b', 'c'].map(target => ({ id: target, source: 'a', target, sourceRuntime: 'a', targetRuntime: target, workspace: '/work', capabilities: ['task.start'], expiresAt: Date.now() + 600_000 }))
+    const peers = new Map<string, ControlPeer>(['a','b','c'].map(id => [id, { generation: id, runtimeId: id, capabilities: ['delegation'], control: { call: async (method: string, input: Record<string, unknown>) => { calls.push({ target: id, method, input }); return { taskId: id, status: 'running', leaseAdmissionId: input.leaseAdmissionId } } } as unknown as ControlRPC }]))
+    const router = new ControlRouter(() => grants, peers, () => true)
+    for (const target of ['b', 'c']) await router.dispatch('a', 'a', 'task.start', { targetNode: target, targetRuntime: target, workspace: '/work', sourceSession: 'session', prompt: 'wait' }, new AbortController().signal)
+    return { calls, grants, peers, router }
+  }
+  it('renews every ten seconds, isolates simultaneous targets and keeps renew internal', async () => {
+    const { calls, grants, router } = await setup()
+    expect(calls.every(call => call.input.authorizationLeaseMs === 30_000)).toBe(true)
+    await router.reconcile(); expect(calls).toHaveLength(2)
+    // Exercise the scheduler deterministically without waiting ten seconds.
+    for (const task of (router as unknown as { tasks: Map<string, { renewAt: number }> }).tasks.values()) task.renewAt = 0
+    grants[0]!.capabilities = []
+    await router.reconcile()
+    expect(calls.slice(2).map(call => [call.target, call.method])).toEqual([['b', 'task.cancel'], ['c', 'task.renew']])
+    await router.reconcile(); expect(calls).toHaveLength(4)
+    await expect(router.dispatch('a', 'a', 'task.renew', {}, new AbortController().signal)).rejects.toThrow('denied')
+  })
+  it.each(['source-disconnect', 'source-generation', 'target-generation', 'target-runtime', 'revocation'] as const)('stops renewal on %s', async (change) => {
+    const { calls, grants, peers, router } = await setup()
+    if (change === 'source-disconnect') peers.delete('a')
+    if (change === 'source-generation') peers.set('a', { ...peers.get('a')!, generation: 'new' })
+    if (change === 'target-generation') peers.set('b', { ...peers.get('b')!, generation: 'new' })
+    if (change === 'target-runtime') peers.get('b')!.runtimeId = 'replacement'
+    if (change === 'revocation') grants.splice(0)
+    for (const task of (router as unknown as { tasks: Map<string, { renewAt: number }> }).tasks.values()) task.renewAt = 0
+    await router.reconcile()
+    expect(calls.slice(2).filter(call => call.target === 'b' && call.method === 'task.renew')).toEqual([])
+    if (change.startsWith('target-')) expect(calls.slice(2).filter(call => call.target === 'b')).toEqual([])
+  })
+  it('does not adopt a replayed task after Hub restart', async () => {
+    const { calls, grants, peers } = await setup()
+    peers.get('b')!.control = { call: async () => ({ taskId: 'b', status: 'running', leaseAdmissionId: 'original-admission' }) } as unknown as ControlRPC
+    const restarted = new ControlRouter(() => grants, peers, () => true)
+    await restarted.dispatch('a', 'a', 'task.start', { targetNode: 'b', targetRuntime: 'b', workspace: '/work', sourceSession: 'session', prompt: 'wait' }, new AbortController().signal)
+    expect((restarted as unknown as { tasks: Map<string, unknown> }).tasks.size).toBe(0)
+    expect(calls).toHaveLength(2)
+  })
+})

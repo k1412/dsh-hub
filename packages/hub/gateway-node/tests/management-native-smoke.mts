@@ -65,7 +65,7 @@ try {
   const entry=a.plugins.find((p:any)=>p.moduleName==='gateway-control-fixture');assert(entry)
   assert.equal((await job(0,{requestId:'disable-A',action:'plugin.disable',target:entry.entryId})).status,'completed')
   assert.equal((await job(0,{requestId:'enable-A',action:'plugin.enable',target:entry.entryId})).status,'completed')
-  assert.equal((await job(0,{requestId:'update-A',action:'plugin.install',package:'gateway-control-fixture',version:'1.0.1'})).status,'completed')
+  assert.equal((await job(0,{requestId:'update-A',action:'plugin.install',package:'gateway-control-fixture',version:'1.0.1'})).status,'restart-required')
   const failed=await job(0,{requestId:'failed-update-A',action:'plugin.install',package:'gateway-control-fixture',version:'1.0.2'})
   assert.equal(failed.status,'failed');assert.equal(failed.rollback,'restored-previous-version')
   assert.equal(JSON.parse(await readFile(join(work,'A/package.json'),'utf8')).dependencies['gateway-control-fixture'],'1.0.1')

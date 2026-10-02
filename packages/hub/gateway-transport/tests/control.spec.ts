@@ -38,3 +38,21 @@ it('runs bounded bidirectional control alongside native traffic on two node carr
     expect(tunnels.map(t=>t.health.inflightRequests)).toEqual([0,0])
   } finally { for(const c of controls)c.close(); for(const c of clients)c.terminate(); for(const t of tunnels)t.close(); await new Promise<void>(r=>sockets.close(()=>r())); await new Promise<void>(r=>server.close(()=>r())) }
 }, 90000)
+it('accepts more than 10000 calls and rejects an early replay without evicting its protection',async()=>{
+  const server=new WebSocketServer({port:0,host:'127.0.0.1'})
+  await new Promise<void>(r=>server.once('listening',r))
+  let effects=0,receiver:ControlRPC|undefined
+  server.on('connection',ws=>{receiver=new ControlRPC(ws,async()=>++effects)})
+  const ws=new WebSocket(`ws://127.0.0.1:${(server.address() as {port:number}).port}`)
+  await new Promise<void>(r=>ws.once('open',r))
+  const client=new ControlRPC(ws,async()=>null)
+  const original=ws.send.bind(ws);let first=''
+  ws.send=((data:Parameters<WebSocket['send']>[0],...args:unknown[])=>{if(!first)first=String(data);return original(data,...args as [])}) as WebSocket['send']
+  try{
+    for(let n=0;n<10025;n++)expect(await client.call('write',{})).toBe(n+1)
+    expect(receiver?.health).toMatchObject({replayEntries:1,receivedSequence:10025})
+    const response=new Promise<Record<string,unknown>>(resolve=>ws.once('message',raw=>resolve(JSON.parse(raw.toString()))))
+    original(first);expect(await response).toMatchObject({error:'replay-or-capacity'});expect(effects).toBe(10025)
+    expect(await client.call('write',{})).toBe(10026)
+  }finally{client.close();receiver?.close();ws.terminate();await new Promise<void>(r=>server.close(()=>r()))}
+},30000)

@@ -1,3 +1,4 @@
+import { controlPage, grantsPage, controlResult } from './control-pages.ts'
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -102,7 +103,7 @@ export function createGateway(options: GatewayOptions) {
   let closing = false
   const browserSockets = new Set<WebSocket>()
   const agentSockets = new WebSocketServer({ noServer: true, maxPayload: 262144, perMessageDeflate: false })
-  agentSockets.on('headers', (headers, request) => { if (request.headers['x-dsh-control'] === '1') headers.push('x-dsh-control: 1') })
+  agentSockets.on('headers', (headers, request) => { if (request.headers['x-dsh-control'] === '2') headers.push('x-dsh-control: 2') })
   const webSockets = new WebSocketServer({ noServer: true, maxPayload: 262144, perMessageDeflate: false })
   const attempts = new Map<string, { count: number; reset: number }>()
   const nodeOrigin = options.nodeOrigin ?? ((id: string) => `${root.protocol}//${id}.${root.host}`)
@@ -261,7 +262,9 @@ export function createGateway(options: GatewayOptions) {
         if (input.revoke) { store.revokeGrant(scalar(input.revoke)); store.audit('', 'grant.revoke', scalar(input.revoke)); await router.reconcile() }
         else {
           const source = store.node(scalar(input.source)), target = store.node(scalar(input.target))
-          const workspace = scalar(input.workspace, 1024), expiresAt = Number(input.expiresAt)
+          const duration = Number(input.durationSeconds)
+          if (input.durationSeconds !== undefined && ![3600,86400,604800,2592000].includes(duration)) throw new Error('Invalid grant duration')
+          const workspace = scalar(input.workspace, 1024), expiresAt = input.durationSeconds === undefined ? Number(input.expiresAt) : Date.now() + duration * 1000
           const requested = scalar(input.capabilities).split(',').map(v => v.trim())
           if (!source || !target || source.id === target.id || source.revokedAt || target.revokedAt || !workspace || !Number.isFinite(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + 86400000 * 30 || requested.some(v => !(capabilities as readonly string[]).includes(v))) throw new Error('Invalid grant')
           const grant: Grant = { id: randomUUID(), source: source.id, target: target.id, sourceRuntime: source.runtimeId, targetRuntime: target.runtimeId, workspace, expiresAt, capabilities: requested }
@@ -269,8 +272,7 @@ export function createGateway(options: GatewayOptions) {
         }
         redirect(res, '/control/grants'); return
       }
-      const select = store.nodes().filter(n => !n.revokedAt).map(n => `<option value="${n.id}">${escape(n.name)}</option>`).join('')
-      response(res, 200, page('实验：节点授权', `<h1>实验：节点定向授权</h1><a href="/">返回</a><p>默认拒绝。工作区是目标节点明确授权的目录，不构成沙箱。授权仅用于委派工具。</p>${store.grants().map(g => `<section class="card"><pre>${escape(JSON.stringify(g, null, 2))}</pre><form method="post"><input type="hidden" name="revoke" value="${g.id}"><button>立即撤销</button></form></section>`).join('')}<form method="post" class="card"><label>来源节点</label><select name="source">${select}</select><label>目标节点</label><select name="target">${select}</select><label>目标授权工作区</label><input name="workspace" required><label>能力（逗号分隔）</label><input name="capabilities" value="discover,task.start,task.read,task.cancel"><label>到期时间（Unix 毫秒，最多 30 天）</label><input name="expiresAt" value="${Date.now() + 3600000}"><button>添加授权</button></form>`)); return
+      response(res, 200, grantsPage(store.grants(), store.nodes())); return
     }
     const controlRoute = /^\/control\/(n[a-f0-9]{16})$/.exec(url.pathname)
     if (controlRoute) {
@@ -279,17 +281,18 @@ export function createGateway(options: GatewayOptions) {
       if (request.method === 'POST') {
         const input = await body(request)
         const method = scalar(input.method)
-        if (!['management.submit','management.cancel','management.check','management.recover'].includes(method)) throw new Error('Unsupported operation')
+        if (!['management.submit','management.cancel','management.check','management.recover','management.retry-persistence','task.cleanup'].includes(method)) throw new Error('Unsupported operation')
         store.audit(id, method === 'management.submit' ? scalar(input.action) : method, scalar(input.requestId ?? '', 80))
-        const lifecycleAction = method === 'management.recover' || typeof input.action === 'string' && input.action.startsWith('dsh.')
+        const lifecycleAction = method === 'management.recover' || input.controller === 'supervisor' || typeof input.action === 'string' && input.action.startsWith('dsh.')
         if (['dsh.start','dsh.install'].includes(String(input.action)) && peers.has(id)) throw new Error('This Runtime is already online; a second Runtime must not be started')
-        const controller = lifecycleAction ? supervisor?.control ?? peer?.control : peer?.control
-        if (!controller) throw new Error('Required node controller is offline')
-        const result = await controller.call(method, input)
-        response(res, 200, page('操作结果', `<h1>操作结果</h1><pre>${escape(JSON.stringify(result, null, 2))}</pre><a href="/control/${id}">刷新节点状态</a>`)); return
+        const controller = lifecycleAction ? (supervisor?.capabilities.includes('lifecycle') ? supervisor.control : undefined) : peer?.control
+        if (!controller) throw new Error(lifecycleAction ? '独立生命周期监督器离线或不支持此操作；请先启动节点监督服务。' : 'Runtime 管理服务离线或不支持此操作。')
+        if (method === 'task.cleanup' && input.retentionMs !== undefined) input.retentionMs = Number(input.retentionMs)
+        const result = await controller.call(method, method === 'task.cleanup' ? (input.retentionMs === undefined ? {} : { retentionMs: input.retentionMs }) : input)
+        response(res, 200, controlResult(result, id)); return
       }
       const inventory = { runtime: peer?.control && peer.capabilities.includes('management') ? await peer.control.call('management.inventory', {}) : 'Runtime offline or management unsupported', supervisor: supervisor?.control ? await supervisor.control.call('management.inventory', {}) : 'external-supervisor-required' }
-      response(res, 200, page('实验：节点管理', `<h1>实验：节点管理</h1><nav><a href="/">返回节点</a><a href="/control/grants">定向授权</a><a href="/control/audit">审计摘要</a><a href="/control/${id}">刷新状态</a></nav><pre>${escape(JSON.stringify(inventory, null, 2))}</pre><form method="post" class="card"><label>操作</label><select name="method"><option>management.submit</option><option>management.check</option><option>management.cancel</option><option>management.recover</option></select><label>动作</label><select name="action">${['plugin.install','plugin.enable','plugin.disable','plugin.remove','dsh.update','dsh.install','dsh.start','dsh.stop','dsh.uninstall'].map(v => `<option>${v}</option>`).join('')}</select><label>请求 ID（重复提交使用相同 ID）</label><input name="requestId" value="${randomUUID()}"><label>目标插件 entryId / 包名 / DSH 版本（启停卸载 DSH 填 current）</label><input name="target"><label>安装 / 检查包名</label><input name="package"><label>明确版本</label><input name="version"><button>执行</button></form>`)); return
+      response(res, 200, controlPage(id, store.node(id)?.name ?? id, inventory)); return
     }
     if (url.pathname === '/' && request.method === 'GET') { response(res, 200, nodesPage(store.nodes(), new Set(peers.keys()))); return }
     if (url.pathname === '/api/nodes' && request.method === 'GET') {
@@ -364,7 +367,7 @@ export function createGateway(options: GatewayOptions) {
     agentSockets.handleUpgrade(req, socket, head, ws => {
       const collection = url.pathname === '/supervise' ? supervisors : peers
       collection.get(id)?.tunnel.close()
-      const enabled = req.headers['x-dsh-control'] === '1'
+      const enabled = req.headers['x-dsh-control'] === '2'
       const tunnel = new GatewayTunnel(ws, { ...(options.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: options.requestTimeoutMs }), control: enabled })
       const generation = randomUUID()
       const peer: Peer = { socket: ws, tunnel, alive: true, capabilities: String(req.headers['x-dsh-control-capabilities'] ?? '').split(',').filter(v => (url.pathname === '/supervise' ? ['lifecycle'] : ['management','delegation']).includes(v)), generation, runtimeId: node.runtimeId }

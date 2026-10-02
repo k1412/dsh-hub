@@ -77,15 +77,15 @@ try {
   assert.equal(calls[0]!.input.sourceSession, source.agent.id)
   const forged = await exec('peer_discover', { sourceSession: 'forged' })
   assert.equal(forged.isError, true)
-  const started: any = await delegation.handle('task.start', { ...owner, prompt: 'Reply with Native target result' })
+  const started: any = await delegation.handle('task.start', { ...owner, authorizationLeaseMs: 30_000, prompt: 'Reply with Native target result' })
   const finished: any = await poll(() => delegation.handle('task.read', { ...owner, taskId: started.taskId }), (result: any) => result.status !== 'running' && result.status !== 'starting')
   assert.equal(finished.status, 'completed', JSON.stringify(finished))
   assert.equal(finished.result, 'Native target result')
   assert.equal(modelCalls, 1)
-  const duplicate: any = await delegation.handle('task.start', { ...owner, prompt: 'Reply with Native target result' })
+  const duplicate: any = await delegation.handle('task.start', { ...owner, authorizationLeaseMs: 30_000, prompt: 'Reply with Native target result' })
   assert.equal(duplicate.taskId, started.taskId); assert.equal(modelCalls, 1)
   slow = true
-  const cancelling: any = await delegation.handle('task.start', { ...owner, requestId: 'native-2', prompt: 'Wait for cancellation' })
+  const cancelling: any = await delegation.handle('task.start', { ...owner, authorizationLeaseMs: 30_000, requestId: 'native-2', prompt: 'Wait for cancellation' })
   await poll(async () => modelCalls, (count) => count === 2)
   // Find the actual delegated native agent through the registry, not a fabricated tool context.
   const agents = ctx.agents.list()
