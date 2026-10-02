@@ -23,7 +23,7 @@ export const Config = z.object({
 export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const connection = await readConnectionConfig(config.connectionFile ?? join(homedir(), '.dsh-gateway', 'connection.json'))
   const { surface, dshVersion } = await createRuntimeSurface(ctx as unknown as RuntimeContext)
-  const ready = (ctx as unknown as { appReady?: { onReady(listener: () => void): () => void } }).appReady
+  const ready = ctx.get('appReady') as { onReady(listener: () => void): () => void } | undefined
   ctx.effect(() => {
     let connector: ReturnType<typeof startNodeConnector> | undefined
     const start = () => {

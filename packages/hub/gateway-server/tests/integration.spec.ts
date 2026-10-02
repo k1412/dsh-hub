@@ -65,7 +65,10 @@ describe('Gateway actual HTTP/ws integration with independent Runtime surfaces',
     expect((await f.enroll({ ...enrollment(a), inviteToken: f.expiredInvite, clientId: 'expired-client' })).status).toBe(400)
     expect((await f.enroll({ ...enrollment(a), clientId: 'different-client' })).status).toBe(400)
     expect(await (await f.enroll(enrollment(a))).json()).toMatchObject({ nodeId: a.id })
-    expect((await f.request(`/api/enrollment/${a.inviteToken}`)).status).toBe(400)
+    const resumed = await f.request(`/api/enrollment/${a.inviteToken}`)
+    expect(resumed.status).toBe(200)
+    expect(await resumed.json()).toMatchObject({ claimed: true, protocol: 1 })
+    expect((await f.request(`/api/enrollment/${f.expiredInvite}`)).status).toBe(400)
     const entry = await f.request(`/open/${a.id}`, { operator: true })
     const url = new URL(entry.headers.get('location')!)
     const ticketPath = `${url.pathname}${url.search}`

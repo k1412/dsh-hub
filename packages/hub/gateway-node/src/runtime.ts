@@ -10,6 +10,7 @@ interface Injection { kind: string; name?: string; [key: string]: unknown }
 export interface RuntimeContext extends NativeRuntime {
   clientModules: NativeRuntime['clientModules'] & { graph(): unknown }
   webServer?: { renderIndex(html: string): string }
+  get?(name: string): unknown
   emit(name: string, rows: Injection[]): unknown
 }
 
@@ -36,7 +37,8 @@ export async function createRuntimeSurface(ctx: RuntimeContext, resolutionAnchor
     runtime: ctx, distIndex,
     renderIndex: (html) => {
       // Render the existing service's live contributions; do not call its HTTP listener.
-      if (ctx.webServer) return ctx.webServer.renderIndex(html)
+      const webServer = (ctx.get ? ctx.get('webServer') : ctx.webServer) as RuntimeContext['webServer']
+      if (webServer) return webServer.renderIndex(html)
       const rows: Injection[] = []
       ctx.emit('webserver/index-inject', rows)
       if (!rows.some((row) => row.kind === 'global' && row.name === '__DSH_BOOT__')) rows.push(...modules.bootInjections(ctx.clientModules.graph()))
