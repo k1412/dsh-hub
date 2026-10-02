@@ -43,7 +43,7 @@ async function reservePort() {
   return { port: address.port, release: () => new Promise<void>((ok, fail) => server.close(error => error ? fail(error) : ok())) }
 }
 
-async function start(access: readonly (string | undefined)[], auth?: Record<string, unknown>, ownerPassword = password) {
+async function startOnce(access: readonly (string | undefined)[], auth?: Record<string, unknown>, ownerPassword = password) {
   const state = await mkdtemp(join(directory, 'state-'))
   const publicPort = await reservePort()
   const privatePort = await reservePort()
@@ -69,6 +69,18 @@ async function start(access: readonly (string | undefined)[], auth?: Record<stri
   const exited = new Promise<number | null>(ok => child.once('close', code => ok(code)))
   children.push({ child, exited })
   return { origin, started: await Promise.race([ready, exited.then(() => false)]), exited, output: () => output }
+}
+
+async function start(access: readonly (string | undefined)[], auth?: Record<string, unknown>, ownerPassword = password) {
+  // The real CLI requires numbered ports, so reservation and child bind cannot
+  // be atomic. Other parallel fixtures may claim a released ephemeral port.
+  // Reallocate only for that exact pre-start listen error, at most three times;
+  // auth failures and any failure after readiness remain ordinary test failures.
+  for (let attempt = 0; ; attempt++) {
+    const service = await startOnce(access, auth, ownerPassword)
+    if (service.started || !service.output().includes('listen EADDRINUSE') || attempt === 2) return service
+    console.warn('Startup fixture port claimed before child bind; allocating a new isolated pair')
+  }
 }
 
 async function assertPasswordLogin(service: Awaited<ReturnType<typeof start>>) {
