@@ -120,10 +120,25 @@ try {
   const script = await tunnel.fetch(new Request(`http://native/${asset}`))
   assert.equal(script.status, 200)
   assert((await script.arrayBuffer()).byteLength > 10_000)
+  const events = await tunnel.fetch(new Request('http://native/plugins/events'))
+  assert.equal(events.status, 200)
+  assert(events.headers.get('content-type')?.startsWith('text/event-stream'))
+  const eventReader = events.body!.getReader()
+  const eventDecoder = new TextDecoder()
+  let eventText = ''
+  while (!eventText.includes('data: ') || !eventText.slice(eventText.indexOf('data: ')).includes('\n\n')) {
+    const chunk = await eventReader.read()
+    assert(!chunk.done, 'Native plugin events ended before the initial graph')
+    eventText += eventDecoder.decode(chunk.value, { stream: true })
+  }
+  const initialGraph = JSON.parse(eventText.slice(eventText.indexOf('data: ') + 6).split('\n\n')[0] ?? '')
+  assert.equal(initialGraph.type, 'graph')
+  assert(initialGraph.graph.entries.length > 50)
+  await eventReader.cancel()
   assert(!output.includes('without inject'), 'Cordis optional services must be accessed in a valid plugin scope')
   const report = { ok: true, packagedInstaller: true, realNativeProfile: true, realTailcat: true,
     pluginScope: true, sameProfile: true, activatedByHmr, runtimeStarts, sameProcess: runtime?.pid === initialPid,
-    nativePage: page.status, officialJavascript: script.status, artifacts: work }
+    nativePage: page.status, officialJavascript: script.status, nativePluginEvents: events.status, artifacts: work }
   await writeFile(join(work, 'report.json'), JSON.stringify(report, null, 2))
   process.stdout.write(`${JSON.stringify(report)}\n`)
 } finally {

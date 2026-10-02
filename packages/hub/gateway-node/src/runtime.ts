@@ -3,12 +3,13 @@ import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { NodeSurface, type NativeRuntime } from './surface.ts'
+import type { WebBootGraph } from '@deepseek-ai/dsh-client-modules'
 
 interface Injection { kind: string; name?: string; [key: string]: unknown }
 
 /** A structural view avoids loading another copy of the Runtime's Cordis service classes. */
 export interface RuntimeContext extends NativeRuntime {
-  clientModules: NativeRuntime['clientModules'] & { graph(): unknown }
+  clientModules: NativeRuntime['clientModules'] & { graph(): WebBootGraph }
   webServer?: { renderIndex(html: string): string }
   get?(name: string): unknown
   emit(name: string, rows: Injection[]): unknown
@@ -20,6 +21,9 @@ export interface RuntimeSurface { surface: NodeSurface; dshVersion: string }
 export async function createRuntimeSurface(ctx: RuntimeContext, resolutionAnchor = import.meta.url): Promise<RuntimeSurface> {
   if (typeof ctx.connection?.createSharedFetchHandler !== 'function'
     || typeof ctx.clientModules?.fetchBundle !== 'function'
+    || typeof ctx.clientModules?.graph !== 'function'
+    || typeof ctx.clientModules?.onGraphChanged !== 'function'
+    || typeof ctx.clientModules?.onRebuilt !== 'function'
     || typeof ctx.typertGateway?.wireStream?.open !== 'function') {
     throw new Error('This node requires DSH with native Connection, ClientModules and Gateway carrier APIs (tested with 0.1.7-rc.2)')
   }
