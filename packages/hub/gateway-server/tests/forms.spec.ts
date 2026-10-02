@@ -9,6 +9,9 @@ import { createGateway } from '../src/server.ts'
 import { listen } from './fixture.ts'
 
 const cleanups: (() => Promise<void>)[] = []
+// A case includes cold browser startup plus several navigations. This is the
+// runner's total deadline, not an HTTP latency or application performance budget.
+const BROWSER_CASE_TIMEOUT_MS = 20_000
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
 const closeServer = (server: Server) => new Promise<void>(ok => { server.close(() => ok()); server.closeAllConnections() })
 
@@ -102,7 +105,7 @@ describe.skipIf(process.env.GATEWAY_BROWSER_TEST !== '1').each([
       expect(token).toBeTruthy()
       expect(fixture.gateway.store.invitation(token ?? '')).toMatchObject({ mode, name: `browser-${mode}`, nodeId: null })
     }
-  })
+  }, BROWSER_CASE_TIMEOUT_MS)
 
   it('logs in with the real password form and then creates an invitation', async () => {
     const fixture = await setup(true)
@@ -118,7 +121,7 @@ describe.skipIf(process.env.GATEWAY_BROWSER_TEST !== '1').each([
     await page.getByLabel('连接方式').selectOption('tailcat')
     expect((await submit(page, '生成安装命令', '/invites')).status()).toBe(200)
     expect(fixture.posts.at(-1)?.origin).toBe(fixture.origin)
-  })
+  }, BROWSER_CASE_TIMEOUT_MS)
 
   it('rejects authenticated cross-origin and null-Origin browser forms without creating an invitation', async () => {
     const fixture = await setup()
@@ -142,7 +145,7 @@ describe.skipIf(process.env.GATEWAY_BROWSER_TEST !== '1').each([
       expect(await response.json()).toEqual({ error: 'Origin mismatch' })
       expect(invite).not.toHaveBeenCalled()
     }
-  })
+  }, BROWSER_CASE_TIMEOUT_MS)
 
   it('submits rename, revoke and Tailscale setup forms from their real Hub pages', async () => {
     const fixture = await setup()
@@ -167,7 +170,7 @@ describe.skipIf(process.env.GATEWAY_BROWSER_TEST !== '1').each([
     expect((await submit(page, '配置并登录 Tailscale', '/network/tailscale/login')).status()).toBe(303)
     expect(fixture.posts.at(-1)?.origin).toBe(fixture.origin)
     expect(fixture.loginTailscale).toHaveBeenCalledTimes(1)
-  })
+  }, BROWSER_CASE_TIMEOUT_MS)
 
   it('supports native node forms while rejecting cross-node and null origins', async () => {
     const fixture = await setup()
@@ -206,5 +209,5 @@ describe.skipIf(process.env.GATEWAY_BROWSER_TEST !== '1').each([
     expect(response.status()).toBe(403)
     expect(await response.json()).toEqual({ error: 'Origin mismatch' })
     expect([a.writes, b.writes]).toEqual([1, 1])
-  })
+  }, BROWSER_CASE_TIMEOUT_MS)
 })
