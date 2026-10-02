@@ -90,6 +90,8 @@ Current `gateway-server/src/server.ts` routes:
 | Private agent listener | WS `/connect?nodeId=…` | Bearer node credential; replace old connection for that node |
 | Browser listener | `/healthz` | Process liveness only; does not prove overlay readiness |
 
+HTML documents use `Referrer-Policy: same-origin`, including the Hub management pages and the native node pages. This lets actual browser form submissions retain the exact origin required by write validation, while suppressing the referrer on cross-origin navigation. `no-referrer` on a document can instead produce `Origin: null` on a legitimate POST, breaking login and invitation creation. Redirect responses, downloads, APIs and attachment responses keep `no-referrer`; one-use ticket redirects must not reveal their token in a referrer. Missing, cross-origin and null origins remain rejected. The document policy changes browser behavior; it does not relax the write boundary.
+
 The invitation token is a capability: manifest retrieval intentionally does not require the operator's browser cookie. Deployment must make installer downloads reachable without handing the node a Cloudflare service token. Redact enrollment URLs from proxy access logs. Downloads on a separate origin must retain the correct management-origin identity in the manifest and installer; this needs end-to-end acceptance.
 
 HTTP transport streams request and response bodies incrementally, including uploads, downloads and event streams. Carry binary bytes without text conversion. Apply bounded frames, concurrent-request limits and backpressure; on overflow fail the affected transport instead of allocating without limit. Remove hop-by-hop headers, validate upgrade semantics and preserve repeated end-to-end headers where required. The current browser gateway strips all inbound `Authorization` and `Cookie` headers as well as Cloudflare/origin-secret headers; it also strips native `Set-Cookie`. API, history and file responses remain `Cache-Control: private, no-store`; the narrowly scoped static-code exception below permits browser caching. This is an explicit authentication boundary, so compatibility with a plugin that requires its own cookies or authorization must be tested rather than assumed. A disconnect must cancel the native request and release readers, writers and temporary transport state. HEAD and no-body statuses must remain bodyless.
@@ -200,8 +202,9 @@ The executable reads protected `DSH_GATEWAY_AUTH_FILE` JSON or environment confi
 
 | Check | Observed result | What it establishes |
 | --- | --- | --- |
-| Repository gates | Revision `47b45a68c3` release `check`/`build` exited 0: 291 tests passed, four optional skips; CI revision is listed separately | That recorded source revision passes its configured gates; a skipped test is not counted as exercised |
-| CI | [Run 37050742806](https://github.com/k1412/dsh-hub/actions/runs/37050742806), revision `69def3feee`, succeeded | Full macOS/Windows/Ubuntu jobs, Gateway checks and installed-DSH Chromium/WebKit checks passed; earlier failures are resolved |
+| Repository gates | Form-policy revision `4072ca5d5e` ran `check` and `build` with exit 0: 305 tests passed with browser tests enabled and a complete supported DSH installation | That source revision passed the configured gates; later revisions need their own release checks |
+| Actual browser forms | Chromium/WebKit, 10 tests: login, both invitation modes, rename/revoke/network and two native-node forms | Same-origin forms work without forged Origin headers; authenticated cross-origin, cross-node and null-Origin writes are rejected without extra writes |
+| CI before the form-policy fix | Revision `243bd3efed` [run 37057135485](https://github.com/k1412/dsh-hub/actions/runs/37057135485) succeeded, 9/9 jobs | Full macOS/Windows/Ubuntu jobs, Gateway checks and installed-DSH Chromium/WebKit checks passed; a later form fix needs its own CI result |
 | Graceful shutdown tests | With `GATEWAY_BROWSER_TEST=1` and a complete DSH installation, 98 Gateway tests passed; 32 server tests include real-browser 1012 close checks | Local two-node native browser coverage and the one-second fallback for unacknowledged raw TCP; new CI enables browser tests, without predicting its result |
 | Complete installed DSH | DSH `0.1.7-rc.2`, 63 official plugin entries, Chromium and WebKit | Real frontend/Runtime boot, restricted plugin scope, no added Web listener, mobile composer, Full access and model controls |
 | Native conversation and files | Fixture LLM send/reply/history after refresh; 65,537-byte UI upload and native `workspaceFiles` download matched byte for byte | Complete installed native paths work with a controlled model fixture; this is not a paid provider or production model test |
@@ -297,7 +300,20 @@ Both nodes’ **original UI** received `1012 Hub restarting` with `wasClean=true
 | Node A | 1.424 s | 1.819 s | 2.228 s | 100.818 s |
 | Node B | 1.421 s | 1.887 s | 2.275 s | 100.867 s |
 
-**Fast end-to-end recovery remains unproved.** Clients received close notifications about 98.6 seconds after the start marker; the marker is not independently established as the instant the server process began shutting down. Read-only HTTP failures had already started before the marker, and HTTP reads recovered before the original UI received close. The stall’s location and cause remain unresolved. Do not attribute it to an overlay or use the roughly 2.2-second close-to-snapshot result to hide the full window. Observations include API cancellations/timeouts, SSE HTTP/2 ping failures/timeouts and local desktop endpoint 404s; they do not establish zero network errors. Polling every 15 seconds with a six-second read timeout provides sampled availability, not exact downtime. This run establishes automatic native resubscription and state preservation on both nodes, not a recovery SLA.
+**This run did not establish fast end-to-end recovery.** Clients received close notifications about 98.6 seconds after the start marker; the marker is not independently established as the instant the server process began shutting down. Read-only HTTP failures had already started before the marker, and HTTP reads recovered before the original UI received close. The stall’s location and cause remain unresolved. Do not attribute it to an overlay or use the roughly 2.2-second close-to-snapshot result to hide the full window. Observations include API cancellations/timeouts, SSE HTTP/2 ping failures/timeouts and local desktop endpoint 404s; they do not establish zero network errors. Polling every 15 seconds with a six-second read timeout provides sampled availability, not exact downtime. This run establishes automatic native resubscription and state preservation on both nodes, not a recovery SLA.
+
+### Separate browser outbound-path control
+
+Read-only inspection subsequently found that ordinary public traffic from the test machine passed through a local transparent proxy. The reverse proxy had ended the original mux connections about one second after the restart marker, while the browsers received the close frames roughly 98 seconds later; HTTP failures also predated restart. This narrows the investigation without independently proving a particular proxy component caused the stall.
+
+The separate control sent only the test browser through a loopback SOCKS service whose destination sockets were bound to the physical interface. System routing, proxy configuration, public hostnames, TLS, the reverse proxy and node-to-Hub Tailscale/Tailcat connections were unchanged. Both nodes first stayed stable for 32.8 seconds, with four successful read-only requests each, before restarting the same revision. Keep these single observations separate from the roughly 100.8-second ordinary-path sample.
+
+| Node (one observation each) | Marker→close notification | Marker→original UI session snapshot |
+| --- | --- | --- |
+| Node A | 0.627 s | 2.906 s |
+| Node B | 0.627 s | 9.064 s |
+
+Neither page needed a manual reload. History, model, actual membership and the user-message count observed at this run’s start remained unchanged. Node B recovered after two failed reconnect attempts; interrupted/reconnecting SSE also recorded errors, so this is not a zero-error result. It establishes automatic recovery on the isolated path, not ordinary-WAN performance, resolution of the earlier cold-entry failure or a soak guarantee.
 
 ### Remaining acceptance
 

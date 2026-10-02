@@ -1,4 +1,4 @@
 # Bilingual design pair: Git blob hashes at the last manual parity review.
 # Regenerate both entries after updating and reviewing both languages.
-gateway-design.md: 98c8475780ed1649601dac7451d690d058b45b8b
-gateway-design.zh.md: bcdaad05a851a4229be23d053f638b2e44ef4116
+gateway-design.md: dbfa64b1946c2644a62aa7f63189906dc603b3bf
+gateway-design.zh.md: d2178ae3034ccb1588fdcd92af9d5bfd0cf3c209
