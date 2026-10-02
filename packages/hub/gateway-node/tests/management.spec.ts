@@ -31,7 +31,7 @@ it('shares an exclusive operation lock with the resident supervisor and refuses 
     const node=await createManagement({stateDirectory:join(dir,'node'),lockDirectory:join(dir,'shared.lock'),version:'0.1.7-rc.2',trustedPackages:['example'],manager})
     const supervisor=await createManagement({stateDirectory:join(dir,'supervisor'),lockDirectory:join(dir,'shared.lock'),version:'external',trustedPackages:[],lifecycle:true,updateExecutor:'/configured/local-executor'})
     await node.handle('management.submit',{requestId:'shared-install',action:'plugin.install',package:'example',version:'1.0.0'})
-    await expect(supervisor.handle('management.submit',{requestId:'stop-running',action:'dsh.stop',target:'current'})).rejects.toThrow('lock')
+    await expect(supervisor.handle('management.submit',{requestId:'stop-running',action:'dsh.stop',target:'current'})).rejects.toThrow('admission-required')
     await expect(supervisor.handle('management.recover',{})).rejects.toThrow('PID-only recovery forbidden')
     await expect.poll(()=>!!finish).toBe(true); finish!();await new Promise(r=>setTimeout(r,30))
   }finally{await rm(dir,{recursive:true,force:true})}

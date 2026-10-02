@@ -128,7 +128,7 @@ cross-region performance or production deployment readiness.
   have not been validated for this branch.
 - Two actual pluginManager services with a local fixture registry: parallel distinct
   versions, enable/disable, update, restoration after a non-bundle update fails,
-  removal isolated to A and preserved original YAML comments.
+  disk-only rollback, refusal of further mutation pending restart, and preserved original YAML comments.
 - Complete official browser smoke passed. Open in App still requires an upstream
   listener-only endpoint and remains unavailable remotely.
 - 12000 rounds, 24000 control calls plus concurrent native fetches: with a separate
@@ -144,7 +144,7 @@ CONTROL_SOAK_ROUNDS=12000 CONTROL_BENCHMARK_REPORT=/tmp/control-benchmark.json p
 
 ### Explicit limits
 
-Initial DSH installation, start/stop and uninstall use the optional resident node
+Initial DSH installation, start/stop/restart and uninstall use the optional resident node
 supervisor. Without it, inventory reports external-supervisor-required. This separate
 outbound connection has no Runtime or Web listener and cannot delegate tasks. Both
 connections bind authenticated node/Runtime identity. Stopping DSH leaves the supervisor
@@ -173,11 +173,11 @@ A fresh machine can pair its supervisor before dsh.install. Initialize the insta
 profile and Gateway plugin through the official CLI, then load them in the same Runtime.
 The Runtime ID must match the later plugin configuration.
 
-Executor configuration must explicitly list approvedActions (install/start/stop/uninstall).
-Install/update target an exact version; start/stop/uninstall require target=current. npm
+Executor configuration must explicitly list approvedActions (install/start/stop/restart/uninstall).
+Install/update target an exact version; start/stop/restart/uninstall require target=current. npm
 install refuses an existing current path; update replaces the existing symlink. Docker
 install uses fixed prepare/install/verify commands. Other actions use fixed same-named
-commands. Start/stop must operate the **existing single supervised service**, with an
+commands. Start/stop/restart must operate the **existing single supervised service**, with an
 idempotent start command, never launch a separate dsh process. The Hub also rejects
 install/start while the Runtime is online.
 
@@ -200,14 +200,18 @@ and lock; inspect interrupted updates and current locally before recovering them
 
 ## Durable management and executor contract
 
-The node fsyncs its operation reservation before any mutation. Journal write failures
+The node fsyncs its operation reservation before any mutation. Disk version, upstream
+application result and active code are distinct fields; package installation success
+does not prove that HMR applied the package. Journal write failures
 lock mutations and show persistence-failed; background failures do not reject into the
 Runtime. “Retry journal write” retries persistence without replaying the operation.
 An unreadable journal requires local repair and reload. Completion is exposed only
 after its durable write; restart-required means installed but not yet active.
 Exact plugin checks consult official inspect metadata or the configured registry when
 already installed. Successful installation must match the actual installed manifest;
-a failed update verifies restoration of the prior version.
+a malformed bundle recovery verifies the disk version only and keeps the restart fence.
+An HMR application error after successful installation does not trigger another nested
+HMR rollback. Active code remains explicitly unverified.
 
 The supplied executor emits one JSON result on stdout: check reports availableVersion;
 install/apply reports installedVersion. Both must equal the requested exact version.
@@ -225,3 +229,56 @@ them. Stop/reconcile all updater descendants, inspect both journals and the inst
 version before locally removing stale locks; never use the Gateway PID alone as proof.
 The default mutation timeout is five minutes; adapter commands default to four minutes.
 This conservative recovery policy favors avoiding concurrent updates over automatic recovery.
+
+## Controlled restart and activity admission
+
+“Controlled restart DSH” invokes the independent supervisor's approved `restart` action
+against the existing service. Add `restart` to approvedActions and configure its command
+array (the systemd adapter already supports it). No implicit restart or cancellation is
+performed after a plugin update. Stop/update/restart/uninstall all refuse an active
+Runtime or native maintenance; this release offers no forced interruption button.
+An offline or older Runtime without the admission capability cannot authorize these
+operations. Start/install retain their separate idempotent service semantics.
+
+The Runtime reserves the existing shared management.lock before checking public
+agents.list(), Agent.status and bounded Agent.whenIdle(). The same lock protects Hub
+`task.start` admission and plugin operations. The supervisor adopts that exact request's
+prepared token and keeps the fence across execution. Public agent/pre-step rejects new
+model steps during admitted maintenance. This prevents Hub-owned admission races; it
+is **not a whole-Runtime freeze** and cannot serialize arbitrary local administrator CLI
+or native plugin UI operations, which use their own upstream locks. No private agent
+registry APIs or upstream core patches are used. The workspace remains a task cwd policy,
+**not a sandbox**.
+
+After start/install/update/restart the job remains awaiting-runtime-verification until
+the same authenticated node/Runtime has a new connection generation, a fresh process
+identity and the expected DSH version. The fence then releases. A connection reconnect
+inside the old process is insufficient. Pending durable jobs can be verified after Hub
+reconnection. Executor uncertainty still requires local reconciliation.
+
+Plugin `changed:true`, exitCode 0, or `application:restart-required` never proves active
+code changed. Failed HMR with the target on disk shows restart-required and retains the
+fence. Recovery of a malformed bundle may restore the prior disk version through the
+official installer, but reports disk-restored-active-unverified and still requires an
+explicit restart. A fresh Runtime handshake proves that Runtime restarted; it does not
+invent a generic active plugin version field absent from rc.2. Plugin-specific live
+service evidence is required to verify active code. Inventory/SSR shows unknown otherwise.
+
+The native Remote/HMR regression installs an actual fixture through Connection Fetch +
+Typert Remote inside the public hmr.runExclusive scope. It observes disk 1.0.1 / active
+1.0.0 after the actual nested-HMR failure, then disposes the old Runtime and starts the
+same profile in a fresh process to prove active 1.0.1. The explicit outer HMR scope is
+necessary for this bounded reproduction; ordinary Remote alone did not reproduce the
+production origin of that scope. Core module hashes remain unchanged.
+
+```sh
+DSH_NATIVE_ROOT=/path/to/installed-dsh pnpm exec tsx packages/hub/gateway-node/tests/lifecycle-native-smoke.mts
+DSH_NATIVE_ROOT=/path/to/installed-dsh DSH_TEST_PNPM=/path/to/pnpm.cjs pnpm exec tsx packages/hub/gateway-node/tests/management-remote-native-smoke.mts
+```
+
+The activity test holds real native and delegated model streams plus native maintenance,
+checks refusal without cancellation, and exercises shared admission against a harmless
+local supervisor executor. It does not stop a production service. Model sourceSession
+comes only from the official tool execution Agent; model arguments cannot override it.
+Read/cancel ownership includes source node, Runtime, session and target Runtime/workspace.
+Management methods remain operator-only and are rejected by peer dispatch.

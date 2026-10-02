@@ -1,3 +1,4 @@
+import { createAdmission } from '../src/admission.ts'
 import { it, expect } from 'vitest'
 import { mkdtemp, rm, readFile, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -41,9 +42,8 @@ it('rejects wrong installed versions and preserves restart-required as a distinc
     const m=await createManagement({stateDirectory:dir,version:'fixture',trustedPackages:['example'],manager,lookupVersion:async(name,version)=>({name,version,bundle:true})})
     await m.handle('management.submit',request)
     await expect.poll(async()=> (await m.handle('management.inventory',{}) as {jobs:{status:string}[]}).jobs.at(-1)?.status).toBe('restart-required')
-    await m.handle('management.submit',{...request,requestId:'wrong-version',version:'1.0.1'})
-    await expect.poll(async()=> (await m.handle('management.inventory',{}) as {jobs:{status:string}[]}).jobs.at(-1)?.status).toBe('failed')
-    expect(await m.handle('management.inventory',{})).toMatchObject({jobs:[{}, {error:'installed-version-mismatch',rollback:'restored-previous-version'}]})
+    await expect(m.handle('management.submit',{...request,requestId:'wrong-version',version:'1.0.1'})).rejects.toThrow('busy')
+    expect(await m.handle('management.inventory',{})).toMatchObject({jobs:[{status:'restart-required',diskVersion:'1.0.0',applicationState:'active-version-unverified'}]})
   }finally{await rm(dir,{recursive:true,force:true})}
 })
 it('keeps uncertain executor locks across supervisor restart even after the original PID has exited',async()=>{
@@ -52,7 +52,7 @@ it('keeps uncertain executor locks across supervisor restart even after the orig
     const lock=join(dir,'operation.lock');await mkdir(lock);await writeFile(join(lock,'owner.json'),JSON.stringify({pid:2147483647,executorMayOutlive:true}))
     const m=await createManagement({stateDirectory:dir,version:'external',trustedPackages:[],lifecycle:true,updateExecutor:'/configured/executor'})
     await expect(m.handle('management.recover',{})).rejects.toThrow('PID-only recovery forbidden')
-    await expect(m.handle('management.submit',{requestId:'stop-runtime',action:'dsh.stop',target:'current'})).rejects.toThrow('lock')
+    await expect(m.handle('management.submit',{requestId:'stop-runtime',action:'dsh.stop',target:'current'})).rejects.toThrow('admission-required')
   }finally{await rm(dir,{recursive:true,force:true})}
 })
 it('keeps startup IO failures visible and never overwrites an unreadable journal',async()=>{
@@ -72,7 +72,8 @@ it('locks timed out management executors until explicit local reconciliation, ev
   try{
     const executor=join(dir,'executor');await writeFile(executor,`#!${process.execPath}\nsetTimeout(()=>console.log(JSON.stringify({status:'completed'})),150)`,{mode:0o700})
     const m=await createManagement({stateDirectory:dir,version:'external',trustedPackages:[],lifecycle:true,updateExecutor:executor,executorTimeoutMs:20})
-    await m.handle('management.submit',{requestId:'timeout-stop',action:'dsh.stop',target:'current'})
+    const permit=await createAdmission(join(dir,'operation.lock'),{list:()=>[]},'0.1.7-rc.2').prepare({requestId:'timeout-stop',action:'dsh.stop'})
+    await m.handle('management.submit',{requestId:'timeout-stop',action:'dsh.stop',target:'current',admissionToken:permit.token,previousRuntimeInstance:permit.runtimeInstance,previousVersion:permit.version,previousGeneration:'old-generation'})
     await expect.poll(async()=> (await m.handle('management.inventory',{}) as {recovery:string}).recovery).toBe('manual-executor-reconciliation-required')
     await new Promise(r=>setTimeout(r,250))
     expect(await m.handle('management.inventory',{})).toMatchObject({jobs:[{status:'executor-recovery-required'}]})

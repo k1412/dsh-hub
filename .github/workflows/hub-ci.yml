@@ -267,7 +267,9 @@ jobs:
           DSH_NATIVE_ROOT: ${{ runner.temp }}/dsh-native
         run: |
           pnpm exec tsx packages/hub/gateway-node/tests/control-native-two-runtime.mts
+          pnpm exec tsx packages/hub/gateway-node/tests/lifecycle-native-smoke.mts
           DSH_TEST_PNPM="$(readlink -f "$(command -v pnpm)")" pnpm exec tsx packages/hub/gateway-node/tests/management-native-smoke.mts
+          DSH_TEST_PNPM="$(readlink -f "$(command -v pnpm)")" pnpm exec tsx packages/hub/gateway-node/tests/management-remote-native-smoke.mts
       - name: Complete installed native UI on Chromium and WebKit
         env:
           DSH_NATIVE_ROOT: ${{ runner.temp }}/dsh-native

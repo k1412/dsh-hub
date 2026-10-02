@@ -48,7 +48,7 @@ it('never routes lifecycle or version checks into a management-capable Runtime w
     socket=new WebSocket(`ws://127.0.0.1:${f.privatePort}/connect?nodeId=${node.id}`,{headers:{authorization:`Bearer ${node.credential}`,'x-dsh-runtime':'runtime-A','x-dsh-control':'2','x-dsh-control-capabilities':'management'}})
     await once(socket,'open');serveSurface(socket,node.surface,{control:true})
     const calls:unknown[]=[];const rpc=new ControlRPC(socket,async(method,input)=>{calls.push({method,input});return {version:'fixture',plugins:[],bundles:[],jobs:[]}})
-    for(const action of ['dsh.install','dsh.start','dsh.stop','dsh.uninstall','dsh.update']){
+    for(const action of ['dsh.install','dsh.start','dsh.stop','dsh.uninstall','dsh.update','dsh.restart']){
       for(const method of ['management.submit','management.check']){
         const result=await f.request(`/control/${node.id}`,{operator:true,method:'POST',headers:{origin:f.publicUrl,'content-type':'application/json'},body:JSON.stringify({method,action,target:'0.1.8',requestId:'no-fallback'})})
         expect(result.status).not.toBe(200)

@@ -1,3 +1,4 @@
+import { createAdmission } from '../src/admission.ts'
 /** Two real rc.2 Runtimes, model-driven official tools, authenticated Gateway carriers; fixture LLM. */
 import assert from 'node:assert/strict'
 import { createRequire } from 'node:module'
@@ -83,7 +84,7 @@ try {
     const node=hub.store.enroll({inviteToken:invite.token,clientId:randomUUID(),credential,name:label,dshVersion:'0.1.7-rc.2',runtimeId:`runtime-${label}`})
     if(label==='B'){targetNode=node.id;targetWorkspace=join(directory,'workspace')}else sourceNode=node.id
     let rpc:ControlRPC
-    const delegation=await createDelegation(ctx as DelegationContext,{stateDirectory:join(directory,'control'),workspace:join(directory,'workspace'),runtimeId:`runtime-${label}`,call:async(method,input)=>{const start=performance.now();const result=await rpc.call(method,input);latest=result;trace.push({method,result,elapsedMs:performance.now()-start});return result}});delegates.push(delegation)
+    const delegation=await createDelegation(ctx as DelegationContext,{admission:createAdmission(join(directory,'management.lock'),ctx.agents,'0.1.7-rc.2'),stateDirectory:join(directory,'control'),workspace:join(directory,'workspace'),runtimeId:`runtime-${label}`,call:async(method,input)=>{const start=performance.now();const result=await rpc.call(method,input);latest=result;trace.push({method,result,elapsedMs:performance.now()-start});return result}});delegates.push(delegation)
     let carrierUrl = `ws://127.0.0.1:${port}`
     if (overlayEndpoint) { const network = await connectNodeNetwork({ mode: 'tailcat', endpoint: overlayEndpoint, stateDirectory: join(directory, 'overlay'), binDirectory: join(work, 'bin') }); overlays.push(network); carrierUrl = network.url.replace(/^http/, 'ws') }
     const {surface}=await createRuntimeSurface(ctx as RuntimeContext,pathToFileURL(join(installed,'package.json')).href)

@@ -6,9 +6,9 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 const exec = promisify(execFile)
 const [action, version, id] = process.argv.slice(2)
-const lifecycle = ['install','start','stop','uninstall'].includes(action)
+const lifecycle = ['install','start','stop','uninstall','restart'].includes(action)
 const exactVersion = /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/
-if (!['apply','check','install','start','stop','uninstall'].includes(action) || !(lifecycle && action !== 'install' ? version === 'current' : exactVersion.test(version ?? '')) || !/^[\w-]{8,80}$/.test(id ?? '')) throw new Error('Invalid update request')
+if (!['apply','check','install','start','stop','uninstall','restart'].includes(action) || !(lifecycle && action !== 'install' ? version === 'current' : exactVersion.test(version ?? '')) || !/^[\w-]{8,80}$/.test(id ?? '')) throw new Error('Invalid update request')
 const configPath = process.env.DSH_UPDATE_CONFIG
 if (!configPath || !isAbsolute(configPath)) throw new Error('Configure DSH_UPDATE_CONFIG on the supervisor')
 const config = JSON.parse(await readFile(configPath, 'utf8'))
@@ -67,7 +67,7 @@ try {
     await durable(journal, { version, action, status: 'running' })
     if (lifecycle && action !== 'install') {
       await run(config[action], [version, id])
-      if (action === 'start') installedVersion = await observedVersion('current')
+      if (['start','restart'].includes(action)) installedVersion = await observedVersion('current')
     } else if (config.kind === 'npm') {
       if (!isAbsolute(config.releases) || !isAbsolute(config.current)) throw new Error('Absolute release/current paths required')
       if (action === 'install') {

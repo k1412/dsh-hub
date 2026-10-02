@@ -39,11 +39,11 @@ it('requires explicit lifecycle approval and invokes only deployment-owned start
   try{
     const log=join(dir,'events'),script=join(dir,'executor.mjs');await writeFile(script,`import{appendFile}from'node:fs/promises';await appendFile(process.argv[2],process.argv.slice(3).join(' ')+ '\\n');if(process.argv[3]==='verify')console.log(JSON.stringify({version:'0.1.7-rc.2'}));`)
     const command=(name:string)=>[process.execPath,script,log,name]
-    const config={kind:'docker',stateDirectory:join(dir,'state'),approvedActions:['start','stop','uninstall'],start:command('start'),stop:command('stop'),uninstall:command('uninstall'),verify:command('verify')}
+    const config={kind:'docker',stateDirectory:join(dir,'state'),approvedActions:['start','stop','uninstall','restart'],start:command('start'),restart:command('restart'),stop:command('stop'),uninstall:command('uninstall'),verify:command('verify')}
     const path=join(dir,'config');await writeFile(path,JSON.stringify(config))
     const run=(action:string)=>exec(process.execPath,[resolve('deploy/gateway/update-adapter.mjs'),action,'current',`${action}-123456`],{env:{...process.env,DSH_UPDATE_CONFIG:path}})
-    await run('start');await run('start');await run('stop');await run('uninstall')
-    expect((await readFile(log,'utf8')).trim().split('\n')).toEqual(['start current start-123456','verify current','stop current stop-123456','uninstall current uninstall-123456'])
+    await run('start');await run('start');await run('restart');await run('stop');await run('uninstall')
+    expect((await readFile(log,'utf8')).trim().split('\n')).toEqual(['start current start-123456','verify current','restart current restart-123456','verify current','stop current stop-123456','uninstall current uninstall-123456'])
     config.approvedActions=[];await writeFile(path,JSON.stringify(config));await expect(run('start')).rejects.toThrow()
   }finally{await rm(dir,{recursive:true,force:true})}
 })

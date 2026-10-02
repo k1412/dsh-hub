@@ -28,6 +28,7 @@ export interface DelegationContext {
   sessionController: { inspect(sessionId: string): Promise<{ events: readonly { type: string; data: unknown }[] }> }
 }
 export interface DelegationOptions {
+  admission?: { task<T>(run: () => Promise<T>): Promise<T> }
   stateDirectory: string
   workspace: string
   runtimeId: string
@@ -271,7 +272,7 @@ export async function createDelegation(ctx: DelegationContext, options: Delegati
   }
   function handle(method: string, input: Record<string, unknown>) {
     const receivedAt = performance.now()
-    const next = serial.then(() => handleInner(method, input, receivedAt))
+    const next = serial.then(() => method === 'task.start' && options.admission ? options.admission.task(() => handleInner(method, input, receivedAt)) : handleInner(method, input, receivedAt))
     serial = next.catch(() => {})
     return next
   }

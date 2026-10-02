@@ -63,3 +63,12 @@ describe('generation-bound authorization renewal', () => {
     expect(calls).toHaveLength(2)
   })
 })
+it('rejects all management, verification and lease administration from an authenticated model peer',async()=>{
+  let calls=0
+  const peer:ControlPeer={generation:'generation',runtimeId:'runtime',capabilities:['delegation','management','admission'],control:{call:async()=>{calls++;return {}}} as unknown as ControlRPC}
+  const router=new ControlRouter(()=>[],new Map([['node',peer]]),()=>true)
+  for(const method of ['management.submit','management.prepare','management.release','management.verify-runtime','management.restarted','task.renew','task.cleanup']){
+    await expect(router.dispatch('node','generation',method,{action:'dsh.restart'},new AbortController().signal)).rejects.toThrow('denied')
+  }
+  expect(calls).toBe(0)
+})

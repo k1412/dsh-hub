@@ -1,3 +1,4 @@
+import { readOwner, runtimeInstance } from './admission.ts'
 import { mkdir, readFile, rename, access, rm, open } from 'node:fs/promises'
 import { join, isAbsolute } from 'node:path'
 import { spawn, execFile } from 'node:child_process'
@@ -15,7 +16,7 @@ export interface Manager {
   setPluginEnabled(id: string, enabled: boolean): Promise<Change>
   cancelInstall(id: string): Promise<{ status: string }>
 }
-interface Job { id: string; fingerprint: string; action: string; target: string; status: string; createdAt: number; finishedAt?: number; application?: string; error?: string; previousVersion?: string; installedVersion?: string; rollback?: string }
+interface Job { id: string; fingerprint: string; action: string; target: string; status: string; createdAt: number; finishedAt?: number; application?: string; error?: string; previousVersion?: string; installedVersion?: string; rollback?: string; diskVersion?: string; activeVersion?: string; applicationState?: string; upstreamApplication?: string; previousRuntimeInstance?: string; previousGeneration?: string; expectedVersion?: string; verifiedGeneration?: string; verifiedRuntimeInstance?: string }
 interface PackageVersion { name: string; version: string; bundle: boolean }
 export interface ManagementOptions {
   stateDirectory: string; lockDirectory?: string; version: string; manager?: Manager; trustedPackages: string[]
@@ -23,6 +24,7 @@ export interface ManagementOptions {
   /** Fault injection and deployment-specific authenticated registry lookup. */
   persist?: (path: string, data: string) => Promise<void>
   lookupVersion?: (name: string, version: string) => Promise<PackageVersion>
+  quiescent?: () => Promise<void>
   executorTimeoutMs?: number
 }
 const packageName = /^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/
@@ -41,7 +43,7 @@ export async function createManagement(options: ManagementOptions) {
   let jobs: Job[] = [], journalUnreadable = false
   try { jobs = JSON.parse(await readFile(file, 'utf8')) as Job[]; if (!Array.isArray(jobs) || jobs.some(job => !job || typeof job.id !== 'string')) { jobs = []; throw new Error('Invalid journal') } } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') journalUnreadable = true }
   for (const job of jobs) if (job.status === 'running') job.status = 'interrupted-review-required'
-  let active: Job | undefined, executing = false, persistenceFailed = journalUnreadable, uncertainExecutor = false
+  let active: Job | undefined, executing = false, persistenceFailed = journalUnreadable, uncertainExecutor = false, restartRequired = false, awaitingRuntime = false, mutationStarted = false
   let saving: Promise<void> = Promise.resolve()
   const save = () => {
     const data = JSON.stringify(jobs)
@@ -50,7 +52,7 @@ export async function createManagement(options: ManagementOptions) {
     saving = next.catch(() => {})
     return next.catch(error => { persistenceFailed = true; throw error })
   }
-  const snapshot = (job: Job) => ({ ...job, ...(active === job ? { status: persistenceFailed ? 'persistence-failed' : uncertainExecutor ? 'executor-recovery-required' : 'running' } : {}) })
+  const snapshot = (job: Job) => ({ ...job, ...(active === job ? { status: persistenceFailed ? 'persistence-failed' : uncertainExecutor ? 'executor-recovery-required' : restartRequired ? 'restart-required' : awaitingRuntime ? 'awaiting-runtime-verification' : 'running' } : {}) })
   if (!journalUnreadable) await save().catch(() => {}) // Keep the Runtime available, but fail closed on mutations.
   if (options.installation && !['npm','docker','external'].includes(options.installation)) throw new Error('Invalid installation type')
   let installation = options.installation ?? 'external'
@@ -102,48 +104,81 @@ export async function createManagement(options: ManagementOptions) {
     let result: Change
     if (job.action.startsWith('dsh.')) {
       const observed = await executor(job.action === 'dsh.update' ? 'apply' : job.action.slice(4), job.target, job.id, true)
-      if (typeof observed.installedVersion === 'string') job.installedVersion = observed.installedVersion
+      if (typeof observed.installedVersion === 'string') { job.installedVersion = observed.installedVersion; if(job.action==='dsh.start')job.expectedVersion=observed.installedVersion }
       result = { changed: true, application: 'applied' }
+      if (['dsh.restart','dsh.update','dsh.start','dsh.install'].includes(job.action)) awaitingRuntime = true
     } else {
       if (!manager) throw new Error('unsupported-plugin-manager')
       if (job.action === 'plugin.install') {
         const previous = (await manager.listBundles()).find(bundle => bundle.name === input.package)
         await checked(String(input.package), String(input.version))
         if (previous?.version) { job.previousVersion = previous.version; await save() }
+        mutationStarted = true
         result = await manager.installBundle(job.target, { requestId: job.id })
-        if (!['failed','cancelled'].includes(result.application)) {
-          const installed = (await manager.listBundles()).find(bundle => bundle.name === input.package)?.version
-          if (installed !== input.version) result = { changed: true, application: 'failed', error: { code: 'installed-version-mismatch' } }
-          else if (typeof installed === 'string') job.installedVersion = installed
+        const installed = (await manager.listBundles()).find(bundle => bundle.name === input.package)?.version
+        if (installed) { job.installedVersion = installed; job.diskVersion = installed }
+        job.applicationState = 'active-version-unverified'; job.upstreamApplication=result.application
+        let diskRecovered=false
+        if(result.application==='failed' && result.error?.code==='not-bundle' && previous?.version && version.test(previous.version)){
+          const restored=await manager.installBundle(`${String(input.package)}@${previous.version}`,{requestId:`${job.id}-disk-recovery`})
+          const disk=(await manager.listBundles()).find(bundle=>bundle.name===input.package)?.version
+          if(disk===previous.version){diskRecovered=true;job.diskVersion=disk;job.installedVersion=disk;job.rollback='disk-restored-active-unverified';restartRequired=true;result={...restored,application:'restart-required'}}
+          else{uncertainExecutor=true;job.rollback='manual-recovery-required'}
         }
-        if (['failed','cancelled'].includes(result.application) && previous?.version && version.test(previous.version) && previous.version !== input.version) {
-          const rollback = await manager.installBundle(`${String(input.package)}@${previous.version}`, { requestId: `${job.id}-rollback` })
-          const restored = (await manager.listBundles()).find(bundle => bundle.name === input.package)?.version
-          job.rollback = ['applied','restart-required'].includes(rollback.application) && restored === previous.version ? 'restored-previous-version' : 'rollback-failed'
+        // Package-manager exit status is independent from native HMR application.
+        // Do not run another HMR transaction to "rollback" a partial application.
+        if(diskRecovered){ /* Disk recovery is verified; active code still requires a new process. */ }
+        else if (installed === input.version && ['failed','restart-required'].includes(result.application)) {
+          restartRequired = true
+          job.error = result.error?.code ?? 'native-restart-required'
+          result = {...result,application:'restart-required'}
+        } else if (installed !== input.version && !['failed','cancelled'].includes(result.application)) {
+          uncertainExecutor = true
+          result = {changed:true,application:'failed',error:{code:'installed-version-mismatch'}}
+        } else if (['failed','cancelled'].includes(result.application)) {
+          if(previous?.version && installed === previous.version) job.rollback = 'disk-restored-active-unverified'
+          else { uncertainExecutor = true; job.rollback = 'manual-recovery-required' }
         }
-      } else if (job.action === 'plugin.remove') result = await manager.removeBundle(job.target)
+      } else if (job.action === 'plugin.remove') {mutationStarted=true;result = await manager.removeBundle(job.target)}
       else if (job.action === 'plugin.enable' || job.action === 'plugin.disable') {
         const plugin = (await manager.listPlugins()).find(p => p.entryId === job.target)
         if (!plugin || plugin.readOnlyReason || protectedModule(plugin.moduleName)) throw new Error('protected-or-unknown-plugin')
+        mutationStarted = true
         result = await manager.setPluginEnabled(job.target, job.action === 'plugin.enable')
       } else throw new Error('unsupported-action')
     }
+    if(!options.lifecycle && result.application==='restart-required')restartRequired=true
+    if(!options.lifecycle && job.action!=='plugin.install' && result.application==='failed' && result.changed)uncertainExecutor=true
     job.application = result.application
-    job.status = result.application === 'restart-required' ? 'restart-required' : result.application === 'failed' ? 'failed' : result.application === 'cancelled' ? 'cancelled' : 'completed'
+    job.status = awaitingRuntime ? 'awaiting-runtime-verification' : result.application === 'restart-required' ? 'restart-required' : result.application === 'failed' ? 'failed' : result.application === 'cancelled' ? 'cancelled' : 'completed'
     if (result.error) job.error = result.error.code
   }
   async function finish() {
     await save()
-    if (!uncertainExecutor) { await rm(lockDirectory, { recursive: true }); active = undefined }
+    if (awaitingRuntime) { const owner=await readOwner(lockDirectory); await persist(join(lockDirectory,'owner.json'),JSON.stringify({...owner,phase:'awaiting-runtime-verification'})) }
+    if (restartRequired) { const owner=await readOwner(lockDirectory); await persist(join(lockDirectory,'owner.json'),JSON.stringify({...owner,phase:'restart-required'})) }
+    if (!uncertainExecutor && !restartRequired && !awaitingRuntime) { await rm(lockDirectory, { recursive: true }); active = undefined }
   }
-  return { async handle(method: string, input: Record<string, unknown>): Promise<unknown> {
-    if (method === 'management.inventory') return { version: options.version, installation, persistence: persistenceFailed ? 'persistence-failed' : 'healthy', recovery: uncertainExecutor ? 'manual-executor-reconciliation-required' : null, runtimeLifecycle: options.lifecycle ? ['dsh.install','dsh.start','dsh.stop','dsh.uninstall','dsh.update'] : 'external-supervisor-required', update: options.lifecycle && options.updateExecutor ? 'executor' : 'external-supervisor-required', plugins: manager ? (await manager.listPlugins()).map(p => ({ entryId: p.entryId, moduleName: p.moduleName, enabled: p.enabled, phase: p.fiberPhase, protected: !!p.readOnlyReason || protectedModule(p.moduleName) })) : [], bundles: manager ? (await manager.listBundles()).map(p => ({ name: p.name, version: p.version, enabled: p.enabled, removable: p.removable && !protectedModule(p.name) })) : [], jobs: jobs.slice(-100).map(snapshot), supported: !!manager }
+  async function handle(method: string, input: Record<string, unknown>): Promise<unknown> {
+    if (method === 'management.inventory') return { version: options.version, runtimeInstance, installation, maintenance: await readOwner(lockDirectory).then(owner=>({phase:owner.phase,action:owner.action,requestId:owner.requestId})).catch(error=>(error as NodeJS.ErrnoException).code==='ENOENT'?null:{phase:'local-review-required'}), persistence: persistenceFailed ? 'persistence-failed' : 'healthy', recovery: uncertainExecutor ? 'manual-executor-reconciliation-required' : null, runtimeLifecycle: options.lifecycle ? ['dsh.install','dsh.start','dsh.stop','dsh.uninstall','dsh.update','dsh.restart'] : 'external-supervisor-required', update: options.lifecycle && options.updateExecutor ? 'executor' : 'external-supervisor-required', plugins: manager ? (await manager.listPlugins()).map(p => ({ entryId: p.entryId, moduleName: p.moduleName, enabled: p.enabled, phase: p.fiberPhase, protected: !!p.readOnlyReason || protectedModule(p.moduleName) })) : [], bundles: manager ? (await manager.listBundles()).map(p => ({ name: p.name, version: p.version, enabled: p.enabled, removable: p.removable && !protectedModule(p.name) })) : [], jobs: jobs.slice(-100).map(snapshot), supported: !!manager }
     if (method === 'management.retry-persistence') {
       if (journalUnreadable) throw new Error('Unreadable journal; repair locally and reload')
       if (executing || uncertainExecutor) throw new Error('Operation or executor requires reconciliation')
       await save(); persistenceFailed = false
       if (active) await finish()
       return { status: 'journal-durable; no-operation-replayed' }
+    }
+    if(method==='management.restarted'){
+      if(options.lifecycle || !input.previousRuntimeInstance || input.previousRuntimeInstance===runtimeInstance)throw new Error('new-runtime-required')
+      for(const job of jobs)if(job.status==='restart-required'&&job.previousRuntimeInstance===input.previousRuntimeInstance){job.status='runtime-restarted';job.applicationState='new-runtime-online; active-plugin-version-unverified'}
+      await save();return {status:'recorded'}
+    }
+    if (method === 'management.verify-runtime') {
+      const job=jobs.find(j=>j.id===input.requestId)
+      if(!options.lifecycle || !job || job.status!=='awaiting-runtime-verification' || !input.generation || input.generation===job.previousGeneration || !input.runtimeInstance || input.runtimeInstance===job.previousRuntimeInstance || input.version!==job.expectedVersion)throw new Error('runtime-handshake-not-verified')
+      if((await readOwner(lockDirectory)).requestId!==job.id)throw new Error('stale-verification')
+      job.status='completed';job.activeVersion=String(input.version);job.verifiedGeneration=String(input.generation);job.verifiedRuntimeInstance=String(input.runtimeInstance)
+      awaitingRuntime=false;await finish();return snapshot(job)
     }
     if (method === 'management.check') {
       if (String(input.action).startsWith('dsh.')) return executor('check', String(input.target), 'check-request', false)
@@ -173,7 +208,7 @@ export async function createManagement(options: ManagementOptions) {
       const name = String(input.package ?? ''), v = String(input.version ?? '')
       if (!packageName.test(name) || !version.test(v) || !options.trustedPackages.includes(name) || protectedModule(name)) throw new Error('untrusted-package-or-version')
       target = `${name}@${v}`
-    } else if (['dsh.install','dsh.start','dsh.stop','dsh.uninstall','dsh.update'].includes(action)) {
+    } else if (['dsh.install','dsh.start','dsh.stop','dsh.uninstall','dsh.update','dsh.restart'].includes(action)) {
       if (!options.lifecycle || !options.updateExecutor) throw new Error('independent-supervisor-required')
       if (['dsh.install','dsh.update'].includes(action) ? !version.test(target) : target !== 'current') throw new Error('Invalid lifecycle target')
     } else if (!['plugin.remove','plugin.enable','plugin.disable'].includes(action) || !target || target.length > 256 || protectedModule(target)) throw new Error('unsupported-or-protected')
@@ -182,17 +217,30 @@ export async function createManagement(options: ManagementOptions) {
     if (previous) { if (previous.fingerprint !== fingerprint) throw new Error('request-id-conflict'); return snapshot(previous) }
     if (active) throw new Error('node-busy')
     if (jobs.length >= 10000) throw new Error('journal-capacity; archive locally')
-    try { await mkdir(lockDirectory, { mode: 0o700 }) } catch { throw new Error('node-busy-or-interrupted-lock; inspect supervisor') }
+    const guardedLifecycle=['dsh.update','dsh.restart','dsh.stop','dsh.uninstall'].includes(action)
+    if(guardedLifecycle){
+      const owner=await readOwner(lockDirectory).catch(()=>undefined)
+      if(!owner || owner.phase!=='prepared'||owner.action!==action||owner.requestId!==id||owner.token!==input.admissionToken||!owner.quiescent||owner.runtimeInstance!==input.previousRuntimeInstance)throw new Error('runtime-admission-required')
+    } else {try { await mkdir(lockDirectory, { mode: 0o700 }) } catch { throw new Error('node-busy-or-interrupted-lock; inspect supervisor') }}
     const job: Job = { id, fingerprint, action, target, status: 'running', createdAt: Date.now() }; active = job; jobs.push(job)
     try {
-      await persist(join(lockDirectory, 'owner.json'), JSON.stringify({ pid: process.pid, requestId: id, executorMayOutlive: action.startsWith('dsh.') || action === 'plugin.install' }))
+      await persist(join(lockDirectory, 'owner.json'), JSON.stringify({ pid: process.pid, requestId: id, executorMayOutlive: action.startsWith('dsh.') || action === 'plugin.install', action, phase:'executing', quiescent:guardedLifecycle }))
       await save()
     } catch { persistenceFailed = true; job.status = 'failed'; job.error = 'reservation-not-durable; no-side-effect-started'; throw new Error('persistence-failed; no-side-effect-started') }
-    executing = true
+    if(guardedLifecycle){job.previousRuntimeInstance=String(input.previousRuntimeInstance);job.previousGeneration=String(input.previousGeneration);job.expectedVersion=action==='dsh.update'?target:String(input.previousVersion)}
+    if(['dsh.start','dsh.install'].includes(action))job.expectedVersion=action==='dsh.install'?target:String(input.expectedVersion ?? '')
+    if(!options.lifecycle)job.previousRuntimeInstance=runtimeInstance
+    try{await save()}catch{job.status='failed';job.error='reservation-not-durable; no-side-effect-started';throw new Error('persistence-failed; no-side-effect-started')}
+    executing = true; mutationStarted=false
     void (async () => {
-      try { await run(job, input) } catch { job.status = 'failed'; job.error ??= 'operation-failed; inspect node locally' }
+      try { if(!options.lifecycle && options.quiescent)await options.quiescent(); await run(job, input) } catch { if(mutationStarted)uncertainExecutor=true; job.status = 'failed'; job.error ??= 'operation-failed; inspect node locally' }
       finally { executing = false; job.finishedAt = Date.now(); try { await finish() } catch { persistenceFailed = true } }
     })()
     return snapshot(job)
-  } }
+  }
+  let serial:Promise<unknown>=Promise.resolve()
+  return {handle(method:string,input:Record<string,unknown>):Promise<unknown>{
+    if(method==='management.inventory'||method==='management.check')return handle(method,input)
+    const next=serial.then(()=>handle(method,input));serial=next.catch(()=>{});return next
+  }}
 }

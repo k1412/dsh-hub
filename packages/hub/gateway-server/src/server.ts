@@ -1,3 +1,4 @@
+import { submitLifecycle, verifyLifecycle } from './lifecycle.ts'
 import { controlPage, grantsPage, controlResult } from './control-pages.ts'
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http'
 import { Readable } from 'node:stream'
@@ -33,7 +34,7 @@ export interface GatewayOptions {
   nodeOrigin?: (nodeId: string) => string
   requestTimeoutMs?: number
 }
-interface Peer { socket: WebSocket; tunnel: GatewayTunnel; alive: boolean; control?: ControlRPC; capabilities: string[]; generation: string; runtimeId: string }
+interface Peer { socket: WebSocket; tunnel: GatewayTunnel; alive: boolean; control?: ControlRPC; capabilities: string[]; generation: string; runtimeId: string; version: string }
 const COOKIE = 'dsh_gateway_session'
 const HEADER_SKIP = /^(host|connection|upgrade|transfer-encoding|keep-alive|proxy-authorization|proxy-authenticate|authorization|cookie|cf-.+|x-dsh-origin-secret|sec-websocket-.+)$/i
 function token(request: IncomingMessage): string {
@@ -288,7 +289,10 @@ export function createGateway(options: GatewayOptions) {
         const controller = lifecycleAction ? (supervisor?.capabilities.includes('lifecycle') ? supervisor.control : undefined) : peer?.control
         if (!controller) throw new Error(lifecycleAction ? '独立生命周期监督器离线或不支持此操作；请先启动节点监督服务。' : 'Runtime 管理服务离线或不支持此操作。')
         if (method === 'task.cleanup' && input.retentionMs !== undefined) input.retentionMs = Number(input.retentionMs)
-        const result = await controller.call(method, method === 'task.cleanup' ? (input.retentionMs === undefined ? {} : { retentionMs: input.retentionMs }) : input)
+        const result = method==='management.submit' && lifecycleAction && supervisor
+          ? await submitLifecycle(input,peer,supervisor,()=>peers.get(id)===peer&&supervisors.get(id)===supervisor)
+          : await controller.call(method, method === 'task.cleanup' ? (input.retentionMs === undefined ? {} : { retentionMs: input.retentionMs }) : input)
+        if(method==='management.submit' && lifecycleAction)verificationNodes.add(id)
         response(res, 200, controlResult(result, id)); return
       }
       const inventory = { runtime: peer?.control && peer.capabilities.includes('management') ? await peer.control.call('management.inventory', {}) : 'Runtime offline or management unsupported', supervisor: supervisor?.control ? await supervisor.control.call('management.inventory', {}) : 'external-supervisor-required' }
@@ -370,9 +374,10 @@ export function createGateway(options: GatewayOptions) {
       const enabled = req.headers['x-dsh-control'] === '2'
       const tunnel = new GatewayTunnel(ws, { ...(options.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: options.requestTimeoutMs }), control: enabled })
       const generation = randomUUID()
-      const peer: Peer = { socket: ws, tunnel, alive: true, capabilities: String(req.headers['x-dsh-control-capabilities'] ?? '').split(',').filter(v => (url.pathname === '/supervise' ? ['lifecycle'] : ['management','delegation']).includes(v)), generation, runtimeId: node.runtimeId }
+      const peer: Peer = { socket: ws, tunnel, alive: true, capabilities: String(req.headers['x-dsh-control-capabilities'] ?? '').split(',').filter(v => (url.pathname === '/supervise' ? ['lifecycle'] : ['management','delegation','admission']).includes(v)), generation, runtimeId: node.runtimeId, version: String(req.headers['x-dsh-version'] ?? node.dshVersion).slice(0,64) }
       if (enabled) peer.control = new ControlRPC(ws, (method, input, signal) => { if (collection === supervisors) throw new Error('Supervisors cannot delegate'); return router.dispatch(id, generation, method, input, signal) })
       collection.set(id, peer)
+      if(collection===supervisors)verificationNodes.add(id)
       if (collection === peers) store.seen(id, String(req.headers['x-dsh-version'] ?? node.dshVersion).slice(0, 64))
       ws.on('pong', () => { peer.alive = true })
       ws.on('error', () => {})
@@ -401,6 +406,17 @@ export function createGateway(options: GatewayOptions) {
     })
   })
   let reconciling = false
+  const verificationNodes=new Set<string>()
+  let verifying=false
+  const lifecycleVerification=setInterval(()=>{
+    if(verifying||closing)return
+    verifying=true
+    void Promise.all([...verificationNodes].map(async id=>{
+      const supervisor=supervisors.get(id),peer=peers.get(id)
+      if(!supervisor?.control)return
+      try{if(!await verifyLifecycle(peer,supervisor,()=>!closing&&peers.get(id)===peer&&supervisors.get(id)===supervisor))verificationNodes.delete(id)}catch{/* keep durable pending state; retry after reconnect */}
+    })).finally(()=>{verifying=false})
+  },1000);lifecycleVerification.unref()
   const controlExpiry = setInterval(() => { if (!reconciling) { reconciling = true; void router.reconcile().finally(() => { reconciling = false }) } }, 250); controlExpiry.unref()
   const heartbeat = setInterval(() => {
     for (const peer of [...peers.values(), ...supervisors.values()]) { if (!peer.alive) peer.socket.terminate(); else { peer.alive = false; peer.socket.ping() } }
@@ -411,7 +427,7 @@ export function createGateway(options: GatewayOptions) {
     async close(): Promise<void> {
       if (closing) return
       closing = true
-      clearInterval(heartbeat); clearInterval(controlExpiry)
+      clearInterval(heartbeat); clearInterval(controlExpiry); clearInterval(lifecycleVerification)
       for (const ws of browserSockets) ws.terminate()
       for (const peer of [...peers.values(), ...supervisors.values()]) { peer.tunnel.close(); peer.socket.terminate() }
       peers.clear(); supervisors.clear()

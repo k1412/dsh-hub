@@ -105,7 +105,7 @@ DSH_NATIVE_ROOT=/path/to/installed-dsh pnpm exec tsx packages/hub/gateway-node/t
   已分别使用本机认证 WebSocket 和真实 Tailcat 0.7.0 双节点 helper 执行；两端在
   同一测试主机，不代表跨地域网络。Tailscale 实网尚未重复验证本分支控制功能。
 - 两个真实 pluginManager 和本地 fixture registry：并行安装不同版本、启停、更新、
-  非 bundle 更新失败后恢复原版本、只卸载 A、原 YAML 注释保留。
+  非 bundle 更新失败后恢复原版本、待重启期间拒绝继续修改、原 YAML 注释保留。
 - 完整官方浏览器 smoke 已通过。Open in App 仍依赖上游 listener 专用端点，远程不可用。
 - 12000 轮、24000 控制调用和同时进行的原生 fetch，另有 10026 次调用的旧请求重放回归。
   当前耗时和结果见交付报告。它是有界压力测试，不是数小时稳定性证明。数值随机器与并发负载变化。
@@ -119,7 +119,7 @@ CONTROL_SOAK_ROUNDS=12000 CONTROL_BENCHMARK_REPORT=/tmp/control-benchmark.json p
 
 ### 明确限制
 
-整个 DSH 的首次安装、启停和卸载使用可选的独立节点监督连接。未配置时 inventory
+整个 DSH 的首次安装、启停、重启和卸载使用可选的独立节点监督连接。未配置时 inventory
 明确返回 external-supervisor-required。监督器没有 Runtime 或 Web listener，也不能委派任务；
 它与原生连接分别按已认证 node/Runtime 路由。停止 DSH 不会断开监督器。
 `installation: npm` 可由节点管理员显式声明；检测到 Docker 时优先按 Docker 处理，
@@ -144,11 +144,11 @@ enrollment.json 是现有邀请接口返回的 manifest；只经其选定的 ove
 执行 dsh.install；安装后的 profile 和 gateway 插件仍使用官方 CLI 初始化与加载，不能
 为此并行启动另一个 Runtime。默认 Runtime ID 必须与后来加载的插件一致。
 
-执行器配置另加 approvedActions（install、start、stop、uninstall），缺少则拒绝。
-install/update 的 target 为明确版本；start/stop/uninstall 的 target 必须为 current。
+执行器配置另加 approvedActions（install、start、stop、restart、uninstall），缺少则拒绝。
+install/update 的 target 为明确版本；start/stop/restart/uninstall 的 target 必须为 current。
 npm install 要求 current 尚不存在，拒绝覆盖已有安装；npm 更新才允许替换现有链接。
 Docker install 使用固定 prepare/install/verify 命令。其他动作使用固定同名命令；
-start 和 stop 必须控制**已有的同一个监督服务**，且 start 必须幂等，不能直接另起 dsh。
+start、stop 和 restart 必须控制**已有的同一个监督服务**，且 start 必须幂等，不能直接另起 dsh。
 Hub 也拒绝对已在线 Runtime 再发 install/start。
 
 随包的 [systemd 执行器](../../deploy/gateway/systemd-service-adapter.mjs) 可直接用于 Linux
@@ -167,12 +167,14 @@ Hub 也拒绝对已在线 Runtime 再发 install/start。
 
 ## 管理持久化与执行器协议
 
-节点对操作预留记录执行 fsync 后才开始副作用。日志写入失败会锁定修改并显示
+节点对操作预留记录执行 fsync 后才开始副作用。磁盘版本、上游应用结果和活动代码是
+不同字段；包安装成功不能证明 HMR 已应用。日志写入失败会锁定修改并显示
 persistence-failed；后台失败不会抛出到 Runtime。“重试写入日志”仅重试持久化，
 不重放操作。不可读取的 journal 必须本机修复并重新加载。完成状态在持久化成功后
 才可见；restart-required 表示已安装但尚未生效。插件版本检查使用官方 inspect
 元数据；已安装包则查询配置的 registry。成功安装须核对实际 manifest 版本；
-更新失败后恢复旧版本也须核验。
+损坏 bundle 恢复仅核验磁盘版本并保留重启围栏。安装成功后的 HMR 应用错误不会再次
+触发嵌套 HMR 回滚；活动代码版本保持明确未验证。
 
 随附执行器向 stdout 输出一条 JSON：check 返回 availableVersion，install/apply
 返回 installedVersion，均须等于明确目标版本。Docker check/verify 命令必须分别
@@ -185,3 +187,45 @@ rollback 验证其执行后的部署状态。
 可能遗留子进程，因此保留自身锁，不与潜在子进程并发回滚。停止/核对所有更新器后代，
 检查两份 journal 和已安装版本后才能本机移除旧锁；不能仅以 Gateway PID 消失为依据。
 修改作业默认超时五分钟，adapter 命令默认四分钟。此保守恢复策略优先避免并发更新。
+
+## 受控重启与活动任务准入
+
+“受控重启 DSH”由独立监督器对原服务执行批准的 restart 动作。在 approvedActions
+增加 restart 并配置命令数组（systemd 适配器已支持）。插件更新后不会自动重启或取消
+任务。stop/update/restart/uninstall 在原生任务或 maintenance 活动时一律拒绝；本版
+不提供强制中断按钮。离线或不支持 admission 能力的旧 Runtime 不能批准这些操作。
+start/install 仍按独立的幂等服务语义执行。
+
+Runtime 先预留现有共享 management.lock，再通过公开 agents.list()、Agent.status
+及有界 Agent.whenIdle() 检查静默状态。同一锁保护 Hub task.start 准入和插件操作。
+监督器接管该请求的 prepared token，并在执行期间保留围栏。公开 agent/pre-step 在
+已批准维护期间拒绝新模型 step。它防止 Hub 自有操作竞态，**不是全 Runtime 冻结**；
+任意本机管理员 CLI、原生插件 UI 使用自己的上游锁，无法由此原子串行化。未调用私有
+agent registry API，也未修改上游 core。workspace 始终是任务 cwd 策略，**不是沙箱**。
+
+start/install/update/restart 后，作业保持 awaiting-runtime-verification，直到同一已认证
+node/Runtime 以新连接 generation、新进程身份和目标 DSH 版本上线，才释放围栏。
+原进程仅断线重连不足以验证。Hub 重连后可继续验证持久化待确认作业；执行器状态不明
+仍需本机核对。
+
+插件 changed:true、exitCode 0 或 application:restart-required 都不代表活动代码已更新。
+磁盘已有目标包而 HMR 失败时，显示 restart-required 并保留围栏。损坏 bundle 可由官方
+安装器恢复旧磁盘版本，但只报告 disk-restored-active-unverified，仍需显式重启。新
+Runtime 握手证明 Runtime 已重启，不能凭空提供 rc.2 缺失的通用活动插件版本字段。
+活动代码需插件自身的实时服务证据验证，否则 inventory/SSR 明确显示未知。
+
+真实 Remote/HMR 回归通过 Connection Fetch + Typert Remote，在公开 hmr.runExclusive
+外层作用域中安装实际 fixture。原生嵌套 HMR 错误后，磁盘为 1.0.1、活动代码仍为 1.0.0；
+完整释放原 Runtime 后，在新进程启动同一 profile，验证活动代码为 1.0.1。此有界复现
+需要显式外层 HMR 作用域；普通 Remote 单独调用未复现生产中该作用域的来源。官方 core
+模块哈希保持不变。
+
+```sh
+DSH_NATIVE_ROOT=/path/to/installed-dsh pnpm exec tsx packages/hub/gateway-node/tests/lifecycle-native-smoke.mts
+DSH_NATIVE_ROOT=/path/to/installed-dsh DSH_TEST_PNPM=/path/to/pnpm.cjs pnpm exec tsx packages/hub/gateway-node/tests/management-remote-native-smoke.mts
+```
+
+活动检查测试同时保持真实普通原生任务、委派模型流和原生 maintenance，断言拒绝且不
+取消，并用无服务副作用的本机监督器 fixture 验证共享准入。未停止生产服务。模型的
+sourceSession 只取自官方工具执行 Agent，参数不能覆盖；read/cancel 同时校验来源节点、
+Runtime、会话和目标 Runtime/workspace。管理方法只供 operator，peer dispatch 一律拒绝。
