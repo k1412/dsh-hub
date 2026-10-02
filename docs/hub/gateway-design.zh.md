@@ -201,3 +201,5 @@ SQLite 保存节点／邀请／会话／票据记录，秘密以哈希保存。�
 - [Tailscale 容器文档](https://tailscale.com/docs/features/containers/docker)：daemon 配置及容器身份持久化。
 - [Tailcat 官方仓库](https://github.com/tailscale/tailcat)：地址／密钥模型、用户态运行及加密传输。
 - [Cloudflare Access JWT 验证](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/)：源站认证要求。
+
+实验增强分支的节点管理、生命周期监督器与原生委派见 [节点控制指南](node-control.zh.md)。

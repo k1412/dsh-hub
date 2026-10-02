@@ -4,7 +4,7 @@ export const PROTOCOL_VERSION = 1;
 export const STREAM_WINDOW_BYTES = 32 * 1024;
 const MAX_CONTROL_BYTES = 256 * 1024;
 const MAX_SOCKET_BUFFER = 8 * 1024 * 1024;
-export interface TransportOptions { requestTimeoutMs?: number; maxChannels?: number }
+export interface TransportOptions { requestTimeoutMs?: number; maxChannels?: number; control?: boolean }
 export interface GatewayHealth { connected: boolean; inflightRequests: number; openMuxes: number }
 export interface GatewaySurface {
   handle(request: Request): Promise<Response>;
@@ -52,7 +52,9 @@ class Peer {
   private dead = false;
   private readonly timeout: number;
   private readonly limit: number;
+  private readonly control: boolean;
   constructor(readonly ws: WebSocket, readonly surface: GatewaySurface | undefined, options: TransportOptions) {
+    this.control = options.control === true;
     this.timeout = options.requestTimeoutMs ?? 120_000;
     this.limit = options.maxChannels ?? 128;
     if (!Number.isSafeInteger(this.timeout) || this.timeout < 1 || this.timeout > 2_147_483_647 || !Number.isSafeInteger(this.limit) || this.limit < 1 || this.limit > 4096) throw new RangeError('Invalid transport limits');
@@ -223,6 +225,7 @@ class Peer {
       if (data.length > MAX_CONTROL_BYTES) throw fault('Control frame too large');
       const value: unknown = JSON.parse(data.toString('utf8'));
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw fault('Invalid envelope');
+      if (this.control && (value as { control?: unknown }).control === 1) return;
       const f = value as Frame;
       if (f.v !== 1 || !Number.isSafeInteger(f.id) || f.id < 1 || f.id > 0xffffffff || typeof f.type !== 'string') throw fault('Invalid envelope');
       if (!['request', 'response', 'credit', 'end', 'cancel', 'error', 'mux-open', 'mux-text'].includes(f.type)) throw fault('Unknown frame');
@@ -318,3 +321,5 @@ export function serveSurface(ws: WebSocket, surface: GatewaySurface, options: Tr
   const peer = new Peer(ws, surface, options);
   return { close: () => peer.close(), get health() { return peer.health; } };
 }
+
+export { ControlRPC, type ControlHandler } from './control.ts';

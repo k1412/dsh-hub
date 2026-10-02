@@ -1,3 +1,4 @@
+import type { Grant } from './control.ts'
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync, chmodSync } from 'node:fs'
@@ -25,6 +26,8 @@ export class GatewayStore {
     this.db = new DatabaseSync(path)
     if (path !== ':memory:') chmodSync(path, 0o600)
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
+      CREATE TABLE IF NOT EXISTS control_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, node TEXT NOT NULL, action TEXT NOT NULL, requestId TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS control_grants (id TEXT PRIMARY KEY, data TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS nodes (
         id TEXT PRIMARY KEY, name TEXT NOT NULL, mode TEXT NOT NULL, clientId TEXT NOT NULL UNIQUE,
         credentialHash TEXT NOT NULL, dshVersion TEXT NOT NULL, runtimeId TEXT NOT NULL,
@@ -106,5 +109,13 @@ export class GatewayStore {
     for (const table of ['sessions', 'tickets']) this.db.prepare(`DELETE FROM ${table} WHERE expiresAt<=?`).run(this.now())
     this.db.prepare('DELETE FROM invitations WHERE expiresAt<?').run(this.now() - 24 * 60 * 60_000)
   }
+  audit(node: string, action: string, requestId: string): void {
+    this.db.prepare('INSERT INTO control_audit(at,node,action,requestId) VALUES (?,?,?,?)').run(this.now(), node, action, requestId)
+    this.db.exec('DELETE FROM control_audit WHERE id <= (SELECT COALESCE(MAX(id),0)-10000 FROM control_audit)')
+  }
+  auditRows(): unknown[] { return this.db.prepare('SELECT at,node,action,requestId FROM control_audit ORDER BY id DESC LIMIT 100').all() }
+  grants(): Grant[] { return (this.db.prepare('SELECT data FROM control_grants').all() as { data: string }[]).map(row => JSON.parse(row.data) as Grant) }
+  grant(value: Grant): void { this.db.prepare('INSERT OR REPLACE INTO control_grants VALUES (?,?)').run(value.id, JSON.stringify(value)) }
+  revokeGrant(id: string): void { this.db.prepare('DELETE FROM control_grants WHERE id=?').run(id) }
   close(): void { this.db.close() }
 }

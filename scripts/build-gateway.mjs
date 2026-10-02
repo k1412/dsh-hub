@@ -29,6 +29,9 @@ await cp(join(root, 'packages/hub/gateway-node/cordis.patch.yml'), join(pkg, 'co
 const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', join(out, 'downloads')], { cwd: pkg, encoding: 'utf8' }))[0]
 await cp(join(out, 'downloads', packed.filename), join(out, 'downloads/gateway-node.tgz'))
 await rm(join(out, 'downloads', packed.filename))
+await cp(join(root, 'deploy/gateway/systemd-service-adapter.mjs'), join(out, 'systemd-service-adapter.mjs'))
+await cp(join(root, 'deploy/gateway/dsh-gateway-supervisor.service'), join(out, 'dsh-gateway-supervisor.service'))
+await cp(join(root, 'deploy/gateway/update-adapter.mjs'), join(out, 'update-adapter.mjs'))
 await cp(join(root, 'deploy/gateway/install.sh'), join(out, 'install.sh'))
 await cp(join(root, 'deploy/gateway/network-pins.json'), join(out, 'downloads/network-pins.json'))
 const digest = createHash('sha256').update(await readFile(join(out, 'downloads/gateway-node.tgz'))).digest('hex')

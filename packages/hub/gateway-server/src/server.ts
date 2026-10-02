@@ -3,7 +3,9 @@ import { Readable } from 'node:stream'
 import { readFile, stat } from 'node:fs/promises'
 import { resolve, basename } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
-import { GatewayTunnel } from '@k1412/dsh-gateway-transport'
+import { randomUUID } from 'node:crypto'
+import { ControlRouter, capabilities, type Grant } from './control.ts'
+import { GatewayTunnel, ControlRPC } from '@k1412/dsh-gateway-transport'
 import { networkAssets, type GatewayNetworkStatus } from '@k1412/dsh-gateway-network'
 import { GatewayStore, digest, matches, type Mode } from './store.ts'
 import { page, nodesPage, failurePage, escape, css } from './pages.ts'
@@ -28,7 +30,7 @@ export interface GatewayOptions {
   nodeOrigin?: (nodeId: string) => string
   requestTimeoutMs?: number
 }
-interface Peer { socket: WebSocket; tunnel: GatewayTunnel; alive: boolean }
+interface Peer { socket: WebSocket; tunnel: GatewayTunnel; alive: boolean; control?: ControlRPC; capabilities: string[]; generation: string; runtimeId: string }
 const COOKIE = 'dsh_gateway_session'
 const HEADER_SKIP = /^(host|connection|upgrade|transfer-encoding|keep-alive|proxy-authorization|proxy-authenticate|authorization|cookie|cf-.+|x-dsh-origin-secret|sec-websocket-.+)$/i
 function token(request: IncomingMessage): string {
@@ -70,9 +72,12 @@ export function createGateway(options: GatewayOptions) {
   const originHash = options.originSecret ? digest(options.originSecret) : undefined
   const store = new GatewayStore(options.statePath)
   const peers = new Map<string, Peer>()
+  const supervisors = new Map<string, Peer>()
+  const router = new ControlRouter(() => store.grants(), peers, id => { const n = store.node(id); return !!n && !n.revokedAt })
   let closing = false
   const browserSockets = new Set<WebSocket>()
   const agentSockets = new WebSocketServer({ noServer: true, maxPayload: 262144, perMessageDeflate: false })
+  agentSockets.on('headers', (headers, request) => { if (request.headers['x-dsh-control'] === '1') headers.push('x-dsh-control: 1') })
   const webSockets = new WebSocketServer({ noServer: true, maxPayload: 262144, perMessageDeflate: false })
   const attempts = new Map<string, { count: number; reset: number }>()
   const nodeOrigin = options.nodeOrigin ?? ((id: string) => `${root.protocol}//${id}.${root.host}`)
@@ -159,7 +164,7 @@ export function createGateway(options: GatewayOptions) {
     if (!originAllowed(request)) { response(res, 403, { error: 'Proxy authorization required' }); return }
     const url = new URL(request.url ?? '/', root)
     const host = request.headers.host
-    if (url.pathname === '/healthz') { response(res, 200, { ok: true, version: '2.0.0-alpha.1' }); return }
+    if (url.pathname === '/healthz') { response(res, 200, { ok: true, version: '2.0.0-alpha.1', experiment: 'node-control', controlProtocol: 1 }); return }
     if (url.pathname === '/hub.css') { response(res, 200, css, 'text/css; charset=utf-8'); return }
     if (host === downloads.host || host === root.host) {
       if (url.pathname === '/install.sh' && request.method === 'GET') { response(res, 200, await readFile(options.installerPath, 'utf8'), 'text/x-shellscript; charset=utf-8'); return }
@@ -193,6 +198,43 @@ export function createGateway(options: GatewayOptions) {
     }
     if (!await operator(request)) { if (passwordHash) redirect(res, '/login'); else response(res, 401, failurePage('身份认证已过期，请重新登录。')); return }
     if (request.method === 'POST' && !permittedOrigin(request, root.origin)) { response(res, 403, { error: 'Origin mismatch' }); return }
+    if (url.pathname === '/control/audit') { response(res, 200, page('控制审计', `<h1>控制审计摘要</h1><a href="/">返回</a><pre>${escape(JSON.stringify(store.auditRows(), null, 2))}</pre>`)); return }
+    if (url.pathname === '/control/grants') {
+      if (request.method === 'POST') {
+        const input = await body(request)
+        if (input.revoke) { store.revokeGrant(scalar(input.revoke)); store.audit('', 'grant.revoke', scalar(input.revoke)); await router.reconcile() }
+        else {
+          const source = store.node(scalar(input.source)), target = store.node(scalar(input.target))
+          const workspace = scalar(input.workspace, 1024), expiresAt = Number(input.expiresAt)
+          const requested = scalar(input.capabilities).split(',').map(v => v.trim())
+          if (!source || !target || source.id === target.id || source.revokedAt || target.revokedAt || !workspace || !Number.isFinite(expiresAt) || expiresAt <= Date.now() || expiresAt > Date.now() + 86400000 * 30 || requested.some(v => !(capabilities as readonly string[]).includes(v))) throw new Error('Invalid grant')
+          const grant: Grant = { id: randomUUID(), source: source.id, target: target.id, sourceRuntime: source.runtimeId, targetRuntime: target.runtimeId, workspace, expiresAt, capabilities: requested }
+          store.grant(grant); store.audit(target.id, 'grant.create', grant.id)
+        }
+        redirect(res, '/control/grants'); return
+      }
+      const select = store.nodes().filter(n => !n.revokedAt).map(n => `<option value="${n.id}">${escape(n.name)}</option>`).join('')
+      response(res, 200, page('实验：节点授权', `<h1>实验：节点定向授权</h1><a href="/">返回</a><p>默认拒绝。工作区是目标节点明确授权的目录，不构成沙箱。授权仅用于委派工具。</p>${store.grants().map(g => `<section class="card"><pre>${escape(JSON.stringify(g, null, 2))}</pre><form method="post"><input type="hidden" name="revoke" value="${g.id}"><button>立即撤销</button></form></section>`).join('')}<form method="post" class="card"><label>来源节点</label><select name="source">${select}</select><label>目标节点</label><select name="target">${select}</select><label>目标授权工作区</label><input name="workspace" required><label>能力（逗号分隔）</label><input name="capabilities" value="discover,task.start,task.read,task.cancel"><label>到期时间（Unix 毫秒，最多 30 天）</label><input name="expiresAt" value="${Date.now() + 3600000}"><button>添加授权</button></form>`)); return
+    }
+    const controlRoute = /^\/control\/(n[a-f0-9]{16})$/.exec(url.pathname)
+    if (controlRoute) {
+      const id = controlRoute[1] as string, peer = peers.get(id), supervisor = supervisors.get(id)
+      if ((!peer?.control || !peer.capabilities.includes('management')) && !supervisor?.control) { response(res, 409, failurePage('此节点离线或未启用实验控制能力。')); return }
+      if (request.method === 'POST') {
+        const input = await body(request)
+        const method = scalar(input.method)
+        if (!['management.submit','management.cancel','management.check','management.recover'].includes(method)) throw new Error('Unsupported operation')
+        store.audit(id, method === 'management.submit' ? scalar(input.action) : method, scalar(input.requestId ?? '', 80))
+        const lifecycleAction = method === 'management.recover' || typeof input.action === 'string' && input.action.startsWith('dsh.')
+        if (['dsh.start','dsh.install'].includes(String(input.action)) && peers.has(id)) throw new Error('This Runtime is already online; a second Runtime must not be started')
+        const controller = lifecycleAction ? supervisor?.control ?? peer?.control : peer?.control
+        if (!controller) throw new Error('Required node controller is offline')
+        const result = await controller.call(method, input)
+        response(res, 200, page('操作结果', `<h1>操作结果</h1><pre>${escape(JSON.stringify(result, null, 2))}</pre><a href="/control/${id}">刷新节点状态</a>`)); return
+      }
+      const inventory = { runtime: peer?.control && peer.capabilities.includes('management') ? await peer.control.call('management.inventory', {}) : 'Runtime offline or management unsupported', supervisor: supervisor?.control ? await supervisor.control.call('management.inventory', {}) : 'external-supervisor-required' }
+      response(res, 200, page('实验：节点管理', `<h1>实验：节点管理</h1><nav><a href="/">返回节点</a><a href="/control/grants">定向授权</a><a href="/control/audit">审计摘要</a><a href="/control/${id}">刷新状态</a></nav><pre>${escape(JSON.stringify(inventory, null, 2))}</pre><form method="post" class="card"><label>操作</label><select name="method"><option>management.submit</option><option>management.check</option><option>management.cancel</option><option>management.recover</option></select><label>动作</label><select name="action">${['plugin.install','plugin.enable','plugin.disable','plugin.remove','dsh.update','dsh.install','dsh.start','dsh.stop','dsh.uninstall'].map(v => `<option>${v}</option>`).join('')}</select><label>请求 ID（重复提交使用相同 ID）</label><input name="requestId" value="${randomUUID()}"><label>目标插件 entryId / 包名 / DSH 版本（启停卸载 DSH 填 current）</label><input name="target"><label>安装 / 检查包名</label><input name="package"><label>明确版本</label><input name="version"><button>执行</button></form>`)); return
+    }
     if (url.pathname === '/' && request.method === 'GET') { response(res, 200, nodesPage(store.nodes(), new Set(peers.keys()))); return }
     if (url.pathname === '/api/nodes' && request.method === 'GET') {
       response(res, 200, { nodes: store.nodes().map(({ id, name, mode, dshVersion, runtimeId, lastSeen, revokedAt }) => ({ id, name, mode, dshVersion, runtimeId, lastSeen, revoked: !!revokedAt, online: peers.has(id) })) }); return
@@ -232,9 +274,9 @@ export function createGateway(options: GatewayOptions) {
     if (detail) {
       const id = detail[1] as string; const node = store.node(id)
       if (!node) { response(res, 404, failurePage('节点不存在。')); return }
-      if (request.method === 'POST' && detail[2] === 'revoke') { store.revoke(id); peers.get(id)?.socket.close(4003, 'Node revoked'); peers.get(id)?.tunnel.close(); peers.delete(id); redirect(res, '/'); return }
+      if (request.method === 'POST' && detail[2] === 'revoke') { store.revoke(id); peers.get(id)?.socket.close(4003, 'Node revoked'); peers.get(id)?.tunnel.close(); peers.delete(id); supervisors.get(id)?.socket.close(4003, 'Node revoked'); supervisors.get(id)?.tunnel.close(); supervisors.delete(id); redirect(res, '/'); return }
       if (request.method === 'POST' && detail[2] === 'rename') { const input = await body(request); const name = scalar(input.name, 80).trim(); if (!name) throw new Error('请输入名称。'); store.rename(id, name); redirect(res, `/nodes/${id}`); return }
-      response(res, 200, page(node.name, `<h1>${escape(node.name)}</h1><nav><a href="/">返回节点</a>${peers.has(id) ? `<a class="button primary" href="/open/${id}" target="_blank" rel="noopener">打开 DSH ↗</a>` : ''}</nav><section class="card"><dl><dt>状态</dt><dd>${node.revokedAt ? '已撤销' : peers.has(id) ? '在线' : '离线：请检查节点 DSH 与连接工具是否在运行。'}</dd><dt>连接方式</dt><dd>${escape(node.mode)}</dd><dt>DSH 版本</dt><dd>${escape(node.dshVersion)}</dd><dt>上次连接</dt><dd>${node.lastSeen ? escape(new Date(node.lastSeen).toISOString()) : '尚未加载连接插件'}</dd></dl></section><form class="card" method="post" action="/nodes/${id}/rename"><label for="name">节点名称</label><input id="name" name="name" value="${escape(node.name)}" maxlength="80" required><nav><button>保存名称</button></nav></form><details class="card"><summary class="danger">撤销此节点</summary><p>立即断开远程访问。DSH 的会话和文件保留在 node 上。</p><form method="post" action="/nodes/${id}/revoke"><button class="danger">确认撤销连接</button></form></details>`)); return
+      response(res, 200, page(node.name, `<h1>${escape(node.name)}</h1><nav><a href="/control/${id}">实验节点管理</a><a href="/control/grants">节点授权</a><a href="/">返回节点</a>${peers.has(id) ? `<a class="button primary" href="/open/${id}" target="_blank" rel="noopener">打开 DSH ↗</a>` : ''}</nav><section class="card"><dl><dt>状态</dt><dd>${node.revokedAt ? '已撤销' : peers.has(id) ? '在线' : '离线：请检查节点 DSH 与连接工具是否在运行。'}</dd><dt>连接方式</dt><dd>${escape(node.mode)}</dd><dt>DSH 版本</dt><dd>${escape(node.dshVersion)}</dd><dt>上次连接</dt><dd>${node.lastSeen ? escape(new Date(node.lastSeen).toISOString()) : '尚未加载连接插件'}</dd></dl></section><form class="card" method="post" action="/nodes/${id}/rename"><label for="name">节点名称</label><input id="name" name="name" value="${escape(node.name)}" maxlength="80" required><nav><button>保存名称</button></nav></form><details class="card"><summary class="danger">撤销此节点</summary><p>立即断开远程访问。DSH 的会话和文件保留在 node 上。</p><form method="post" action="/nodes/${id}/revoke"><button class="danger">确认撤销连接</button></form></details>`)); return
     }
     response(res, 404, failurePage('页面不存在。'))
   }
@@ -262,15 +304,20 @@ export function createGateway(options: GatewayOptions) {
     const id = url.searchParams.get('nodeId') ?? ''
     const auth = req.headers.authorization?.replace(/^Bearer /, '') ?? ''
     const node = store.authenticate(id, auth)
-    if (url.pathname !== '/connect' || !node || String(req.headers['x-dsh-runtime'] ?? '') !== node.runtimeId) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return }
+    if (!['/connect','/supervise'].includes(url.pathname) || !node || String(req.headers['x-dsh-runtime'] ?? '') !== node.runtimeId) { socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return }
     agentSockets.handleUpgrade(req, socket, head, ws => {
-      peers.get(id)?.tunnel.close()
-      const tunnel = new GatewayTunnel(ws, options.requestTimeoutMs === undefined ? undefined : { requestTimeoutMs: options.requestTimeoutMs })
-      const peer = { socket: ws, tunnel, alive: true }; peers.set(id, peer)
-      store.seen(id, String(req.headers['x-dsh-version'] ?? node.dshVersion).slice(0, 64))
+      const collection = url.pathname === '/supervise' ? supervisors : peers
+      collection.get(id)?.tunnel.close()
+      const enabled = req.headers['x-dsh-control'] === '1'
+      const tunnel = new GatewayTunnel(ws, { ...(options.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: options.requestTimeoutMs }), control: enabled })
+      const generation = randomUUID()
+      const peer: Peer = { socket: ws, tunnel, alive: true, capabilities: String(req.headers['x-dsh-control-capabilities'] ?? '').split(',').filter(v => (url.pathname === '/supervise' ? ['lifecycle'] : ['management','delegation']).includes(v)), generation, runtimeId: node.runtimeId }
+      if (enabled) peer.control = new ControlRPC(ws, (method, input, signal) => { if (collection === supervisors) throw new Error('Supervisors cannot delegate'); return router.dispatch(id, generation, method, input, signal) })
+      collection.set(id, peer)
+      if (collection === peers) store.seen(id, String(req.headers['x-dsh-version'] ?? node.dshVersion).slice(0, 64))
       ws.on('pong', () => { peer.alive = true })
       ws.on('error', () => {})
-      ws.once('close', () => { if (!closing && peers.get(id) === peer) { peers.delete(id); store.seen(id, store.node(id)?.dshVersion ?? node.dshVersion) } })
+      ws.once('close', () => { if (!closing && collection.get(id) === peer) { collection.delete(id); if (collection === peers) store.seen(id, store.node(id)?.dshVersion ?? node.dshVersion) } })
     })
   })
   publicServer.on('upgrade', (req, socket, head) => {
@@ -294,19 +341,21 @@ export function createGateway(options: GatewayOptions) {
       ws.once('close', () => clearTimeout(expiry))
     })
   })
+  let reconciling = false
+  const controlExpiry = setInterval(() => { if (!reconciling) { reconciling = true; void router.reconcile().finally(() => { reconciling = false }) } }, 250); controlExpiry.unref()
   const heartbeat = setInterval(() => {
-    for (const peer of peers.values()) { if (!peer.alive) peer.socket.terminate(); else { peer.alive = false; peer.socket.ping() } }
+    for (const peer of [...peers.values(), ...supervisors.values()]) { if (!peer.alive) peer.socket.terminate(); else { peer.alive = false; peer.socket.ping() } }
     store.prune()
     for (const [key, entry] of attempts) if (entry.reset < Date.now()) attempts.delete(key)
   }, 20_000); heartbeat.unref()
-  return { publicServer, privateServer, store, peers,
+  return { publicServer, privateServer, store, peers, supervisors,
     async close(): Promise<void> {
       if (closing) return
       closing = true
-      clearInterval(heartbeat)
+      clearInterval(heartbeat); clearInterval(controlExpiry)
       for (const ws of browserSockets) ws.terminate()
-      for (const peer of peers.values()) { peer.tunnel.close(); peer.socket.terminate() }
-      peers.clear()
+      for (const peer of [...peers.values(), ...supervisors.values()]) { peer.tunnel.close(); peer.socket.terminate() }
+      peers.clear(); supervisors.clear()
       for (const ws of agentSockets.clients) ws.terminate()
       const close = (server: Server) => new Promise<void>(ok => { server.close(() => ok()); server.closeAllConnections() })
       await Promise.all([close(publicServer), close(privateServer)])

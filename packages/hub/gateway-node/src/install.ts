@@ -165,3 +165,30 @@ export async function installNode(options: {
   }
   return { nodeId, connectionFile, profileDirectory, needsReload: true }
 }
+
+/** Pair a deployment supervisor before DSH exists; uses only the selected outbound overlay. */
+export async function pairSupervisor(options: {
+  manifest: EnrollmentManifest; stateDirectory: string; runtimeId: string; binDirectory?: string; tailscaleSocket?: string
+}): Promise<{ nodeId: string; connectionFile: string }> {
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(options.runtimeId)) throw new Error('Invalid Runtime identity')
+  const stateDirectory = resolve(options.stateDirectory)
+  await mkdir(stateDirectory, { recursive: true, mode: 0o700 }); await chmod(stateDirectory, 0o700)
+  const identityPath = join(stateDirectory, 'identity.json')
+  let previous: { clientId: string; credential: string; invitationHash?: string } | undefined
+  try { previous = JSON.parse(await readFile(identityPath, 'utf8')) as typeof previous } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  const identity = enrollmentIdentity(options.manifest.inviteToken, previous, options.manifest.claimed === true)
+  await atomicPrivateJson(identityPath, identity)
+  const network = await connectNodeNetwork({ mode: options.manifest.mode, endpoint: options.manifest.endpoint, stateDirectory,
+    ...(options.binDirectory ? { binDirectory: options.binDirectory } : {}), ...(options.tailscaleSocket ? { tailscaleSocket: options.tailscaleSocket } : {}), waitForLoginMs: 120000 })
+  try {
+    const response = await fetch(new URL('/enroll', network.url), { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ inviteToken: options.manifest.inviteToken, clientId: identity.clientId, credential: identity.credential, name: hostname(), dshVersion: 'not-installed', runtimeId: options.runtimeId }), signal: AbortSignal.timeout(30000) })
+    if (!response.ok) throw new Error(`Supervisor pairing refused (${response.status})`)
+    const result = await response.json() as { nodeId: string }
+    if (!/^[a-zA-Z0-9_-]+$/.test(result.nodeId)) throw new Error('Invalid node identity')
+    const connectionFile = join(stateDirectory, 'connection.json')
+    await atomicPrivateJson(connectionFile, { protocol: 1, nodeId: result.nodeId, clientId: identity.clientId, credential: identity.credential, name: hostname(), mode: options.manifest.mode, endpoint: options.manifest.endpoint, stateDir: stateDirectory, hubUrl: options.manifest.hubUrl,
+      ...(options.binDirectory ? { binDirectory: resolve(options.binDirectory) } : {}), ...(options.tailscaleSocket ? { tailscaleSocket: options.tailscaleSocket } : {}) } satisfies NodeConnectionConfig)
+    return { nodeId: result.nodeId, connectionFile }
+  } finally { await network.close() }
+}

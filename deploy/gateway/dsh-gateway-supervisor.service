@@ -1,0 +1,14 @@
+# Optional user service: stays alive when the separate DSH service is stopped.
+[Unit]
+Description=Experimental DSH Gateway lifecycle supervisor
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=DSH_UPDATE_CONFIG=%h/.config/dsh-gateway/update.json
+ExecStart=%h/.local/bin/dsh-gateway-node supervise --connection-file %h/.dsh-gateway/connection.json --runtime-id default --update-executor %h/.local/bin/dsh-update
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

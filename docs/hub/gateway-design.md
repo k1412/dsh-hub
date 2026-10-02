@@ -201,3 +201,5 @@ Reviewed primary sources inform the design; they do not certify this implementat
 - [Tailscale container documentation](https://tailscale.com/docs/features/containers/docker): daemon configuration and persistent container identity.
 - [Tailcat official repository](https://github.com/tailscale/tailcat): address/key model, userspace operation and encrypted transport.
 - [Cloudflare Access JWT validation](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/authorization-cookie/validating-json/): origin-side authentication requirements.
+
+For experimental node management, lifecycle supervision and native delegation, see the [node control guide](node-control.md).

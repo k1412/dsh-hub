@@ -2,8 +2,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { isAbsolute } from 'node:path'
 import WebSocket from 'ws'
 import { connectNodeNetwork } from '@k1412/dsh-gateway-network'
-import { serveSurface } from '@k1412/dsh-gateway-transport'
-import type { NodeSurface } from './surface.ts'
+import { serveSurface, ControlRPC, type ControlHandler, type GatewaySurface } from '@k1412/dsh-gateway-transport'
 
 export interface NodeConnectionConfig {
   protocol: 1
@@ -53,7 +52,9 @@ const sleep = async (milliseconds: number, signal: AbortSignal): Promise<void> =
 export function startNodeConnector(options: {
   config: NodeConnectionConfig
   metadata: NodeMetadata
-  surface: NodeSurface
+  surface: GatewaySurface
+  role?: 'supervisor'
+  control?: { capabilities: string[]; handle: ControlHandler; connected(rpc: ControlRPC | undefined): void }
   onStatus?: (status: ConnectorStatus) => void
 }): { close(): Promise<void> } {
   const controller = new AbortController()
@@ -70,14 +71,16 @@ export function startNodeConnector(options: {
           ...(config.binDirectory ? { binDirectory: config.binDirectory } : {}),
           ...(config.tailscaleSocket ? { tailscaleSocket: config.tailscaleSocket } : {}), waitForLoginMs: 0 })
         if (controller.signal.aborted) break
-        const url = new URL('/connect', network.url)
+        const url = new URL(options.role === 'supervisor' ? '/supervise' : '/connect', network.url)
         url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
         url.searchParams.set('nodeId', config.nodeId)
         websocket = new WebSocket(url, {
-          headers: { authorization: `Bearer ${config.credential}`, 'x-dsh-version': metadata.dshVersion,
+          headers: { ...(options.control ? { 'x-dsh-control': '1', 'x-dsh-control-capabilities': options.control.capabilities.join(',') } : {}), authorization: `Bearer ${config.credential}`, 'x-dsh-version': metadata.dshVersion,
             'x-dsh-runtime': metadata.runtimeId, 'x-dsh-name': encodeURIComponent(metadata.name) },
           handshakeTimeout: 15_000, maxPayload: 262144, perMessageDeflate: false,
         })
+        let controlAccepted = false
+        websocket.once('upgrade', response => { controlAccepted = response.headers['x-dsh-control'] === '1' })
         const socket = websocket
         const stop = () => { socket.terminate() }
         controller.signal.addEventListener('abort', stop, { once: true })
@@ -94,7 +97,9 @@ export function startNodeConnector(options: {
             })
           })
           if (controller.signal.aborted) break
-          const served = serveSurface(socket, options.surface)
+          const served = serveSurface(socket, options.surface, { control: !!options.control && controlAccepted })
+          const control = options.control && controlAccepted ? new ControlRPC(socket, options.control.handle) : undefined
+          options.control?.connected(control)
           let lastPong = Date.now()
           socket.on('pong', () => { lastPong = Date.now() })
           const heartbeat = setInterval(() => {
@@ -102,7 +107,7 @@ export function startNodeConnector(options: {
             else if (socket.readyState === WebSocket.OPEN) socket.ping()
           }, 15_000)
           heartbeat.unref()
-          release = () => { clearInterval(heartbeat); served.close() }
+          release = () => { clearInterval(heartbeat); options.control?.connected(undefined); control?.close(); served.close() }
           attempt = 0
           options.onStatus?.({ state: 'connected', message: 'Native DSH surface connected' })
           const code = await new Promise<number>((resolve) => { socket.once('close', resolve); socket.once('error', () => socket.terminate()) })
