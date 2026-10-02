@@ -11,17 +11,17 @@ export function renderDirectory(page: Page): string {
 <small>${escape(row.nodeId)} / ${escape(row.runtimeId)} / ${escape(row.sessionId)}</small></td>
 <td>${escape(row.updatedAt)}</td><td>${row.running ? 'Running' : row.agentAvailable ? 'Idle' : 'No live agent'}</td></tr>`).join('')
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
-<title>Session directory experiment</title><body><h1>Session directory experiment</h1>
-<p>Live metadata only. Paging can shift when activity changes. Missing native links require selecting the session in the node page.</p>
+<link rel="stylesheet" href="/hub.css"><title>Session directory experiment</title><body><main class="directory"><nav><a href="/">Nodes</a><a href="/sessions">Refresh directory</a></nav><h1>Session directory experiment</h1>
+<p>Live metadata only. Paging can shift when activity changes. Session links open the full native DSH client on the owning node.</p>
 <ul>${page.nodes.map(n => `<li>${escape(n.nodeId)} / ${escape(n.runtimeId)}: ${n.state}; ${n.count} sessions${n.truncated ? '; truncated' : ''}${n.cached ? '; briefly cached' : ''}</li>`).join('')}</ul>
 <table><thead><tr><th>Session</th><th>Node / Runtime / Session ID</th><th>Activity (Unix ms)</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>
 <p>${page.total} retained sessions</p><nav>${page.offset > 0 ? `<a href="?offset=${Math.max(0, page.offset - page.limit)}&amp;limit=${page.limit}">Previous</a>` : ''}
-${page.nextOffset !== null ? `<a href="?offset=${page.nextOffset}&amp;limit=${page.limit}">Next</a>` : ''}</nav></body></html>`
+${page.nextOffset !== null ? `<a href="?offset=${page.nextOffset}&amp;limit=${page.limit}">Next</a>` : ''}</nav></main></body></html>`
 }
 export function directoryResponse(page: Page): Response {
   return new Response(renderDirectory(page), { headers: {
     'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer',
-    'content-security-policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+    'content-security-policy': "default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
     'x-content-type-options': 'nosniff',
   } })
 }

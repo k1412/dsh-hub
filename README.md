@@ -10,6 +10,8 @@
 
 本分支正在重写为简单的节点入口：Hub 提供节点列表、添加／撤销和网络设置；打开节点后使用该节点已安装的官方 DSH 前端、插件及同一个现有 Runtime。每节点使用独立浏览器源，不聚合会话或项目，也不代理本地 Web 监听器。
 
+本实验分支额外提供可运行的[会话目录与精确原生导航](docs/hub/session-directory-experiment.zh.md)，由 `DSH_GATEWAY_SESSION_DIRECTORY=1` 显式开启；默认仍为节点入口。同 Runtime 双 Hub 安装、真实 rc.2 浏览器验证及测量边界见实验文档。
+
 邀请只选择 **Tailscale 或 Tailcat**。Hub 镜像包含两种工具，支持托管 Tailscale 登录；节点安装所选工具并持久化配对。完整边界、端点、验证记录和待验收项见[原生网关设计](docs/hub/gateway-design.zh.md)。本地门禁和夹具测试已通过，完整生产 DSH 浏览器及部署验收仍待完成。
 
 ### v2 快速开始

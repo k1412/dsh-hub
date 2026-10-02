@@ -13,22 +13,28 @@ export type { NodeConnectionConfig, NodeMetadata, ConnectorStatus } from './conn
 
 export const name = 'gateway-node'
 export const inject = ['connection', 'clientModules', 'typertGateway']
-export interface Config { connectionFile?: string; runtimeId?: string; name?: string }
+export interface Config { connectionFile?: string; runtimeId?: string; name?: string; sessionDirectory?: boolean }
 export const Config = z.object({
+  sessionDirectory: z.boolean().default(false),
   connectionFile: z.string().default(join(homedir(), '.dsh-gateway', 'connection.json')),
   runtimeId: z.string().default('default'), name: z.string().default(hostname()),
 })
 
 /** Activate inside the existing DSH Runtime; no Web listener or Runtime is created. */
 export async function apply(ctx: Context, config: Config = {}): Promise<void> {
+  return activateGateway(ctx, config)
+}
+
+/** Shared activation; integration tests replace only the network connector, not Runtime services. */
+export async function activateGateway(ctx: Context, config: Config = {}, connect = startNodeConnector): Promise<void> {
   const connection = await readConnectionConfig(config.connectionFile ?? join(homedir(), '.dsh-gateway', 'connection.json'))
   const { surface, dshVersion } = await createRuntimeSurface(ctx as unknown as RuntimeContext)
-  const ready = (ctx as unknown as { appReady?: { onReady(listener: () => void): () => void } }).appReady
+  const ready = ctx.get('appReady') as { onReady(listener: () => void): () => void } | undefined
   ctx.effect(() => {
     let connector: ReturnType<typeof startNodeConnector> | undefined
     const start = () => {
-      connector = startNodeConnector({ config: connection, surface,
-        metadata: { name: config.name ?? connection.name, runtimeId: config.runtimeId ?? 'default', dshVersion, protocol: 1 },
+      connector = connect({ config: connection, surface,
+        metadata: { name: config.name ?? connection.name, runtimeId: config.runtimeId ?? 'default', dshVersion, protocol: 1, sessionDirectory: config.sessionDirectory === true },
         onStatus: (status) => { ctx.logger.info(`Gateway ${status.state}: ${status.message}`) },
       })
     }

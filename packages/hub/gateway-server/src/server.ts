@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+import { SessionDirectory, nativeList, DirectoryAdmission, renderDirectory, type Target } from '@k1412/dsh-gateway-session-directory'
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http'
 import { Readable } from 'node:stream'
 import { readFile, stat } from 'node:fs/promises'
@@ -6,7 +8,7 @@ import { WebSocket, WebSocketServer } from 'ws'
 import { GatewayTunnel } from '@k1412/dsh-gateway-transport'
 import { networkAssets, type GatewayNetworkStatus } from '@k1412/dsh-gateway-network'
 import { GatewayStore, digest, matches, type Mode } from './store.ts'
-import { page, nodesPage, failurePage, escape, css } from './pages.ts'
+import { page, nodesPage, failurePage, escape, css, directoryCss } from './pages.ts'
 
 interface Networks {
   status(): Promise<GatewayNetworkStatus>
@@ -26,9 +28,10 @@ export interface GatewayOptions {
   originSecret?: string
   /** For local integration tests, node origins use *.localhost and the listener port. */
   nodeOrigin?: (nodeId: string) => string
+  sessionDirectory?: boolean
   requestTimeoutMs?: number
 }
-interface Peer { socket: WebSocket; tunnel: GatewayTunnel; alive: boolean }
+interface Peer { socket: WebSocket; tunnel: GatewayTunnel; alive: boolean; generation: string; directory: boolean }
 const COOKIE = 'dsh_gateway_session'
 const HEADER_SKIP = /^(host|connection|upgrade|transfer-encoding|keep-alive|proxy-authorization|proxy-authenticate|authorization|cookie|cf-.+|x-dsh-origin-secret|sec-websocket-.+)$/i
 function token(request: IncomingMessage): string {
@@ -76,6 +79,29 @@ export function createGateway(options: GatewayOptions) {
   const webSockets = new WebSocketServer({ noServer: true, maxPayload: 262144, perMessageDeflate: false })
   const attempts = new Map<string, { count: number; reset: number }>()
   const nodeOrigin = options.nodeOrigin ?? ((id: string) => `${root.protocol}//${id}.${root.host}`)
+  type Intent = { nodeId: string; runtimeId: string; generation: string; sessionId: string; expires: number }
+  const intents = new Map<string, Intent>()
+  const ticketIntents = new Map<string, { key: string; expires: number }>()
+  const admission = new DirectoryAdmission(8)
+  const targets = (): Target[] => store.nodes().filter(n => !n.revokedAt).map(n => ({ nodeId: n.id, runtimeId: n.runtimeId,
+    generation: peers.get(n.id)?.generation ?? 'offline', name: n.name, origin: nodeOrigin(n.id), version: n.dshVersion,
+    online: !!peers.get(n.id)?.tunnel.isOpen, capabilities: { sessionList: peers.get(n.id)?.directory === true,
+      ...(peers.get(n.id)?.directory ? { nativeNavigation: 'gateway-intent-v1' } : {}) } }))
+  function currentIntent(intent: Intent): boolean {
+    const node = store.node(intent.nodeId), peer = peers.get(intent.nodeId)
+    return intent.expires > Date.now() && !!node && !node.revokedAt && node.runtimeId === intent.runtimeId
+      && peer?.generation === intent.generation && peer.directory && peer.tunnel.isOpen
+  }
+  const directory = options.sessionDirectory ? new SessionDirectory({ targets,
+    list: async (target, _request, signal) => admission.run(async () => {
+      const peer = peers.get(target.nodeId)
+      if (!peer || !currentIntent({ ...target, sessionId: '', expires: Date.now() + 30_000 })) throw new Error('Target changed')
+      const value = await nativeList(peer.tunnel, target.origin, signal)
+      if (peers.get(target.nodeId) !== peer) throw new Error('Target changed')
+      return value
+    }),
+    sessionUrl: (target, sessionId) => `${target.origin}/_hub/open-session?${new URLSearchParams({ runtime: target.runtimeId, generation: target.generation, session: sessionId })}`,
+  }, { timeoutMs: 3000 }) : undefined
   const cookie = (value: string, clear = false) => `${COOKIE}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${clear ? 0 : 28_800}${root.protocol === 'https:' ? '; Secure' : ''}`
   const permittedOrigin = (request: IncomingMessage, expected: string) => request.headers.origin === expected
   function rate(request: IncomingMessage): boolean {
@@ -103,7 +129,7 @@ export function createGateway(options: GatewayOptions) {
     if (!invite || (invite.expiresAt <= Date.now() && !invite.nodeId)) throw new Error('邀请已失效，请重新生成。')
     const packageBytes = await readFile(resolve(options.downloadsDirectory, 'gateway-node.tgz'))
     const { createHash } = await import('node:crypto')
-    return { protocol: 1, hubUrl: root.origin, downloadUrl: downloads.origin, mode: invite.mode, endpoint: invite.endpoint, expiresAt: invite.expiresAt, claimed: !!invite.nodeId,
+    return { protocol: 1, sessionDirectory: !!directory, hubUrl: root.origin, downloadUrl: downloads.origin, mode: invite.mode, endpoint: invite.endpoint, expiresAt: invite.expiresAt, claimed: !!invite.nodeId,
       inviteToken, name: invite.name,
       package: { url: `${downloads.origin}/downloads/gateway-node.tgz`, sha256: createHash('sha256').update(packageBytes).digest('hex') },
       networkBinaries: Object.fromEntries((['amd64', 'arm64'] as const).map(architecture => [`linux-${architecture}`, networkAssets(architecture).map(asset => ({ ...asset, url: `${downloads.origin}/downloads/${asset.file}` }))])) }
@@ -114,12 +140,29 @@ export function createGateway(options: GatewayOptions) {
     if (!node || node.revokedAt) { response(res, 410, failurePage('此节点的连接已撤销。', `${root.origin}/`)); return }
     if (url.pathname === '/_hub/ticket') {
       if (!store.consumeTicket(url.searchParams.get('ticket') ?? '', nodeId)) { response(res, 403, failurePage('打开链接已过期，请从节点列表重新打开。', `${root.origin}/`)); return }
-      redirect(res, '/', cookie(store.session(nodeId))); return
+      const rawTicket = url.searchParams.get('ticket') ?? ''
+      const intentKey = ticketIntents.get(rawTicket)?.key
+      ticketIntents.delete(url.searchParams.get('ticket') ?? '')
+      if ((rawTicket.startsWith('s.') && !intentKey) || (intentKey && !currentIntent(intents.get(intentKey) ?? { nodeId: '', runtimeId: '', generation: '', sessionId: '', expires: 0 }))) {
+        response(res, 409, failurePage('Session target changed. Return to the experiment directory.', `${root.origin}/sessions`)); return
+      }
+      redirect(res, intentKey ? `/?gatewayIntent=${encodeURIComponent(intentKey)}` : '/', cookie(store.session(nodeId))); return
+    }
+    if (directory && url.pathname === '/_hub/directory') { redirect(res, `${root.origin}/sessions`); return }
+    if (directory && url.pathname === '/_hub/open-session' && request.method === 'GET') {
+      redirect(res, `${root.origin}/open/${nodeId}?${url.searchParams}`); return
     }
     if (!store.authorized(token(request), nodeId)) {
       if (request.method === 'GET' && (request.headers.accept ?? '').includes('text/html')) redirect(res, `${root.origin}/open/${nodeId}`)
       else response(res, 401, { error: '浏览器登录已过期，请返回 Hub 重新打开节点。' })
       return
+    }
+    if (directory && url.pathname === '/_hub/session-intent' && request.method === 'GET') {
+      const intent = intents.get(url.searchParams.get('intent') ?? '')
+      if (!intent || intent.nodeId !== nodeId || !currentIntent(intent)) {
+        response(res, 409, { error: 'Session intent expired or target changed. Reopen from the directory.' }); return
+      }
+      response(res, 200, intent); return
     }
     if (!['GET', 'HEAD'].includes(request.method ?? '') && !permittedOrigin(request, new URL(nodeOrigin(nodeId)).origin)) { response(res, 403, { error: 'Origin mismatch' }); return }
     const peer = peers.get(nodeId)
@@ -160,7 +203,7 @@ export function createGateway(options: GatewayOptions) {
     const url = new URL(request.url ?? '/', root)
     const host = request.headers.host
     if (url.pathname === '/healthz') { response(res, 200, { ok: true, version: '2.0.0-alpha.1' }); return }
-    if (url.pathname === '/hub.css') { response(res, 200, css, 'text/css; charset=utf-8'); return }
+    if (url.pathname === '/hub.css') { response(res, 200, css + directoryCss, 'text/css; charset=utf-8'); return }
     if (host === downloads.host || host === root.host) {
       if (url.pathname === '/install.sh' && request.method === 'GET') { response(res, 200, await readFile(options.installerPath, 'utf8'), 'text/x-shellscript; charset=utf-8'); return }
       if (url.pathname.startsWith('/downloads/') && ['GET', 'HEAD'].includes(request.method ?? '')) {
@@ -187,13 +230,21 @@ export function createGateway(options: GatewayOptions) {
         if (!permittedOrigin(request, root.origin) || !rate(request)) { response(res, 403, failurePage('登录请求无效，请稍后重试。')); return }
         const input = await body(request)
         if (!matches(scalar(input.password, 512), passwordHash)) { response(res, 401, failurePage('登录密码不正确。')); return }
-        redirect(res, '/', cookie(store.session('operator'))); return
+        const returnTo = typeof input.returnTo === 'string' && /^\/(?:open\/n[a-f0-9]{16}|sessions)(?:\?|$)/.test(input.returnTo) && input.returnTo.length <= 4096 ? input.returnTo : '/'
+        redirect(res, returnTo, cookie(store.session('operator'))); return
       }
-      response(res, 200, page('登录', '<h1>登录 Hub</h1><form class="card" method="post" action="/login"><label for="password">管理员密码</label><input id="password" name="password" type="password" autocomplete="current-password" required><nav><button class="primary">登录</button></nav></form>')); return
+      response(res, 200, page('登录', `<h1>登录 Hub</h1><form class="card" method="post" action="/login"><input type="hidden" name="returnTo" value="${escape(url.searchParams.get('returnTo') ?? '/')}"><label for="password">管理员密码</label><input id="password" name="password" type="password" autocomplete="current-password" required><nav><button class="primary">登录</button></nav></form>`)); return
     }
-    if (!await operator(request)) { if (passwordHash) redirect(res, '/login'); else response(res, 401, failurePage('身份认证已过期，请重新登录。')); return }
+    if (!await operator(request)) { if (passwordHash) redirect(res, /^\/(?:open\/|sessions)/.test(url.pathname) ? `/login?returnTo=${encodeURIComponent(url.pathname + url.search)}` : '/login'); else response(res, 401, failurePage('身份认证已过期，请重新登录。')); return }
     if (request.method === 'POST' && !permittedOrigin(request, root.origin)) { response(res, 403, { error: 'Origin mismatch' }); return }
-    if (url.pathname === '/' && request.method === 'GET') { response(res, 200, nodesPage(store.nodes(), new Set(peers.keys()))); return }
+    if (url.pathname === '/' && request.method === 'GET') { response(res, 200, nodesPage(store.nodes(), new Set(peers.keys()), !!directory)); return }
+    if (directory && url.pathname === '/sessions' && request.method === 'GET') {
+      const abort = new AbortController()
+      request.once('aborted', () => abort.abort())
+      res.once('close', () => { if (!res.writableFinished) abort.abort() })
+      const listing = await directory.page({ offset: Number(url.searchParams.get('offset') ?? 0), limit: Number(url.searchParams.get('limit') ?? 50), signal: abort.signal })
+      response(res, 200, renderDirectory(listing)); return
+    }
     if (url.pathname === '/api/nodes' && request.method === 'GET') {
       response(res, 200, { nodes: store.nodes().map(({ id, name, mode, dshVersion, runtimeId, lastSeen, revokedAt }) => ({ id, name, mode, dshVersion, runtimeId, lastSeen, revoked: !!revokedAt, online: peers.has(id) })) }); return
     }
@@ -218,7 +269,7 @@ export function createGateway(options: GatewayOptions) {
       const endpoint = await options.networks.endpoint(mode)
       const { token: invitationToken } = store.invite(mode, endpoint, name)
       const shellQuote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`
-      const command = `curl -fsSL ${shellQuote(`${downloads.origin}/install.sh`)} | sh -s -- --hub ${shellQuote(downloads.origin)} --invite ${shellQuote(invitationToken)}`
+      const command = `curl -fsSL ${shellQuote(`${downloads.origin}/install.sh`)} | sh -s -- --hub ${shellQuote(downloads.origin)} --invite ${shellQuote(invitationToken)}${directory ? ' --state-directory "$HOME/.local/state/dsh-gateway-experiment" --instance gateway-node-experiment' : ''}`
       response(res, 200, page('安装命令', `<h1>连接 ${escape(name)}</h1><div class="card"><p>在该 node 上，以运行 DSH 的用户执行：</p><pre>${escape(command)}</pre><p class="muted">命令会安装连接插件与所选网络工具，完成配对。已有 Tailscale 会被复用；首次使用时按终端提示登录。</p><p>安装后按终端提示重新加载当前 DSH，然后返回节点列表。</p><nav><a class="button primary" href="/">查看节点</a><a href="/invites/new">生成新邀请</a></nav></div>`)); return
     }
     const opening = /^\/open\/(n[a-f0-9]{16})$/.exec(url.pathname)
@@ -226,13 +277,23 @@ export function createGateway(options: GatewayOptions) {
       const id = opening[1] as string; const node = store.node(id)
       if (!node || node.revokedAt) { response(res, 404, failurePage('节点不存在或已撤销。')); return }
       if (!peers.has(id)) { response(res, 503, failurePage('节点当前离线，请先检查连接。')); return }
-      redirect(res, `${nodeOrigin(id)}/_hub/ticket?ticket=${store.ticket(id)}`); return
+      let intentKey: string | undefined
+      if (url.searchParams.has('session')) {
+        if (!directory || intents.size >= 512 || ticketIntents.size >= 512) { response(res, 409, failurePage('Session experiment unavailable or busy.')); return }
+        const intent: Intent = { nodeId: id, runtimeId: scalar(url.searchParams.get('runtime'), 128),
+          generation: scalar(url.searchParams.get('generation'), 128), sessionId: scalar(url.searchParams.get('session'), 1024), expires: Date.now() + 5 * 60_000 }
+        if (!intent.sessionId || !currentIntent(intent)) { response(res, 409, failurePage('Session target changed. Refresh the experiment directory.', '/sessions')); return }
+        intentKey = randomUUID(); intents.set(intentKey, intent)
+      }
+      const ticket = store.ticket(id, intentKey ? 'session' : 'node')
+      if (intentKey) ticketIntents.set(ticket, { key: intentKey, expires: Date.now() + 60_000 })
+      redirect(res, `${nodeOrigin(id)}/_hub/ticket?ticket=${ticket}`); return
     }
     const detail = /^\/nodes\/(n[a-f0-9]{16})(?:\/(revoke|rename))?$/.exec(url.pathname)
     if (detail) {
       const id = detail[1] as string; const node = store.node(id)
       if (!node) { response(res, 404, failurePage('节点不存在。')); return }
-      if (request.method === 'POST' && detail[2] === 'revoke') { store.revoke(id); peers.get(id)?.socket.close(4003, 'Node revoked'); peers.get(id)?.tunnel.close(); peers.delete(id); redirect(res, '/'); return }
+      if (request.method === 'POST' && detail[2] === 'revoke') { store.revoke(id); directory?.invalidate(id); peers.get(id)?.socket.close(4003, 'Node revoked'); peers.get(id)?.tunnel.close(); peers.delete(id); redirect(res, '/'); return }
       if (request.method === 'POST' && detail[2] === 'rename') { const input = await body(request); const name = scalar(input.name, 80).trim(); if (!name) throw new Error('请输入名称。'); store.rename(id, name); redirect(res, `/nodes/${id}`); return }
       response(res, 200, page(node.name, `<h1>${escape(node.name)}</h1><nav><a href="/">返回节点</a>${peers.has(id) ? `<a class="button primary" href="/open/${id}" target="_blank" rel="noopener">打开 DSH ↗</a>` : ''}</nav><section class="card"><dl><dt>状态</dt><dd>${node.revokedAt ? '已撤销' : peers.has(id) ? '在线' : '离线：请检查节点 DSH 与连接工具是否在运行。'}</dd><dt>连接方式</dt><dd>${escape(node.mode)}</dd><dt>DSH 版本</dt><dd>${escape(node.dshVersion)}</dd><dt>上次连接</dt><dd>${node.lastSeen ? escape(new Date(node.lastSeen).toISOString()) : '尚未加载连接插件'}</dd></dl></section><form class="card" method="post" action="/nodes/${id}/rename"><label for="name">节点名称</label><input id="name" name="name" value="${escape(node.name)}" maxlength="80" required><nav><button>保存名称</button></nav></form><details class="card"><summary class="danger">撤销此节点</summary><p>立即断开远程访问。DSH 的会话和文件保留在 node 上。</p><form method="post" action="/nodes/${id}/revoke"><button class="danger">确认撤销连接</button></form></details>`)); return
     }
@@ -266,11 +327,12 @@ export function createGateway(options: GatewayOptions) {
     agentSockets.handleUpgrade(req, socket, head, ws => {
       peers.get(id)?.tunnel.close()
       const tunnel = new GatewayTunnel(ws, options.requestTimeoutMs === undefined ? undefined : { requestTimeoutMs: options.requestTimeoutMs })
-      const peer = { socket: ws, tunnel, alive: true }; peers.set(id, peer)
+      directory?.invalidate(id)
+      const peer = { socket: ws, tunnel, alive: true, generation: randomUUID(), directory: req.headers['x-dsh-session-directory'] === '1' }; peers.set(id, peer)
       store.seen(id, String(req.headers['x-dsh-version'] ?? node.dshVersion).slice(0, 64))
       ws.on('pong', () => { peer.alive = true })
       ws.on('error', () => {})
-      ws.once('close', () => { if (!closing && peers.get(id) === peer) { peers.delete(id); store.seen(id, store.node(id)?.dshVersion ?? node.dshVersion) } })
+      ws.once('close', () => { if (!closing && peers.get(id) === peer) { directory?.invalidate(id); peers.delete(id); store.seen(id, store.node(id)?.dshVersion ?? node.dshVersion) } })
     })
   })
   publicServer.on('upgrade', (req, socket, head) => {
@@ -297,6 +359,8 @@ export function createGateway(options: GatewayOptions) {
   const heartbeat = setInterval(() => {
     for (const peer of peers.values()) { if (!peer.alive) peer.socket.terminate(); else { peer.alive = false; peer.socket.ping() } }
     store.prune()
+    for (const [key, intent] of intents) if (!currentIntent(intent)) intents.delete(key)
+    for (const [ticket, entry] of ticketIntents) if (entry.expires <= Date.now()) ticketIntents.delete(ticket)
     for (const [key, entry] of attempts) if (entry.reset < Date.now()) attempts.delete(key)
   }, 20_000); heartbeat.unref()
   return { publicServer, privateServer, store, peers,
@@ -304,6 +368,7 @@ export function createGateway(options: GatewayOptions) {
       if (closing) return
       closing = true
       clearInterval(heartbeat)
+      directory?.dispose(); intents.clear(); ticketIntents.clear()
       for (const ws of browserSockets) ws.terminate()
       for (const peer of peers.values()) { peer.tunnel.close(); peer.socket.terminate() }
       peers.clear()

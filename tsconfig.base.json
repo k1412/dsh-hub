@@ -68,6 +68,9 @@
       ],
       "@k1412/dsh-gateway-transport": [
         "./packages/hub/gateway-transport/src/index.ts"
+      ],
+      "@k1412/dsh-gateway-session-directory": [
+        "./packages/hub/gateway-session-directory/src/index.ts"
       ]
     }
   }

@@ -94,12 +94,21 @@ importers:
       '@k1412/dsh-gateway-network':
         specifier: workspace:*
         version: link:../gateway-network
+      '@k1412/dsh-gateway-session-directory':
+        specifier: workspace:*
+        version: link:../gateway-session-directory
       '@k1412/dsh-gateway-transport':
         specifier: workspace:*
         version: link:../gateway-transport
       '@k1412/dsh-hub-server':
         specifier: workspace:*
         version: link:../hub-server
+      ws:
+        specifier: ^8.21.0
+        version: 8.21.0
+
+  packages/hub/gateway-session-directory:
+    devDependencies:
       ws:
         specifier: ^8.21.0
         version: 8.21.0

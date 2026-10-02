@@ -6,6 +6,7 @@ const hub = (name: string): string => resolve(import.meta.dirname, `packages/hub
 export default defineConfig({
   resolve: {
     alias: {
+      '@k1412/dsh-gateway-session-directory': hub('gateway-session-directory'),
       '@k1412/dsh-gateway-server': hub('gateway-server'),
       '@k1412/dsh-gateway-network': hub('gateway-network'),
       '@k1412/dsh-gateway-node': hub('gateway-node'),

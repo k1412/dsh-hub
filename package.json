@@ -34,8 +34,9 @@
     "hub:release:pack": "node scripts/build-hub-release.mjs",
     "hub:release:verify": "node scripts/verify-hub-release.mjs",
     "gateway:build": "node scripts/build-gateway.mjs",
-    "gateway:test": "vitest run packages/hub/gateway-server/tests packages/hub/gateway-network/tests packages/hub/gateway-node/tests packages/hub/gateway-transport/tests",
-    "gateway:browser": "node scripts/verify-gateway-browser.mjs"
+    "gateway:test": "vitest run packages/hub/gateway-server/tests packages/hub/gateway-network/tests packages/hub/gateway-node/tests packages/hub/gateway-transport/tests packages/hub/gateway-session-directory/tests",
+    "gateway:browser": "node scripts/verify-gateway-browser.mjs",
+    "gateway:session:native": "tsx packages/hub/gateway-session-directory/tests/native-browser.mts"
   },
   "devDependencies": {
     "@types/node": "^22.20.0",

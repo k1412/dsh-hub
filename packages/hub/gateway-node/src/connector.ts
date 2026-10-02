@@ -19,7 +19,7 @@ export interface NodeConnectionConfig {
   tailscaleSocket?: string
 }
 
-export interface NodeMetadata { name: string; runtimeId: string; dshVersion: string; protocol: 1 }
+export interface NodeMetadata { name: string; runtimeId: string; dshVersion: string; protocol: 1; sessionDirectory?: boolean }
 
 /** Config is deliberately separate from profile settings and never sent to the browser. */
 export async function readConnectionConfig(path: string): Promise<NodeConnectionConfig> {
@@ -75,7 +75,7 @@ export function startNodeConnector(options: {
         url.searchParams.set('nodeId', config.nodeId)
         websocket = new WebSocket(url, {
           headers: { authorization: `Bearer ${config.credential}`, 'x-dsh-version': metadata.dshVersion,
-            'x-dsh-runtime': metadata.runtimeId, 'x-dsh-name': encodeURIComponent(metadata.name) },
+            'x-dsh-session-directory': metadata.sessionDirectory ? '1' : '0', 'x-dsh-runtime': metadata.runtimeId, 'x-dsh-name': encodeURIComponent(metadata.name) },
           handshakeTimeout: 15_000, maxPayload: 262144, perMessageDeflate: false,
         })
         const socket = websocket

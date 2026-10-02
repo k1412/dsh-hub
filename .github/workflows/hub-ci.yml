@@ -262,6 +262,11 @@ jobs:
         env:
           DSH_NATIVE_ROOT: ${{ runner.temp }}/dsh-native
         run: pnpm run gateway:browser
+      - name: Experiment / real rc.2 exact-session browser and two Runtime owners
+        env:
+          DSH_NATIVE_ROOT: ${{ runner.temp }}/dsh-native
+          DSH_DIRECTORY_REPORT: .artifacts/gateway-session-directory.json
+        run: pnpm run gateway:session:native
       - uses: actions/upload-artifact@v7
         if: always()
         with:

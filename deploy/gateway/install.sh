@@ -5,11 +5,13 @@ umask 077
 hub=''
 invite=''
 profile=''
+instance=''
 state_directory="${XDG_STATE_HOME:-${HOME:?}/.local/state}/dsh-gateway"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --hub) hub="$2"; shift 2 ;;
     --invite) invite="$2"; shift 2 ;;
+    --instance) instance="$2"; shift 2 ;;
     --profile) profile="$2"; shift 2 ;;
     --state-directory) state_directory="$2"; shift 2 ;;
     *) printf 'Unknown installer option: %s\n' "$1" >&2; exit 2 ;;
@@ -131,8 +133,7 @@ try {
 } catch (error) { process.stderr.write(`${error.message}\n`); process.exitCode = 1 }
 NODE
 cli_path=$(cat "$installer_directory/cli-path")
-if [ -n "$profile" ]; then
-  node "$cli_path" install --manifest "$installer_directory/manifest.json" --state-directory "$state_directory" --bin-directory "$state_directory/bin" --profile "$profile"
-else
-  node "$cli_path" install --manifest "$installer_directory/manifest.json" --state-directory "$state_directory" --bin-directory "$state_directory/bin"
-fi
+set -- install --manifest "$installer_directory/manifest.json" --state-directory "$state_directory" --bin-directory "$state_directory/bin"
+if [ -n "$profile" ]; then set -- "$@" --profile "$profile"; fi
+if [ -n "$instance" ]; then set -- "$@" --instance "$instance"; fi
+node "$cli_path" "$@"

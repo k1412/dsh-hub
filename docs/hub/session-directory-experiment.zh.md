@@ -1,58 +1,78 @@
-# 会话目录实验
+# 可运行的会话目录实验版
 
-英文镜像：[Session directory experiment](session-directory-experiment.md)。
+英文镜像：[Runnable session-directory experiment](session-directory-experiment.md)。
 
-本可选实验在最小节点网关上增加服务端渲染的元数据目录，保留单操作者完整权限、Tailscale/Tailcat 接入、节点主动出站传输，以及每个节点已有的唯一 Runtime。每个节点的完整官方 Web 客户端仍使用独立网关源站，不暴露本地 DSH Web 监听端口。不实现自定义聊天、权限、模型、凭据或历史界面，不提交提示词，不建立持久会话索引或历史快照。
+本分支提供最小节点网关的可运行扩展：需要认证的 `/sessions` 目录，以及在各节点**完整官方 DSH Web 客户端**中打开指定会话的导航。初版节点网关仍作为基线。只有设置 `DSH_GATEWAY_SESSION_DIRECTORY=1` 才开启实验功能；开启后主页显示简洁的实验目录入口。测试不会部署。
 
-## 已检查的原生契约
+保留单操作者完整权限、节点独立源站、Tailscale/Tailcat 接入和节点主动出站边界。不创建第二个 Runtime，也不暴露本地 Web 监听器。Hub 保留认证/配对状态和少量短期目录元数据，不保留模型凭据、对话历史或快照。不实现自定义聊天、权限、模型选择界面，也不翻译业务载荷。
 
-兼容范围是**严格的 `0.1.7-rc.2`**，还必须显式声明 `sessionList` 能力。其他版本在审查前拒绝使用。这是实验兼容范围，不保证预发布 API 稳定。
+## 运行与安装
 
-- `@deepseek-ai/dsh-api-session-controller` 发布 Typert `session/list`，也可通过 `remote.session.list({}, signal)` 调用。远程返回 `RemoteResult<SessionListValue>`，由网关适配器解包成功值或抛出失败；`SessionListValue` 包含 `items`。
-- 声明中存在 `SessionListRequest.cursor`，但已检查的实现忽略请求并返回全部可见会话；**没有响应续页游标，也没有有效的原生分页**。列表读取不会恢复 Agent。原生 `session/page` 是对话历史分页，目录不得使用。
-- 每项提供 `sessionId`、`updatedAt`、`running`、`agentAvailable`；可选的 `projections.values.title` 为字符串或 null。缺失标题保持未知，界面显示会话 ID。投影提示可能来自缓存或已经过时；目录不会补读投影或历史。
-- 目录仅保留上述字段，丢弃路径、其他投影、提示词、凭据和完整历史。运行中、空闲、无存活 Agent 对应原始标志；无存活 Agent 不代表已归档。
-
-证据来自已发布包的 `lib/typert.remote-client.d.ts`、`lib/types/types.d.ts`、`lib/index.js`，`@deepseek-ai/dsh-session-title` 的标题类型，以及官方 Web 启动和客户端导航源码。上游稀疏源码只作补充证据，不作为版本权威。
-
-## 导航的确切限制
-
-在已检查的发布版前端和可用官方源码中，没有找到原生会话 URL 路由。官方客户端确实提供 `ctx.uiWorkspace.openSession(target: SessionTarget): void`，声明位于 `@deepseek-ai/dsh-client-ui-workspace` 的 `lib/types/client/navigation.d.ts`。这是客户端插件服务，**不是 HTTP URL 契约**。布局的 `selectPanel` 也不是会话路由。
-
-因此默认目录不声称点击会话就能打开该会话，而是显示“Native session link unavailable”和明确标注的“Open node”链接；操作者需要在原生节点页面选择会话。不猜测 hash/query 路径，不隐式重定向目标，不回退至其他 Runtime，也不自动创建会话。此限制意味着完整的一键会话体验尚未实现。
-
-后续可通过一个随节点打包的官方客户端小插件，在正确 Runtime 连接就绪后校验节点、Runtime 和会话导航意图，再调用 `uiWorkspace.openSession`。声明固定版本能力前，必须测试会话不存在、子代理地址、导航被替代、启动选择竞态、Runtime 更换及重连。本包不提供该插件。`Gateway.sessionUrl` 仅为可选集成接口，必须配合明确验证过的 `nativeNavigation` 修订标识才启用。拒绝跨源或带 URL 凭据的链接；根工作流必须保证链接打开精确目标，并能通过现有节点授权流程。
-
-## 注入式网关集成
-
-实现：[目录包](../../packages/hub/gateway-session-directory/src/index.ts)。本包不打开监听器，也不导入网关实现或 DSH Runtime。
-
-1. `targets()` 同步返回已授权、未撤销的描述符：节点 ID、Runtime ID、连接代次、名称、HTTPS 源站、精确版本、在线状态及能力。每次重连都必须更换代次，包括重连至同一个 Runtime。每个节点使用不同源站。
-2. `list(target, {}, signal)` 通过现有出站网关传输及同一 Runtime 的插件连接调用原生列表。派发和响应时均校验完整的节点、Runtime、连接代次；解包 `RemoteResult`，传递取消。不转发至节点本地 Web 监听器，也不启动另一 Runtime。适配器必须在解码前限制响应字节数，因为 rc.2 原生接口返回完整列表。
-3. 断开、重连、撤销及可用的原生会话变更事件发生时调用 `invalidate(nodeId)`；关闭或适当的注销时调用 `dispose()`。失效处理会保守地使正在进行的页面快照失效，可刷新已变更页面。本包不打开控制流或历史流。
-4. 在网关已有操作者授权后挂载 `page({offset, limit, signal})` 和 `directoryResponse(page)`。解析并约束查询参数，将 HTTP 断开关联到取消。响应使用 `no-store`、禁止 referrer 和无脚本 CSP。根工作流还需限制请求准入与频率；并发限制按页面生效，不是所有调用者共享的全局限制。
-5. 根工作流负责传输适配器、认证/票据、生命周期接线和可选的已验证导航插件。不会自动修改初始节点网关。本实验是已测试的注入式服务，不是完整在线部署。
-
-默认边界：64 个目标，每页最多并发 8 个节点调用，每个已派发调用超时 800 毫秒，元数据缓存 2 秒（上限 5 秒），每节点最多保留 10,000 行，显示分页默认 50 行（上限 200）。全部节点挂起时，整页大约受 `ceil(nodes / concurrency) * timeout` 加本地处理及事件循环延迟约束。请求取消会拒绝整页并中止活动调用，即使注入的 Promise 忽略取消也能返回；实际远端资源关闭仍由适配器负责。超时不代表节点永久离线。
-
-缓存身份包含节点、Runtime、连接代次、版本、源站、在线状态及能力。缓存由定时器到期删除，不必等待下次访问。返回前重新检查目标成员关系，防止已撤销或替换的目标，以及旧代次完成的响应混入后续页面。不写磁盘，不记录标题日志，不保留历史快照。断连节点只贡献状态，不显示旧会话行。错误仅显示固定的节点状态，避免泄露敏感异常详情。
-
-分页按活动时间和明确的目标/会话身份排序。这是**显示分页**，不会减少原生网络读取量。明确显示每节点保留数量的截断，总数表示保留行数。活动变化或缓存过期后 offset 页可能移动，不提供快照一致性保证。保留前验证完整冷响应；解析和临时内存分配仍随完整原生结果增长。健康行旁同时显示各节点失败状态。
-
-## 维护成本与测量
-
-可以消除持久 Hub 会话索引：按需扇出原生列表，仅短暂缓存所需元数据。这样不再需要迁移、同步/对账、删除标记或保留会话内容。代价是完整列表原生 I/O、扇出尾延迟、缺少离线目录和稳定全局游标，以及小型版本约束适配器和可选导航插件。浏览器直接扇出也可省去服务端目录，但跨源授权、CORS 和生命周期处理会把复杂度移到浏览器。节点网关仍是维护成本更低的基线。
-
-[可导入的基准工具](../../packages/hub/gateway-session-directory/src/benchmark.ts) 导出 `runSyntheticBenchmark` 和 `measureProbe`。根工作流可向 `measureProbe` 注入原生页面加载、重连探针，不需要提交提示词。在仓库根目录执行：
+使用 Node 22.19+ 和仓库的 pnpm 11.7.0。执行 `pnpm run build`，生成 `dist/gateway/server.mjs` 和可安装的 `dist/gateway/downloads/gateway-node.tgz`，其中包含通过官方注册机制加载的客户端导航插件。沿用现有网关认证/网络配置，启动时设置：
 
 ```sh
-pnpm exec tsc -p packages/hub/gateway-session-directory/tsconfig.json --noEmit
-pnpm exec vitest run packages/hub/gateway-session-directory/tests
-pnpm exec tsx packages/hub/gateway-session-directory/src/benchmark-cli.ts
-pnpm run check
-pnpm run build
+DSH_GATEWAY_SESSION_DIRECTORY=1 node dist/gateway/server.mjs
 ```
 
-合成基准比较节点索引夹具、冷目录扇出加 SSR、热目录加 SSR、断开/重连刷新、部分超时及取消。结构化 JSON 提供样本数、成功/失败数、p50/p95/最大值和明确延迟预算；失败时 CLI 返回失败退出码。测试还覆盖多节点相同 ID、所有权变更、节点撤销、畸形响应、转义、跨源链接拒绝、分页及 TTL 到期。不发生真实模型调用。
+功能默认关闭。`/sessions` 使用与节点列表相同的操作者授权。实验邀请清单声明节点能力；生成的安装命令使用独立实验状态目录及 `--instance gateway-node-experiment`。安装后重载**已有** DSH Runtime。支持的已安装 DSH 版本严格限定为 `0.1.7-rc.2`；版本或能力不匹配会显示该节点不可用。
 
-**已执行的合成测量保存在私有实验报告中**，包括环境和精确配置，与本通用指南分开。真实网关传输延迟、实际持久会话列表延迟、原生浏览器加载/使用稳定性、Tailscale/Tailcat 重连可靠性及精确会话导航均**不在本实验测量范围内**。部署前，根工作流必须对节点基线与启用目录的版本分别执行这些验证，不能用合成数据代替。本包不部署，也不修改旧实现。
+同一 Runtime 连接两个 Hub 的操作步骤：
+
+1. 保留主 Hub 连接及其现有 profile 条目和配置。
+2. 以相同 Runtime 用户执行实验 Hub 生成的安装命令，使用相同 `--profile`、**不同**的 `--state-directory` 和 `--instance gateway-node-experiment`。不要复用主连接文件、身份或网络状态目录。
+3. 安装器保留主连接的托管 YAML 块，加入独立命名 Loader 条目，指向它自己的 connectionFile。两个条目使用同一个兼容的节点包和相同 Runtime 服务。实验节点包仍兼容只有节点列表的网关。
+4. 重载该 Runtime 一次，两个出站通道同时工作，不需要第二个 DSH 进程。首次仅安装命名实例时，会禁用尚未配置的默认条目；重新安装主条目会显式启用它。
+5. 停止实验时，仅禁用/删除实验命名条目，重载同一个 Runtime，并在实验 Hub 撤销该节点。主条目仍在使用共享插件包时，不要卸载该包。
+
+安装器拒绝覆盖属于其他 Hub 的状态目录，并保留现有 profile 原始 YAML/JS 表达式。安装器和实验都不启动第二个 Runtime。网络配置仍使用已有的 Tailscale/Tailcat 实现。
+
+## 实际原生列表调用
+
+服务端通过所属节点现有的 `GatewayTunnel.fetch` 调用发布版 rc.2 Typert Remote `session/list`。原生 HTTP 载体保持不变：`POST /api/session/list`，请求为：
+
+```json
+{"type":"client-request","rpcId":"unique-request-id","method":"session/list","payload":{"args":{"_request":{}}}}
+```
+
+响应必须是匹配 `rpcId` 的 `server-response`，并包含成功的 `RemoteResult.value.items`。这与生成的 `@deepseek-ai/dsh-api-session-controller/lib/typert.host.js` 中 `_request` 参数、远程声明和真实 Runtime 实现一致。Hub 不引入替代会话业务 API。原生列表读取不会恢复 Agent。
+
+请求与响应绑定明确的节点 ID、Runtime ID 和每次连接新生成的随机代次。替换、撤销、关闭连接会使目录缓存和正在进行的快照失效。所有调用者共用**最多 8 个目录 RPC**的准入上限，不建立无界等待队列；每页也最多同时扇出 8 个节点。每个已派发节点超时为 3 秒。响应在 JSON 解码前限制为 **8 MiB**；取消会取消 Tunnel 响应流。节点错误使用固定状态，不显示原生异常详情；部分节点失败不影响健康节点显示。
+
+目录仅保留 `sessionId`、可选 `projections.values.title`、`updatedAt`、`running` 和 `agentAvailable`。缺失标题显示 ID。路径和其他投影提示立即丢弃，不持久化也不渲染。不调用模型、配置或历史 API。空闲/无存活 Agent 对应原生标志，后者不等于已归档。
+
+缓存 TTL 为 2 秒（可配置上限 5 秒），由定时器删除；默认每节点保留 10,000 行，最多 64 个目标。渲染前再次检查成员、Runtime 和连接代次。原生会话变更在短 TTL 后可见，连接/成员变更立即失效。不额外订阅历史或控制流。
+
+**rc.2 原生列表没有分页。** 声明的请求游标被忽略，结果也没有续页游标。显示分页只能在保留的元数据上完成，默认 50 行、最多 200 行。截断和节点状态均明确显示。活动变化可能移动 offset 页，不保证快照一致性。网络读取和临时解析仍随完整原生列表增长，直到触及字节上限。`session/page` 是对话历史接口，不是目录分页，本目录从不调用它。
+
+## 精确原生会话点击
+
+没有找到上游原生会话 URL 路由。本实验实现的是**明确的插件导航入口**，而不是猜测上游 hash/query 约定：
+
+1. 目录行链接至所属节点的 `/_hub/open-session`，携带明确的 Runtime、连接代次和会话身份。Gateway 经操作者认证及一次性节点认证票据打开目标，并保留导航意图。
+2. 票据关联有界、仅内存保存的 intent。已认证节点页面获得不透明 `gatewayIntent` 键；`/_hub/session-intent` 仅向相同节点、仍在线且 Runtime/代次匹配的访问返回意图。有效期 5 分钟，最多 512 项。意图数据不进入数据库。
+3. 额外的节点客户端模块通过官方 `dsh.client` 元数据及 `window.__ModuleLoader__` 注册。它等待公开的 `sessions.list`、`workspaces.list` 就绪快照，刷新原生列表、检查成员关系，并保留精确会话/地址，直到原生历史打开完成。
+4. 再次校验 intent 和原生连接代次，通过 `layout.beginNavigation()` 取代启动时的工作区导航，再调用已导出的 `ctx.uiWorkspace.openSession(target)`，确认目标拥有 `mainView`。不写私有 store、不用 DOM 模拟切换会话、不修改上游。
+5. 成功后移除临时查询参数，刷新页面由官方客户端恢复已保存的选择。会话不存在、票据/意图过期、Runtime/代次变化、断线或打开失败均明确报错。仅负责导航的阻挡提示防止启动时其他对话被误认为目标；它不是聊天界面。确认选择后显示完整原生编辑器和历史。
+
+Host 激活对可选的 `appReady`、`webServer` 使用公开 `ctx.get()`；受作用域约束的 Cordis Context 会拒绝未声明的直接属性访问。已测试同一个 Runtime 中两个命名 Host 插件实例与一个共享浏览器模块。
+
+## 验证与测量
+
+```sh
+pnpm run check
+pnpm run build
+DSH_NATIVE_ROOT=/path/to/installed-rc2 pnpm run gateway:session:native
+pnpm exec tsx packages/hub/gateway-session-directory/src/benchmark-cli.ts
+```
+
+原生验证需要包含 `node_modules/@deepseek-ai/dsh` 且版本为 `0.1.7-rc.2` 的目录。CI 安装该精确发布版本，构建发行包，再执行浏览器验证；可用 `DSH_DIRECTORY_REPORT` 指定 JSON 报告路径。不发生付费模型调用。
+
+真实验证复用了原生网关 smoke test 的完整 Runtime 设置，启动两个隔离的发布版 Runtime；每个加载完整官方浏览器插件组、一个实验客户端模块、**两个真实命名 Gateway 插件激活实例及独立 connectionFile**，并发连接基线/实验 Hub。仅将 overlay 网络拨号和推理替换为本机 WebSocket 通道与模型 fixture。Runtime 服务、原生 RPC、打包的客户端插件、浏览器、权限/模型控件及持久历史均为真实实现。
+
+覆盖多节点相同会话 ID、目录/票据认证、错误目标与旧 intent 拒绝、原生响应大小/取消限制、缺失会话显式报错、Full access/模型选择、fixture 消息、多次精确历史点击和刷新、手机布局、离线部分结果及五轮重连。节点基线与实验版使用相同 Runtime 对、浏览器视口和 fixture 历史测量。基线是同一候选服务端/节点包的功能关闭模式（含未触发的导航模块），不是已部署初版发行物的基准。单元/集成测试还覆盖全局准入、协议/请求关联校验、安装共存、缓存和传输隔离。40,000 会话的合成工具仍单独标记，不能称为真实 DSH 延迟。
+
+私有交付证据记录精确时间、样本数、检查结果和环境。这些是**经 loopback 的真实本地 Runtime/浏览器测量**，不是生产 Tailscale/Tailcat 或 NAS 数据。首次浏览器和历史样本较少，结果是观测，不是生产 SLO。真实 overlay 稳定性、生产数据规模和部署验收仍需根工作流后续验证。
+
+## 维护成本
+
+不需要持久 Hub 会话索引：按需原生列表加短期元数据缓存，消除了索引迁移、同步对账、删除标记和历史保留。代价是完整列表读取、扇出尾延迟、没有离线目录或稳定全局游标，以及小型固定版本原生载体适配器和官方客户端导航插件。浏览器直接扇出会将跨源认证、CORS 和生命周期复杂度转移至浏览器。保持本实验明确标记，并与维护成本更低的节点基线分开。

@@ -20,9 +20,13 @@ const pkg = join(out, 'node-package')
 await mkdir(join(pkg, 'lib'), { recursive: true })
 await build({ ...shared, entryPoints: ['packages/hub/gateway-node/src/index.ts'], outfile: join(pkg, 'lib/index.js'), external: ['node:*', '@deepseek-ai/*'] })
 await build({ ...shared, entryPoints: ['packages/hub/gateway-node/src/cli.ts'], outfile: join(pkg, 'lib/cli.js'), external: ['node:*', '@deepseek-ai/*'] })
+await build({ absWorkingDir: root, entryPoints: ['packages/hub/gateway-node/src/client.ts'], bundle: true, platform: 'browser', target: 'es2022', format: 'cjs',
+  outfile: join(pkg, 'lib/client.js'),
+  banner: { js: 'window.__ModuleLoader__.load({id:"@k1412/dsh-gateway-node",factory:(require)=>{var module={exports:{}};var exports=module.exports;' },
+  footer: { js: 'return module.exports;}});' } })
 const source = JSON.parse(await readFile(join(root, 'packages/hub/gateway-node/package.json'), 'utf8'))
 await writeFile(join(pkg, 'package.json'), JSON.stringify({ name: source.name, version: source.version, type: 'module', license: 'MIT',
-  main: 'lib/index.js', exports: { '.': './lib/index.js', './cordis.patch.yml': './cordis.patch.yml', './package.json': './package.json' },
+  main: 'lib/index.js', exports: { '.': './lib/index.js', './client': './lib/client.js', './cordis.patch.yml': './cordis.patch.yml', './package.json': './package.json' },
   files: ['lib', 'cordis.patch.yml'], bin: { 'dsh-gateway-node': 'lib/cli.js' }, dsh: source.dsh,
   peerDependencies: source.peerDependencies }, null, 2) + '\n')
 await cp(join(root, 'packages/hub/gateway-node/cordis.patch.yml'), join(pkg, 'cordis.patch.yml'))

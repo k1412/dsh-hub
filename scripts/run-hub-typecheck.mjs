@@ -26,6 +26,7 @@ const projects = [
   'packages/hub/gateway-network/tsconfig.json',
   'packages/hub/gateway-transport/tsconfig.json',
   'packages/hub/gateway-node/tsconfig.json',
+  'packages/hub/gateway-session-directory/tsconfig.json',
   'packages/hub/gateway-server/tsconfig.json',
 
 ]

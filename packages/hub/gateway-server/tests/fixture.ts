@@ -32,7 +32,7 @@ export interface FixtureNode {
   writes: number; cancelled: number; uploads: number; headers: Headers | undefined
   cookie: string; disposeRuntime: () => Promise<void>
 }
-export async function createFixture(options: { password?: boolean; originSecret?: string; nativeRoot?: string; requestTimeoutMs?: number } = {}) {
+export async function createFixture(options: { password?: boolean; originSecret?: string; nativeRoot?: string; requestTimeoutMs?: number; sessionDirectory?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'gateway-qa-'))
   const publicPort = await availablePort()
   const publicUrl = `http://hub.localhost:${publicPort}`
@@ -50,7 +50,7 @@ export async function createFixture(options: { password?: boolean; originSecret?
     endpoint: () => 'ws://fixture.invalid', loginTailscale: async () => ({}),
   }
   const start = () => createGateway({ publicUrl, statePath, downloadsDirectory: join(dir, 'downloads'), installerPath: join(dir, 'install.sh'),
-    networks, nodeOrigin, requestTimeoutMs: options.requestTimeoutMs ?? 1500,
+    networks, nodeOrigin, sessionDirectory: options.sessionDirectory === true, requestTimeoutMs: options.requestTimeoutMs ?? 1500,
     ...(options.password ? { adminPassword: password } : { authenticateOperator: async (req) => req.headers['x-fixture-operator'] === 'yes' }),
     ...(options.originSecret ? { originSecret: options.originSecret } : {}),
   })
@@ -77,7 +77,7 @@ export async function createFixture(options: { password?: boolean; originSecret?
   }
   const enroll = (input: unknown) => fetch(`http://127.0.0.1:${privatePort}/enroll`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input), signal: AbortSignal.timeout(3000) })
   async function connect(node: FixtureNode) {
-    const socket = new WebSocket(`ws://127.0.0.1:${privatePort}/connect?nodeId=${node.id}`, { headers: { authorization: `Bearer ${node.credential}`, 'x-dsh-runtime': `runtime-${node.label}` } })
+    const socket = new WebSocket(`ws://127.0.0.1:${privatePort}/connect?nodeId=${node.id}`, { headers: { authorization: `Bearer ${node.credential}`, 'x-dsh-runtime': `runtime-${node.label}`, 'x-dsh-session-directory': options.sessionDirectory ? '1' : '0' } })
     socket.on('error', () => {})
     await once(socket, 'open'); node.socket = socket
     node.carrier = serveSurface(socket, node.surface)
@@ -85,7 +85,7 @@ export async function createFixture(options: { password?: boolean; originSecret?
   }
   async function addNode(label: string) {
     const invitation = gateway.store.invite('tailcat', 'ws://fixture.invalid', label)
-    const input = { inviteToken: invitation.token, clientId: randomBytes(12).toString('hex'), credential: randomBytes(32).toString('base64url'), name: label, dshVersion: 'fixture', runtimeId: `runtime-${label}` }
+    const input = { inviteToken: invitation.token, clientId: randomBytes(12).toString('hex'), credential: randomBytes(32).toString('base64url'), name: label, dshVersion: options.sessionDirectory ? '0.1.7-rc.2' : 'fixture', runtimeId: `runtime-${label}` }
     const reply = await enroll(input)
     if (reply.status !== 200) throw new Error('Fixture enrollment failed')
     const { nodeId } = await reply.json() as { nodeId: string }
@@ -93,6 +93,13 @@ export async function createFixture(options: { password?: boolean; originSecret?
     const handler = async (req: Request): Promise<Response> => {
       node.headers = req.headers
       const path = new URL(req.url).pathname
+      if (path === '/api/session/list') {
+        const input = await req.json() as { type: string; rpcId: string; method: string; payload: unknown }
+        if (JSON.stringify(input.payload) !== JSON.stringify({ args: { _request: {} } }) || input.method !== 'session/list') throw new Error('Native schema mismatch')
+        return Response.json({ type: 'server-response', rpcId: input.rpcId, result: { ok: true, value: {
+          items: [{ sessionId: 'same-session', updatedAt: 1, running: false, agentAvailable: true, projections: { values: { title: `Session ${label}` } } }],
+        } } })
+      }
       if (path === '/api/identity') return Response.json({ node: label, runtime: input.runtimeId, query: new URL(req.url).search })
       if (path === '/api/fail') throw new Error('Intentional fixture failure')
       if (path === '/api/write') { node.writes++; return Response.json({ writes: node.writes, node: label }) }

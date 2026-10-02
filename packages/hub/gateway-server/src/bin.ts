@@ -28,7 +28,7 @@ const networks = new GatewayNetworkManager({ stateDirectory: join(state, 'networ
   ...(env.DSH_GATEWAY_TAILSCALE_SOCKET ? { tailscaleSocket: env.DSH_GATEWAY_TAILSCALE_SOCKET } : {}),
   hostname: env.DSH_GATEWAY_TAILSCALE_HOSTNAME ?? 'dsh-gateway',
 })
-const gateway = createGateway({ publicUrl: env.DSH_GATEWAY_PUBLIC_URL ?? `http://localhost:${port}`,
+const gateway = createGateway({ sessionDirectory: env.DSH_GATEWAY_SESSION_DIRECTORY === '1', publicUrl: env.DSH_GATEWAY_PUBLIC_URL ?? `http://localhost:${port}`,
   ...(env.DSH_GATEWAY_DOWNLOAD_URL ? { downloadUrl: env.DSH_GATEWAY_DOWNLOAD_URL } : {}),
   statePath: join(state, 'gateway.sqlite'), networks,
   downloadsDirectory: resolve(env.DSH_GATEWAY_DOWNLOADS_DIRECTORY ?? './downloads'),

@@ -8,6 +8,7 @@ services:
       - "127.0.0.1:${DSH_GATEWAY_PORT:-8080}:8080"
     environment:
       PORT: "8080"
+      DSH_GATEWAY_SESSION_DIRECTORY: ${DSH_GATEWAY_SESSION_DIRECTORY:-0}
       DSH_GATEWAY_PRIVATE_PORT: "8081"
       DSH_GATEWAY_TAILSCALE_MODE: managed
       DSH_GATEWAY_STATE_DIRECTORY: /var/lib/dsh-gateway

@@ -93,8 +93,8 @@ export class GatewayStore {
     return !!this.db.prepare('SELECT 1 FROM sessions WHERE tokenHash=? AND scope=? AND expiresAt>?').get(digest(token), scope, this.now())
   }
   logout(token: string): void { this.db.prepare('DELETE FROM sessions WHERE tokenHash=?').run(digest(token)) }
-  ticket(nodeId: string): string {
-    const token = secret()
+  ticket(nodeId: string, kind: 'node' | 'session' = 'node'): string {
+    const token = `${kind === 'session' ? 's.' : ''}${secret()}`
     this.db.prepare('INSERT INTO tickets VALUES (?,?,?)').run(digest(token), nodeId, this.now() + 60_000)
     return token
   }

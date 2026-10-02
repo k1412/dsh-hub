@@ -2,15 +2,50 @@
   "extends": "./tsconfig.base.json",
   "files": [],
   "references": [
-    { "path": "./packages/hub/hub-protocol" },
-    { "path": "./packages/hub/hub-capabilities" },
-    { "path": "./packages/hub/hub-transport" },
-    { "path": "./packages/hub/hub-storage" },
-    { "path": "./packages/hub/hub-node-ipc" },
-    { "path": "./packages/hub/hub-node-agent" },
-    { "path": "./packages/hub/hub-connector" },
-    { "path": "./packages/hub/hub-client-ui" },
-    { "path": "./packages/hub/hub-server" },
-    { "path": "./apps/hub-web" }
+    {
+      "path": "./packages/hub/hub-protocol"
+    },
+    {
+      "path": "./packages/hub/hub-capabilities"
+    },
+    {
+      "path": "./packages/hub/hub-transport"
+    },
+    {
+      "path": "./packages/hub/hub-storage"
+    },
+    {
+      "path": "./packages/hub/hub-node-ipc"
+    },
+    {
+      "path": "./packages/hub/hub-node-agent"
+    },
+    {
+      "path": "./packages/hub/hub-connector"
+    },
+    {
+      "path": "./packages/hub/hub-client-ui"
+    },
+    {
+      "path": "./packages/hub/hub-server"
+    },
+    {
+      "path": "./apps/hub-web"
+    },
+    {
+      "path": "./packages/hub/gateway-network"
+    },
+    {
+      "path": "./packages/hub/gateway-transport"
+    },
+    {
+      "path": "./packages/hub/gateway-session-directory"
+    },
+    {
+      "path": "./packages/hub/gateway-node"
+    },
+    {
+      "path": "./packages/hub/gateway-server"
+    }
   ]
 }

@@ -10,6 +10,8 @@ English | [中文](README.md)
 
 This branch is being rewritten as a simple node entry point: Hub provides node listing, add/revoke and network settings. Opening a node uses its installed official DSH frontend, plugins and the same existing Runtime. Each node has a separate browser origin. Hub does not aggregate sessions/projects or proxy the local Web listener.
 
+This experimental branch additionally offers a runnable [session directory and exact native navigation](docs/hub/session-directory-experiment.md), explicitly enabled by `DSH_GATEWAY_SESSION_DIRECTORY=1`; the default remains the node entry point. The experiment guide covers same-Runtime dual-Hub installation, real rc.2 browser validation and measurement limits.
+
 Invitations select only **Tailscale or Tailcat**. The Hub image includes both tools and managed Tailscale login; the node installs the selected helper and persists pairing. See the [native gateway design](docs/hub/gateway-design.md) for boundaries, endpoints, evidence and remaining acceptance work. Local gates and fixture tests passed; complete production DSH browser and deployment acceptance remain pending.
 
 ### v2 quick start

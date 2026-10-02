@@ -45,7 +45,7 @@ function integer(value: number, min: number, max: number): number {
 }
 function originOf(value: string): string {
   const url = new URL(value)
-  if (url.protocol !== 'https:' || url.origin !== value || url.username || url.password) throw new Error('Invalid node origin')
+  if ((url.protocol !== 'https:' && !(url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname.endsWith('.localhost')))) || url.origin !== value || url.username || url.password) throw new Error('Invalid node origin')
   return url.origin
 }
 function metadata(value: unknown, max: number): { rows: Metadata[]; truncated: boolean } {
@@ -188,3 +188,5 @@ export class SessionDirectory {
   }
 }
 export { renderDirectory, directoryResponse } from './ssr.ts'
+
+export { nativeList, DirectoryAdmission } from './native-rpc.ts'
