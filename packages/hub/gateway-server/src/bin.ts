@@ -15,11 +15,14 @@ const auth: AuthFile = env.DSH_GATEWAY_AUTH_FILE ? JSON.parse(await readFile(env
 const teamDomain = auth.teamDomain ?? env.DSH_GATEWAY_CF_TEAM_DOMAIN
 const audience = auth.audience ?? env.DSH_GATEWAY_CF_AUDIENCE
 const operatorEmails = auth.operatorEmails ?? env.DSH_GATEWAY_OPERATOR_EMAILS?.split(',')
-if ([teamDomain, audience, operatorEmails].some(value => value !== undefined)
+// Compose passes unset optional variables as empty strings. Only wholly blank
+// Access settings are absent; any nonblank field still requires the full set.
+const accessConfigured = [teamDomain, audience, operatorEmails?.join(',')].some(value => Boolean(value?.trim()))
+if (accessConfigured
   && (!teamDomain?.trim() || !audience?.trim() || !operatorEmails?.length || operatorEmails.some(email => !email.trim()))) {
   throw new Error('Cloudflare authentication requires team domain, audience and operator emails together')
 }
-const verifier = teamDomain && audience && operatorEmails ? new CloudflareAccessVerifier({ teamDomain, audience, operatorEmails }) : undefined
+const verifier = accessConfigured && teamDomain && audience && operatorEmails ? new CloudflareAccessVerifier({ teamDomain, audience, operatorEmails }) : undefined
 const originSecret = auth.originSecret ?? env.DSH_GATEWAY_ORIGIN_SECRET
 const networks = new GatewayNetworkManager({ stateDirectory: join(state, 'network'), privatePort,
   overlayPort: Number(env.DSH_GATEWAY_OVERLAY_PORT ?? privatePort),

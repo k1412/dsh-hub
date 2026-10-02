@@ -375,6 +375,7 @@ export function createGateway(options: GatewayOptions) {
     })().catch(error => response(res, 400, { error: error instanceof Error ? error.message : 'Enrollment failed' }))
   })
   privateServer.on('upgrade', (req, socket, head) => {
+    if (closing) { socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n'); return }
     const url = new URL(req.url ?? '/', 'http://localhost')
     const id = url.searchParams.get('nodeId') ?? ''
     const auth = req.headers.authorization?.replace(/^Bearer /, '') ?? ''
@@ -392,6 +393,7 @@ export function createGateway(options: GatewayOptions) {
     })
   })
   publicServer.on('upgrade', (req, socket, head) => {
+    if (closing) { socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n'); return }
     const id = hostNode(req); const node = id ? store.node(id) : undefined
     if (!originAllowed(req) || !id || !node || node.revokedAt || !store.authorized(token(req), id) || !permittedOrigin(req, new URL(nodeOrigin(id)).origin)) {
       socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n'); return
@@ -425,7 +427,15 @@ export function createGateway(options: GatewayOptions) {
       closing = true
       clearInterval(heartbeat)
       directory?.dispose(); intents.clear(); ticketIntents.clear()
-      for (const ws of browserSockets) ws.terminate()
+      // Give browsers and reverse proxies an explicit restart frame while the
+      // carriers are still alive. An unresponsive browser cannot block shutdown.
+      await Promise.all([...browserSockets].map(ws => new Promise<void>(ok => {
+        if (ws.readyState === WebSocket.CLOSED) { ok(); return }
+        const done = () => { clearTimeout(timer); ws.off('close', done); ok() }
+        const timer = setTimeout(() => { ws.terminate(); done() }, 1000)
+        ws.once('close', done)
+        ws.close(1012, 'Hub restarting')
+      })))
       for (const peer of peers.values()) { peer.tunnel.close(); peer.socket.terminate() }
       peers.clear()
       for (const ws of agentSockets.clients) ws.terminate()

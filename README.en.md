@@ -1,185 +1,90 @@
-# DSH Hub
+# DSH Hub Gateway · Session directory experiment
 
 English | [中文](README.md)
 
-[![CI](https://github.com/k1412/dsh-hub/actions/workflows/hub-ci.yml/badge.svg)](https://github.com/k1412/dsh-hub/actions/workflows/hub-ci.yml)
-[![Release](https://img.shields.io/github/v/release/k1412/dsh-hub?display_name=tag)](https://github.com/k1412/dsh-hub/releases)
+[![Gateway branch CI](https://github.com/k1412/dsh-hub/actions/workflows/hub-ci.yml/badge.svg?branch=experiment%2Fsession-directory)](https://github.com/k1412/dsh-hub/actions?query=branch%3Aexperiment%2Fsession-directory)
 [![License](https://img.shields.io/github/license/k1412/dsh-hub)](LICENSE)
 
-## v2 branch: native node gateway
+**One node list opens the DSH already running on each machine.**
 
-This branch is being rewritten as a simple node entry point: Hub provides node listing, add/revoke and network settings. Opening a node uses its installed official DSH frontend, plugins and the same existing Runtime. Each node has a separate browser origin. Hub does not aggregate sessions/projects or proxy the local Web listener.
+Nodes on computers, NAS devices or servers connect outbound to Hub. Opening a node uses its installed official frontend, plugins and existing Runtime. No local Web port is exposed, and remote access starts no second DSH instance.
 
 This experimental branch additionally offers a runnable [session directory and exact native navigation](docs/hub/session-directory-experiment.md), explicitly enabled by `DSH_GATEWAY_SESSION_DIRECTORY=1`; the default remains the node entry point. The experiment guide covers same-Runtime dual-Hub installation, real rc.2 browser validation and measurement limits.
 
-Invitations select only **Tailscale or Tailcat**. The Hub image includes both tools and managed Tailscale login; the node installs the selected helper and persists pairing. See the [native gateway design](docs/hub/gateway-design.md) for boundaries, endpoints, evidence and remaining acceptance work. Local gates and fixture tests passed; complete production DSH browser and deployment acceptance remain pending.
+## Three layers of responsibility
 
-### v2 quick start
+| Layer | Responsibility | Data and authority |
+| --- | --- | --- |
+| Hub | Login, node list, invitations, revocation and network settings; authenticated forwarding and optional session directory | Stores identities, invitations and operator sessions, briefly caches directory metadata, not model credentials, history or project indexes |
+| Network | Tailscale or Tailcat carries outbound node connections | Both tools ship in the Hub image; overlay access does not replace Hub pairing authentication |
+| Node | Official frontend, plugins, APIs, models, sessions and files | All use the same existing Runtime; each node has a separate browser origin |
 
-Use the separate [Compose application](deploy/gateway/compose.yaml) and preserve the existing v1 service. In protected environment configuration, set `DSH_GATEWAY_PUBLIC_URL` and choose complete Cloudflare Access settings or a `DSH_GATEWAY_OWNER_PASSWORD` of at least 16 characters; use HTTPS in production. From the repository root, run:
-
-```sh
-docker compose -p dsh-gateway-v2 -f deploy/gateway/compose.yaml up -d --build
-```
-
-The default publishes the browser port only on host loopback. Configure an HTTPS proxy, management and per-node hostnames, and certificates; never publish private agent port `8081`. An Access-protected entry needs a download origin reachable by the installer. Prepare the selected network in Connection settings, add a node, run its invitation command as the existing DSH user, and reload the original Runtime as instructed. Follow the design document for deployment and rollback details.
-
-## Legacy v1 workbench documentation
-
-The following content is retained for existing v1 services. Its session aggregation, model sync, screenshots and deployment path do not describe v2.
-
-**One browser for DSH across your computers, NAS, and servers.**
-
-Start a task at your desk and continue from your phone. Leave a long task on your NAS while coding in a project on another machine. DSH Hub gives [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) a single entry point: find workspaces and sessions across machines, choose where new work runs, and manage nodes, plugins, and recovery points in one place.
-
-Sessions and files stay on their original machine. Local DSH Web, the desktop client, and Hub share the same Runtime, without copying projects or starting another DSH instance for remote access.
-
-[Get started](#quick-start) · [Tailcat device pairing](#featured-access-direction-tailcat-device-pairing) · [Using Hub](docs/hub/console.md) · [Compatibility](docs/hub/compatibility.md)
-
-![DSH Hub: sessions from multiple machines grouped by workspace](docs/assets/overview.png)
-
-## What becomes easier
-
-| What you want to do | How Hub helps |
-|---|---|
-| Continue work from another computer | Open the original session in the overview; requests return to its owning node without copying history |
-| Choose where code runs | Select a node when creating a session, then browse that machine's working directories |
-| Keep track of several machines | The overview combines all nodes; changing the default node does not hide the others |
-| Check progress or answer a question from your phone | Continue the same session in a browser, with a sidebar and Settings layout for narrow screens |
-| Connect a home NAS or laptop | Each node connects outbound to Hub; no public node IP, port forwarding, or exposed local DSH Web listener |
-| Recover after a plugin update | Check versions and update history in Node plugins; managed updates keep rollback points automatically |
-| Remove stale listings from an unused machine | Clear an offline node's Hub cache directly; revoking a node also removes its discovery index |
-| Recover archives or delete unwanted Sessions | Use [Session management](docs/hub/session-management.md) to browse archives, restore trash, or confirm permanent deletion of source logs |
-| Use the same models across machines | Choose source and targets in [Model sync](docs/hub/model-sync.md) to copy providers, model lists and API keys; configuration stays on nodes |
-
-Hub is for **an individual or one trusted operator**. An authenticated operator has the full authority of the Node Agent account, including files, terminals, and plugin management. It does not offer separate workspace permissions for multiple users.
-
-## Featured access direction: Tailcat device pairing
-
-**Private access to a personal Hub should feel like pairing devices: generate a key on your laptop, approve its public key on Hub's host, then run the connection script.** Tailcat is our preferred lightweight direction, with three pairing and connection scripts already in this repository.
-
-It suits one Hub and a few personal computers. Pair the browser's device with the Hub host; you do not need a separate tunnel to every DSH node. On a NAS, Tailcat can run on the host and forward a container port published on host loopback, without installing Tailscale inside the Hub container or changing its image. Tailcat and Tailscale are separate tools; installing Tailscale does not install `tailcat`.
-
-| Set up once | Use afterward |
-|---|---|
-| Run `enroll-client.sh` on the operator device to save a client identity | Reuse that identity with `connect-hub.sh` to start local forwarding |
-| Allow its public `nodekey` through `serve-hub.sh` on the Hub host | Only a client holding the approved private key can establish the tunnel |
-| Save a server key | Reuse its identity after restarts; stopping the server interrupts the current tunnel |
-
-> **Current status: device tunnel scripts are available; device-only Hub login is not implemented.** Hub still checks Cloudflare Access JWTs, operator email, and the Origin Secret. Forwarding the raw Hub port to `localhost` does not automatically create a usable login entry point. We recommend Tailcat as the access direction for a few trusted devices; for a working browser deployment today, complete the Cloudflare Access path below. See [pairing steps, verification, and the authentication proposal](docs/hub/access-options.md).
-
-Tailcat provides an encrypted tunnel without a Tailscale account or control plane; our scripts additionally require a client public-key allowlist. “Device binding” means **binding to the private key held by the device**, not an uncopyable hardware identity. See the [Tailcat overview](https://tailscale.com/tailcat) and [installation instructions](https://github.com/tailscale/tailcat/blob/main/INSTALL.md).
-
-## Daily use: choose a machine, choose a folder, keep working
-
-1. **Connect a machine:** open Settings → Hub nodes, generate an enrollment code, run the generated installer on that machine, and restart its existing DSH Profile once.
-2. **Start new work:** select a node/Runtime beside the new-session input, browse that node's workspace directories, and send your first message.
-3. **Continue existing work:** open the session from the overview. It returns to its owning node regardless of the default selected for new sessions.
-4. **Change a model or permissions:** check Current Runtime at the top of Settings first. Models, permissions, and Agent presets belong to that Runtime; language and appearance belong to your browser.
-
-A machine can run several Profiles, with a different ID for each independent Runtime. Hub shows the management target so you can distinguish their configurations. See the [console guide](docs/hub/console.md).
-
-<table>
-  <tr>
-    <td width="64%"><img src="docs/assets/nodes.png" alt="Nodes, Runtimes, and connection status"></td>
-    <td width="36%"><img src="docs/assets/mobile.png" alt="Sessions on a phone"></td>
-  </tr>
-  <tr>
-    <td align="center">Nodes and runtime status in one place</td>
-    <td align="center">Continue the same session on a phone</td>
-  </tr>
-</table>
-
-### What happens when a node goes offline?
-
-Hub keeps a minimal session index so you can still see where work belongs. Reading full history, continuing execution, or deleting a real session still requires its node to be online.
-
-To remove stale overview entries, open Settings → Hub nodes and choose **Clear Hub cache** (`清理 Hub 缓存`) for the offline node. Hub performs this locally without waiting for the node; original sessions and files remain intact. Existing sessions synchronize again after reconnection. **Revoke** an unused machine to disconnect it and remove its session discovery index. Revoke its Cloudflare Service Token separately.
-
-### Plugin updates and recovery
-
-Settings → Node plugins first asks which Runtime to manage, then shows installed versions, sources, and available updates. A managed update saves the previous configuration and dependency state. Failure restores it automatically; successful updates can also be rolled back from history. Local and Git sources are marked separately, and one unavailable package does not break the entire inventory.
-
-![Inspect plugins, apply managed updates, and roll back](docs/assets/plugins.png)
-
-Use **managed-scope snapshots** for a broader set of configuration or approved data. Snapshots stay on the node, cover the paths configured there, and are not whole-machine backups. See [plugins and snapshots](docs/hub/console.md).
+For an individual or one trusted operator. Login grants the Runtime's full authority, including files and terminals; this is not a service with separate permissions for multiple users.
 
 ## Quick start
 
-This is the **complete deployment path implemented today**. You need a Docker host, an HTTPS domain protected by Cloudflare Access, and at least one machine already running DSH. Nodes need Node.js 22.19+ in the 22 line or 24+, npm, and platform build tools. Check the [compatibility table](docs/hub/compatibility.md) first: Hub and DSH have separate versions.
+### 1. Deploy Hub
 
-### 1. Prepare the Hub entry point
+This Compose application **builds from source**. It does not depend on publicly published Gateway npm packages or container images.
 
-Configure Cloudflare Access policies for the operator and node Service Tokens. A trusted reverse proxy injects an independent `X-DSH-Origin-Secret` before forwarding to Hub. Bind the Hub Origin to loopback or a restricted private interface.
+Prepare configuration from the repository root:
 
-| Your environment | Recommended complete deployment |
-|---|---|
-| NAS or home network without public ingress | Cloudflare Tunnel → local reverse proxy → Hub |
-| Server with a public entry point | Cloudflare Access → HTTPS reverse proxy → Hub |
-| VPS entry point, Hub on a NAS | Cloudflare Access → VPS proxy → Tailscale/WireGuard private network → Hub |
-
-See the [deployment guide](docs/hub/deployment.md) for proxy configuration and validation. See [access options](docs/hub/access-options.md) for Tailcat and Tailscale readiness.
-
-### 2. Start Hub
-
-```bash
-git clone https://github.com/k1412/dsh-hub.git
-cd dsh-hub/deploy/hub
-cp .env.example .env
-chmod 600 .env
-# Edit .env: HTTPS Origin, Access parameters, operator email, and a separate Origin Secret.
-# For production, pin DSH_HUB_IMAGE to the chosen release's image digest.
-mkdir -p backups
-sudo chown 10001:10001 backups
-docker compose pull
-docker compose up -d
-docker compose ps
+```sh
+cp deploy/gateway/.env.example deploy/gateway/.env
+chmod 600 deploy/gateway/.env
 ```
 
-Open the configured HTTPS domain and sign in. A `404` from the raw Origin port is expected protection, not evidence that Hub failed to start. See [image and source installation](docs/hub/deployment.md#3-start-the-hub).
+Edit `deploy/gateway/.env`:
 
-### 3. Connect your existing DSH
+- Set `DSH_GATEWAY_PUBLIC_URL` and choose an unused browser port.
+- Choose a standalone password of at least 16 characters or complete Cloudflare Access settings. Access mode has no password bypass.
+- Configure the management hostname, per-node subdomains, HTTPS certificates and reverse proxy.
+- If Access protects management, provide a `DSH_GATEWAY_DOWNLOAD_URL` reachable by command-line installers.
 
-Open **Settings → Hub nodes → Generate enrollment**, then run the generated Linux/macOS or Windows command as the same operating-system account that runs DSH.
-
-The installer downloads and verifies Node Agent and Connector, adds Connector to the existing Profile, sets up a current-user background service, and prompts for that node's dedicated Cloudflare Service Token. The enrollment code is single-use and expires after 15 minutes. Restart the existing DSH Profile to load Connector.
-
-**You are done when:** both node and Runtime are online, a session created in local DSH appears in Hub, and both interfaces can continue it. Repeat enrollment for a second machine with a different Service Token. See [node installation and services](docs/hub/node-services.md).
-
-## Where data lives and work runs
-
-```mermaid
-flowchart LR
-  Browser["Browser / phone"] --> Access["Access + trusted proxy"]
-  Access --> Hub["Hub: entry point, routing, index"]
-  AgentA["NAS · Node Agent"] -->|"Outbound signed WSS"| Hub
-  AgentB["Computer · Node Agent"] -->|"Outbound signed WSS"| Hub
-  AgentA <--> RuntimeA["NAS DSH + Connector"]
-  AgentB <--> RuntimeB["Computer DSH + Connector"]
-  Local["Local Web / desktop"] --> RuntimeB
+```sh
+docker compose --env-file deploy/gateway/.env \
+  -p dsh-gateway-v2 -f deploy/gateway/compose.yaml up -d --build
 ```
 
-Hub stores node identities, minimal discovery indexes, reliable delivery state, and audit records. Nodes handle full sessions, workspace files, model calls, plugin artifacts, and snapshots. Disconnecting Hub does not stop local DSH; Hub itself does not execute node tasks. Back up Hub state, DSH data, and Node Agent state as separate concerns; see [operations](docs/hub/operations.md).
+The browser port publishes only on host loopback by default. **Never publish private agent port `8081`.** Use a separate application and state volume, preserving existing services. See the [design](docs/hub/gateway-design.md) for deployment boundaries.
 
-## Versions and capability boundaries
+### 2. Invite a node
 
-The main branch may include fixes that have not been released. Merging code does not automatically update the installer or image behind `releases/latest`. Check the Release, source commit, and Connector version when choosing an installation source.
+Prepare networking in Hub's Connection settings, then select Add node:
 
-The current branch includes Connector adaptations for DSH versions such as `0.1.7-alpha.1`, while the bundled official Web snapshot is still from the `0.1.0-rc.7` family. **Passing transport adaptation tests does not mean every new DSH interface or feature is included.** Read [compatibility notes](docs/hub/compatibility.md) before upgrading, then verify sessions, tools, questions, cancellation, and Settings.
+- **Tailscale:** suits an existing tailnet; Hub supports managed login configuration.
+- **Tailcat:** pairs over an encrypted connection without an account, with relay fallback when direct connectivity is unavailable.
 
-## Read by task
+Run the invitation command as the existing DSH user. The installer verifies downloads, installs into the original profile and preserves pairing. Reinstallation does not start a conflicting process with the active Tailcat identity.
 
-| Next step | Guide |
-|---|---|
-| Compare Tailcat pairing, Tailscale, and a public entry point | [Access options](docs/hub/access-options.md) |
-| Deploy your first Hub and enroll a node | [Deployment](docs/hub/deployment.md) |
-| Create sessions, change Settings targets, update plugins | [Console](docs/hub/console.md) |
-| Install or troubleshoot background node services | [Node services](docs/hub/node-services.md) |
-| Upgrade, back up, restore, clean up, or revoke | [Operations](docs/hub/operations.md) |
-| Decide whether to upgrade a DSH version | [Compatibility](docs/hub/compatibility.md) |
-| Understand permissions, authentication, and data protection | [Security](docs/hub/security.md) |
-| Understand code boundaries or investigate latency | [Architecture](docs/hub/architecture.md) · [Performance](docs/hub/performance.md) |
+### 3. Open native DSH
 
-Developers can start with [contributing](CONTRIBUTING.en.md): run `pnpm install --frozen-lockfile`, then `pnpm run check` and `pnpm run build`. CI also verifies concurrent nodes, mobile and desktop browsers, performance budgets, and the Linux container.
+Once the node is online, select Open DSH, choose a workspace and continue its native session. Models, history and files remain owned by that node's Runtime.
 
-DSH Hub is an independent community project, not an official DeepSeek product. It uses a pinned set of official Web components and public plugin interfaces. See [LICENSE](LICENSE), [third-party notices](THIRD_PARTY_NOTICES.md), and [upstream attribution](docs/upstream.en.md).
+Initial installation has activated through HMR in testing. **Successful plugin installation does not mean running code has updated:** official rc2 updates can hit a nested HMR transaction limit, requiring a controlled reload of the existing Runtime after checking active work. Never start a second Runtime.
+
+## Verified behavior and current limits
+
+The production acceptance below belongs to the base Gateway; it does not establish deployment acceptance for the experimental directory. Chromium/WebKit fixtures and CI cover two Runtimes, two Hubs, exact history navigation and SSE isolation; see the [experiment evidence](docs/hub/session-directory-experiment.md).
+
+- Two real nodes are online through Tailscale/Tailcat; native workspace, Full access, model menus and Chromium/WebKit phone interaction passed.
+- One real-model reply and refreshed history per node passed; 65,537-byte native upload/download SHA-256 integrity and cross-node ownership checks passed.
+- Complete installed rc2, 63 official plugins, packaged installation, actual Tailcat reinstallation and plugin-event SSE have test evidence.
+- JS/CSS uses streaming gzip. Only exact-version URLs declared immutable by their native owner permit private browser caching. APIs, history and files remain no-store; Hub has no shared cache.
+- Earlier production cold loading reached about 94 seconds; functional success does not establish acceptable speed. See [staged acceptance evidence](docs/hub/gateway-design.md#10-current-implementation-and-acceptance-evidence) for final deployment, cold/warm cache and recovery measurements, without SLA claims.
+- Open in App is a local desktop feature and is unsupported remotely; its 404 must not become a “zero network errors” claim.
+
+## Versions and compatibility
+
+| Component | This version's boundary |
+| --- | --- |
+| Gateway | `2.0.0-alpha.1`; use the source revision and matching evidence, not the shared version string, to identify verified changes |
+| DSH | Installer admits `0.1.7-rc.2`; frontend and plugins come from that node's matching Runtime |
+| Network tools | Tailscale `1.102.4`, Tailcat `0.7.0`; automatic installation covers Linux amd64/arm64, macOS requires the selected tool installed, and the shell does not support Windows |
+
+## Documentation and legacy maintenance
+
+- [Gateway architecture, endpoints, authentication, updates/rollback and acceptance](docs/hub/gateway-design.md)
+- This branch: [session directory and exact native navigation](docs/hub/session-directory-experiment.md), disabled by default; enable with `DSH_GATEWAY_SESSION_DIRECTORY=1`. Two Hubs use separate named instances and state directories in the same Runtime. The separate [node management and control experiment](https://github.com/k1412/dsh-hub/tree/experiment/node-control) is outside this branch.
+- [Source-build configuration template](deploy/gateway/.env.example) · [Compose](deploy/gateway/compose.yaml) · [Security reporting](SECURITY.md)
+- **Legacy v1 maintenance only:** [old documentation index](docs/hub/index.md), [old console](docs/hub/console.md), [old deployment](docs/hub/deployment.md), [old workbench screenshot](docs/assets/overview.png). Its aggregation and model sync are not features of this branch's Gateway.
