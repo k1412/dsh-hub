@@ -47,6 +47,9 @@ void networks.start().catch(() => console.error('Network initialization failed; 
 let closing = false
 async function shutdown(): Promise<void> {
   if (closing) return; closing = true
-  await networks.close(); await gateway.close()
+  // Keep the overlay alive long enough to deliver the carrier disconnect.
+  // Otherwise remote nodes can only notice a planned restart via heartbeat.
+  try { await gateway.close() }
+  finally { await networks.close() }
 }
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void shutdown().then(() => process.exit(0), () => process.exit(1)) })
