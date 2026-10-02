@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http'
 import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import { createGzip } from 'node:zlib'
 import { readFile, stat } from 'node:fs/promises'
 import { resolve, basename } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
@@ -58,6 +60,29 @@ function response(res: ServerResponse, status: number, value: string | object, t
 }
 function redirect(res: ServerResponse, location: string, cookie?: string): void {
   res.writeHead(303, { location, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', ...(cookie ? { 'set-cookie': cookie } : {}) }); res.end()
+}
+
+/** Only an explicit, valid gzip preference authorizes transforming a response. */
+function acceptsGzip(value: string | undefined): boolean {
+  const preferences = (value ?? '').split(',').map(entry => entry.trim()).filter(entry => /^gzip(?:\s*;|$)/i.test(entry))
+  return preferences.length > 0 && preferences.every(entry => {
+    const match = /^gzip\s*(?:;\s*q\s*=\s*(0(?:\.\d{0,3})?|1(?:\.0{0,3})?))?\s*$/i.exec(entry)
+    return !!match && (match[1] === undefined || Number(match[1]) > 0)
+  })
+}
+
+function varyEncoding(headers: Record<string, string>): void {
+  const values = (headers.vary ?? '').split(',').map(value => value.trim()).filter(Boolean)
+  if (!values.some(value => value === '*' || value.toLowerCase() === 'accept-encoding')) values.push('Accept-Encoding')
+  headers.vary = values.join(', ')
+}
+
+/** rc.2 advertises both individual bundles and /plugins/??a/client.js,b/client.js&rev=... . */
+function pluginCodeUrl(url: URL): boolean {
+  if (/^\/plugins\/.+\/client\.js$/.test(url.pathname)) return true
+  if (url.pathname !== '/plugins/' || !/^\?\?[^?&]+&rev=[a-f0-9]{12}$/.test(url.search)) return false
+  return url.search.slice(2, url.search.indexOf('&')).split(',')
+    .every(file => /^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+\/client\.js$/i.test(file))
 }
 
 export function createGateway(options: GatewayOptions) {
@@ -138,10 +163,41 @@ export function createGateway(options: GatewayOptions) {
     const out: Record<string, string> = {}
     reply.headers.forEach((value, key) => { if (!/^(connection|transfer-encoding|set-cookie)$/i.test(key)) out[key] = value })
     out['referrer-policy'] = 'no-referrer'; out['x-content-type-options'] = 'nosniff'
-    // Authenticated Runtime assets never enter intermediary shared caches.
-    out['cache-control'] = 'private, no-store'
+    // Compress only installed browser code on this hop. APIs, events, downloads
+    // and pre-encoded/ranged representations retain their native byte contract.
+    const pluginCode = pluginCodeUrl(url)
+    const staticCode = (/^\/assets\/.+\.(?:js|css)$/.test(url.pathname) || pluginCode)
+      && /^(?:text\/(?:javascript|css)|application\/(?:javascript|x-javascript))(?:\s*;|$)/i.test(out['content-type'] ?? '')
+    const eligibleCode = staticCode && reply.status === 200 && ['GET', 'HEAD'].includes(request.method ?? '')
+      && !reply.headers.has('content-range') && !request.headers.range
+      && !/^attachment(?:\s*;|$)/i.test(out['content-disposition'] ?? '')
+      && !/(?:^|,)\s*no-transform\s*(?:,|$)/i.test(out['cache-control'] ?? '')
+    if (eligibleCode) varyEncoding(out)
+    const gzip = eligibleCode && (reply.body !== null || request.method === 'HEAD')
+      && !reply.headers.has('content-encoding') && acceptsGzip(request.headers['accept-encoding'])
+    if (gzip) {
+      out['content-encoding'] = 'gzip'
+      for (const header of ['content-length', 'etag', 'last-modified', 'content-md5', 'digest', 'content-digest', 'repr-digest', 'accept-ranges']) delete out[header]
+    }
+    // Trust versioned URLs only when the native owner also promises immutability.
+    // Cache lives in this node origin's browser; no Hub or shared proxy cache.
+    const revisions = url.searchParams.getAll('rev')
+    const revisioned = pluginCode && revisions.length === 1 && /^[a-f0-9]{12}$/.test(revisions[0] ?? '')
+    const hashedAsset = /^\/assets\/(?:[^/]+\/)*[^/]+-[A-Za-z0-9_-]{8}\.(?:js|css)$/.test(url.pathname)
+    const nativeCache = reply.headers.get('cache-control') ?? ''
+    const immutable = /(?:^|,)\s*immutable\s*(?:,|$)/i.test(nativeCache)
+      && !/(?:^|,)\s*(?:no-store|no-cache)\s*(?:=|,|$)/i.test(nativeCache)
+    out['cache-control'] = eligibleCode && immutable && (revisioned || hashedAsset)
+      ? 'private, max-age=31536000, immutable' : 'private, no-store'
     res.writeHead(reply.status, out)
     if (request.method === 'HEAD' || !reply.body) { res.end(); await reply.body?.cancel(); return }
+    if (gzip) {
+      const source = Readable.fromWeb(reply.body as import('node:stream/web').ReadableStream)
+      // pipeline preserves backpressure and destroys every per-request stream
+      // on browser abort or native failure, cancelling only this tunnel call.
+      await pipeline(source, createGzip(), res, { signal: abort.signal })
+      return
+    }
     const reader = reply.body.getReader()
     try {
       while (!abort.signal.aborted) {

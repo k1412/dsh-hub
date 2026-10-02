@@ -83,7 +83,7 @@ export async function createFixture(options: { password?: boolean; originSecret?
     node.carrier = serveSurface(socket, node.surface)
     await until(() => gateway.peers.has(node.id))
   }
-  async function addNode(label: string) {
+  async function addNode(label: string, bundles?: (request: Request) => Promise<Response>) {
     const invitation = gateway.store.invite('tailcat', 'ws://fixture.invalid', label)
     const input = { inviteToken: invitation.token, clientId: randomBytes(12).toString('hex'), credential: randomBytes(32).toString('base64url'), name: label, dshVersion: 'fixture', runtimeId: `runtime-${label}` }
     const reply = await enroll(input)
@@ -125,7 +125,7 @@ export async function createFixture(options: { password?: boolean; originSecret?
       connection = native; node.disposeRuntime = () => ctx.fiber.dispose()
     }
     node.surface = new NodeSurface({ distIndex: join(dir, 'web/index.html'), renderIndex: html => html.replace('OWNER', label), runtime: {
-      connection, clientModules: { fetchBundle: async () => new Response(`export default ${JSON.stringify(label)}`, { headers: { 'content-type': 'text/javascript' } }) },
+      connection, clientModules: { fetchBundle: bundles ?? (async () => new Response(`export default ${JSON.stringify(label)}`, { headers: { 'content-type': 'text/javascript' } })) },
       typertGateway: { wireStream: {
         open: async (endpoint, _payload, uplink, _peer, signal) => {
           if (endpoint === 'fixture/fail') throw new Error('Fixture native method failed')
