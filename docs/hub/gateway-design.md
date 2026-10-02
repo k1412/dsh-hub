@@ -136,6 +136,8 @@ Deploy as a new dedicated Docker application on the NAS, with its own name, imag
 
 Before enabling the route, verify the actual image contains both helpers, the persistent volume is writable only by the service account, the browser-origin certificate covers the configured hosts, and the reverse proxy does not cache authenticated native traffic or buffer streams indefinitely. Check that invalid hosts and direct unauthenticated origin requests fail. Container health must distinguish a running HTTP process from a ready overlay and an online node.
 
+Node working directories require persistent volumes. One production QA directory used container tmpfs; after a Runtime restart the session appeared in Ungrouped. The directory later existed, but its inode timestamp was later than Runtime startup. The observation establishes state consistency, not the exact historical cause. An unchanged `cwd` string does not prove directory or file persistence. Deployment health checks should also distinguish application HTTP failures from OCI exec or host runtime-directory failures. Verify background probes after leaving the interactive session; one failed exec does not establish application unavailability.
+
 | Failure | Required result and recovery |
 | --- | --- |
 | Tailscale not logged in | Show `needs-login`; block Tailscale invitation generation; offer managed login |
@@ -198,8 +200,9 @@ The executable reads protected `DSH_GATEWAY_AUTH_FILE` JSON or environment confi
 
 | Check | Observed result | What it establishes |
 | --- | --- | --- |
-| Repository gates | Recorded release `check`/`build` passed: 275 tests, three optional skips; CI revision is listed separately | That recorded source revision passes its configured gates; a skipped test is not counted as exercised |
+| Repository gates | Revision `47b45a68c3` release `check`/`build` exited 0: 291 tests passed, four optional skips; CI revision is listed separately | That recorded source revision passes its configured gates; a skipped test is not counted as exercised |
 | CI | [Run 37050742806](https://github.com/k1412/dsh-hub/actions/runs/37050742806), revision `69def3feee`, succeeded | Full macOS/Windows/Ubuntu jobs, Gateway checks and installed-DSH Chromium/WebKit checks passed; earlier failures are resolved |
+| Graceful shutdown tests | With `GATEWAY_BROWSER_TEST=1` and a complete DSH installation, 98 Gateway tests passed; 32 server tests include real-browser 1012 close checks | Local two-node native browser coverage and the one-second fallback for unacknowledged raw TCP; new CI enables browser tests, without predicting its result |
 | Complete installed DSH | DSH `0.1.7-rc.2`, 63 official plugin entries, Chromium and WebKit | Real frontend/Runtime boot, restricted plugin scope, no added Web listener, mobile composer, Full access and model controls |
 | Native conversation and files | Fixture LLM send/reply/history after refresh; 65,537-byte UI upload and native `workspaceFiles` download matched byte for byte | Complete installed native paths work with a controlled model fixture; this is not a paid provider or production model test |
 | Packaged profile installation | Official gateway tarball and real CLI → already running profile → real Tailcat → HMR; Runtime started once, PID unchanged; index and official JS returned 200 | Plugin can activate in the existing profile without starting a second Runtime or restarting that tested process |
@@ -268,9 +271,37 @@ Shutdown now closes Gateway HTTP/WebSocket carriers before stopping overlay help
 
 The independent production JSON reached its completed state after the marked restart of this revision. Node B (Tailcat) recorded the original native UI socket closing, two unsuccessful replacement attempts, then an automatically opened socket receiving native frames. Time from the initial close to the first frame was **6.96 seconds** in this single observation. Node A (Tailscale) recorded no original UI socket close or replacement, so **actual disconnect/recovery was not demonstrated for Node A**. Both nodes retained history hash, model, workspace state and exactly one authored user prompt; history remained visible and no additional prompt was sent. This distinguishes observed UI recovery from state preservation: an extra read-only probe stream or a pre-marker incidental reconnect does not qualify. The earlier incomplete recovery observation and 14/15 browser-performance record remain separate; these results neither erase the cold-entry failure nor establish a production recovery SLA.
 
+### Latest completed cold/warm loading measurements
+
+After deployment of `69def3feee`, both nodes ran concurrently in Chromium desktop viewports: one fresh-context cold entry and one same-context reload per node. The composer became available in **4/4** rounds. Fresh contexts reused existing host-only session cookies with empty origin storage/cache. No additional model prompt was sent.
+
+| Node | Cold entry | Warm reload |
+| --- | --- | --- |
+| Node A | 15.71 s | 3.89 s |
+| Node B | 14.26 s | 7.00 s |
+
+Each cell is one observation, timed until the composer was visible. Warm rounds transferred zero code bytes; all 62 API responses were no-store. Local desktop endpoint 404s and cancelled requests remained. Earlier successful cold rounds were 15.36–21.45 seconds and fully warm rounds 3.91–7.96 seconds. Authentication entry conditions differed from the earlier run, so this is not a controlled gzip A/B or a performance measurement of the later `8df24c10d6`. Primary 11/12, supplemented 14/15, and the unexplained 150-second cold-entry timeout remain recorded. Four successful rounds establish neither long-term stability, acceptable performance nor an SLA.
+
+### `8df24c10d6` graceful shutdown
+
+The implementation first sends `1012 Hub restarting` to original browser WebSockets and waits at most one second for close acknowledgement. It then terminates unresponsive connections, closes node carriers, and finally stops network helpers. While closing, both public and private ports reject new WebSocket upgrades with 503. Real local two-node browser checks and the one-second fallback for unacknowledged raw TCP have passed.
+
+Revision `47b45a68c3` changes tests and CI only. The old connector test had a one-second total budget, shorter than the legitimate 999-millisecond fallback plus interprocess communication. After reproducing this, the test now waits for the actual replay event with a three-second limit and cleans up in finally. This fixes test synchronization; it does not replace production evidence of original UI close, replacement open and native frames.
+
+The first new production QA preparation reused an existing subscription and received no new snapshot, so it never entered a valid restart observation. It remains a preparation failure, not a product failure. The next preparation selected the original QA session through the native sidebar for the first time, using a real subscribe/snapshot and correct origin/path as readiness gates. The final report is complete, with results below; extra probes or HTTP readiness do not establish original UI recovery.
+
+Both nodes’ **original UI** received `1012 Hub restarting` with `wasClean=true`, automatically opened new WebSockets on their respective node origins, resubscribed native streams and received `session/follow` snapshots. There was no manual reload/reconnect or additional model prompt. History hashes, models, actual workspace membership and exactly one authored prompt remained unchanged; Node A remained Ungrouped. This supplies actual Node A recovery evidence for this run without rewriting the unproved result recorded for `69def3feee`.
+
+| Production node (one observation each) | Client close→new connection open | Close→first native frame | Close→session snapshot | Start marker→snapshot |
+| --- | --- | --- | --- | --- |
+| Node A | 1.424 s | 1.819 s | 2.228 s | 100.818 s |
+| Node B | 1.421 s | 1.887 s | 2.275 s | 100.867 s |
+
+**Fast end-to-end recovery remains unproved.** Clients received close notifications about 98.6 seconds after the start marker; the marker is not independently established as the instant the server process began shutting down. Read-only HTTP failures had already started before the marker, and HTTP reads recovered before the original UI received close. The stall’s location and cause remain unresolved. Do not attribute it to an overlay or use the roughly 2.2-second close-to-snapshot result to hide the full window. Observations include API cancellations/timeouts, SSE HTTP/2 ping failures/timeouts and local desktop endpoint 404s; they do not establish zero network errors. Polling every 15 seconds with a six-second read timeout provides sampled availability, not exact downtime. This run establishes automatic native resubscription and state preservation on both nodes, not a recovery SLA.
+
 ### Remaining acceptance
 
-Real production prompts, replies, refreshed history and native file integrity have passed the bounded checks above. **Still pending:** investigation/retest of Node A’s cold-entry connection closure, an observed Node A disconnect/recovery and additional recovery samples, sustained resource/stability tests, and production update/rollback rehearsal. Deployment-window state preservation and the cold/warm samples above are recorded separately from these remaining items. One successful request per node is not a soak test. Later source changes require their own release checks; an earlier passing run does not certify them.
+Real production prompts, replies, refreshed history and native file integrity have passed the bounded checks above. **Still pending:** investigation/retest of Node A’s cold-entry connection closure, investigation of the stall surrounding graceful restart and additional recovery samples, sustained resource/stability tests, and production update/rollback rehearsal. Deployment-window state preservation and the cold/warm samples above are recorded separately from these remaining items. One successful request per node is not a soak test. Later source changes require their own release checks; an earlier passing run does not certify them.
 
 ## 11. Primary sources
 

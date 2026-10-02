@@ -71,7 +71,7 @@ The production acceptance below belongs to the base Gateway; it does not establi
 - One real-model reply and refreshed history per node passed; 65,537-byte native upload/download SHA-256 integrity and cross-node ownership checks passed.
 - Complete installed rc2, 63 official plugins, packaged installation, actual Tailcat reinstallation and plugin-event SSE have test evidence.
 - JS/CSS uses streaming gzip. Only exact-version URLs declared immutable by their native owner permit private browser caching. APIs, history and files remain no-store; Hub has no shared cache.
-- Earlier production cold loading reached about 94 seconds; functional success does not establish acceptable speed. See [staged acceptance evidence](docs/hub/gateway-design.md#10-current-implementation-and-acceptance-evidence) for final deployment, cold/warm cache and recovery measurements, without SLA claims.
+- Latest completed Chromium loading measurements passed 4/4: Node A cold/warm 15.71/3.89 seconds, Node B 14.26/7.00 seconds, one of each per node. Earlier slow loads and a 150-second cold-entry timeout remain recorded; these small samples establish neither acceptable performance nor an SLA. See [staged acceptance evidence](docs/hub/gateway-design.md#10-current-implementation-and-acceptance-evidence).
 - Open in App is a local desktop feature and is unsupported remotely; its 404 must not become a “zero network errors” claim.
 
 ## Versions and compatibility
