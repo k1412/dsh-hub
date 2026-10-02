@@ -123,7 +123,7 @@ try{
       while(Date.now()<deadline){
         const inventory:any=await management.handle('management.inventory',{})
         const job=inventory.jobs.find((candidate:any)=>candidate.id==='remote-hmr-update')
-        if(job?.finishedAt)return job
+        if(job&&job.status!=='running')return job
         await new Promise(resolve=>setTimeout(resolve,25))
       }
       throw new Error('Native Remote management job timed out')

@@ -1,5 +1,5 @@
 import { once } from 'node:events'
-import { chromium, webkit, type Browser, type Page } from 'playwright'
+import { chromium, webkit, type Browser, type BrowserContext, type Page } from 'playwright'
 import { WebSocket } from 'ws'
 import { describe, expect, it } from 'vitest'
 import { ControlRPC, serveSurface } from '../../gateway-transport/src/index.ts'
@@ -7,8 +7,12 @@ import { createFixture, until } from './fixture.ts'
 
 // Real navigation/form submission: never synthesize or override Origin/Referer.
 async function submit(page: Page, button: string, path: string) {
-  const response = page.waitForResponse(response => new URL(response.url()).pathname === path && response.request().method() === 'POST')
-  await page.getByRole('button', { name: button, exact: true }).click()
+  const [response] = await Promise.all([
+    page.waitForResponse(response => new URL(response.url()).pathname === path && response.request().method() === 'POST'),
+    page.waitForEvent('framenavigated', { predicate: frame => frame === page.mainFrame(), timeout: 5000 }),
+    page.getByRole('button', { name: button, exact: true }).click(),
+  ])
+  await page.waitForLoadState('domcontentloaded', { timeout: 5000 })
   return response
 }
 
@@ -17,6 +21,7 @@ describe.skipIf(process.env.GATEWAY_BROWSER_TEST !== '1')('native browser SSR co
     it(`${engine}: creates and revokes an exact directional grant and routes a plugin button only to its node`, async () => {
       const f = await createFixture()
       let browser: Browser | undefined
+      let context: BrowserContext | undefined
       let sourceSocket: WebSocket | undefined
       let sourceRPC: ControlRPC | undefined
       let socket: WebSocket | undefined
@@ -53,7 +58,7 @@ describe.skipIf(process.env.GATEWAY_BROWSER_TEST !== '1')('native browser SSR co
           return { status: 'completed', action: 'plugin.disable', target: 'fixture-entry-B' }
         })
         await until(() => !!f.gateway.peers.get(a.id)?.control && !!f.gateway.peers.get(b.id)?.control)
-        const context = await browser.newContext({ extraHTTPHeaders: { 'x-fixture-operator': 'yes' } })
+        context = await browser.newContext({ extraHTTPHeaders: { 'x-fixture-operator': 'yes' } })
         context.setDefaultTimeout(5000)
         const page = await context.newPage()
         await page.goto(`${f.publicUrl}/control/grants`)
@@ -98,8 +103,10 @@ describe.skipIf(process.env.GATEWAY_BROWSER_TEST !== '1')('native browser SSR co
         await page.getByRole('button', { name: '启用', exact: true }).waitFor()
         expect(await plugin.innerText()).toContain('已停用 · 已启动')
       } finally {
-        try { await browser?.close() } finally {
-          sourceRPC?.close(); rpc?.close(); sourceSocket?.terminate(); socket?.terminate(); await f.close()
+        try { await context?.close() } finally {
+          try { await browser?.close() } finally {
+            sourceRPC?.close(); rpc?.close(); sourceSocket?.terminate(); socket?.terminate(); await f.close()
+          }
         }
       }
     }, 30_000)

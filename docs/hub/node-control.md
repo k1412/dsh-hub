@@ -221,7 +221,10 @@ does not prove that HMR applied the package. Journal write failures
 lock mutations and show persistence-failed; background failures do not reject into the
 Runtime. “Retry journal write” retries persistence without replaying the operation.
 An unreadable journal requires local repair and reload. Completion is exposed only
-after its durable write; restart-required means installed but not yet active.
+after its durable write. Jobs remain running while the journal and lock owner finalize;
+premature persistence retries and Runtime verification are refused. Restart-required
+and awaiting-handshake states become visible after both writes, while an installation
+still executing can receive cancellation requests. Restart-required means installed but not yet active.
 Exact plugin checks consult official inspect metadata or the configured registry when
 already installed. Successful installation must match the actual installed manifest;
 a malformed bundle recovery verifies the disk version only and keeps the restart fence.

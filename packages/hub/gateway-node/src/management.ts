@@ -52,7 +52,7 @@ export async function createManagement(options: ManagementOptions) {
     saving = next.catch(() => {})
     return next.catch(error => { persistenceFailed = true; throw error })
   }
-  const snapshot = (job: Job) => ({ ...job, ...(active === job ? { status: persistenceFailed ? 'persistence-failed' : uncertainExecutor ? 'executor-recovery-required' : restartRequired ? 'restart-required' : awaitingRuntime ? 'awaiting-runtime-verification' : 'running' } : {}) })
+  const snapshot = (job: Job) => ({ ...job, ...(active === job ? { status: persistenceFailed ? 'persistence-failed' : uncertainExecutor ? 'executor-recovery-required' : executing ? 'running' : restartRequired ? 'restart-required' : awaitingRuntime ? 'awaiting-runtime-verification' : 'running' } : {}) })
   if (!journalUnreadable) await save().catch(() => {}) // Keep the Runtime available, but fail closed on mutations.
   if (options.installation && !['npm','docker','external'].includes(options.installation)) throw new Error('Invalid installation type')
   let installation = options.installation ?? 'external'
@@ -155,8 +155,19 @@ export async function createManagement(options: ManagementOptions) {
   }
   async function finish() {
     await save()
-    if (awaitingRuntime) { const owner=await readOwner(lockDirectory); await persist(join(lockDirectory,'owner.json'),JSON.stringify({...owner,phase:'awaiting-runtime-verification'})) }
-    if (restartRequired) { const owner=await readOwner(lockDirectory); await persist(join(lockDirectory,'owner.json'),JSON.stringify({...owner,phase:'restart-required'})) }
+    if (!active) return
+    const owner=await readOwner(lockDirectory).catch(error=>{
+      if((error as NodeJS.ErrnoException).code==='ENOENT' && active?.error==='reservation-not-durable; no-side-effect-started')return undefined
+      throw error
+    })
+    if(owner && owner.requestId!==active.id)throw new Error('operation-lock-owner-changed; do not modify transferred maintenance')
+    const phase=awaitingRuntime?'awaiting-runtime-verification':restartRequired?'restart-required':undefined
+    if(phase){
+      if(!owner || !['executing',phase].includes(owner.phase ?? ''))throw new Error('operation-lock-phase-changed')
+      // A durable phase is final: retries must not overwrite a new preparation
+      // that can adopt it while the old Runtime is still connected.
+      if(owner.phase==='executing')await persist(join(lockDirectory,'owner.json'),JSON.stringify({...owner,phase}))
+    }
     if (!uncertainExecutor && !restartRequired && !awaitingRuntime) { await rm(lockDirectory, { recursive: true }); active = undefined }
   }
   async function handle(method: string, input: Record<string, unknown>): Promise<unknown> {
@@ -174,6 +185,7 @@ export async function createManagement(options: ManagementOptions) {
       await save();return {status:'recorded'}
     }
     if (method === 'management.verify-runtime') {
+      if(executing)throw new Error('Operation still executing or finalizing')
       const job=jobs.find(j=>j.id===input.requestId)
       if(!options.lifecycle || !job || job.status!=='awaiting-runtime-verification' || !input.generation || input.generation===job.previousGeneration || !input.runtimeInstance || input.runtimeInstance===job.previousRuntimeInstance || input.version!==job.expectedVersion)throw new Error('runtime-handshake-not-verified')
       if((await readOwner(lockDirectory)).requestId!==job.id)throw new Error('stale-verification')
@@ -234,7 +246,12 @@ export async function createManagement(options: ManagementOptions) {
     executing = true; mutationStarted=false
     void (async () => {
       try { if(!options.lifecycle && options.quiescent)await options.quiescent(); await run(job, input) } catch { if(mutationStarted)uncertainExecutor=true; job.status = 'failed'; job.error ??= 'operation-failed; inspect node locally' }
-      finally { executing = false; job.finishedAt = Date.now(); try { await finish() } catch { persistenceFailed = true } }
+      finally {
+        job.finishedAt = Date.now()
+        // Keep the execution fence until both journal and lock owner are durable.
+        // Cancellation still reaches the manager while run() is in progress.
+        try { await finish() } catch { persistenceFailed = true } finally { executing = false }
+      }
     })()
     return snapshot(job)
   }
