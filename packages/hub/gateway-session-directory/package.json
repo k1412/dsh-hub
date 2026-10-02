@@ -1,0 +1,12 @@
+{
+  "name": "@k1412/dsh-gateway-session-directory",
+  "version": "0.0.0-experiment",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts", "./benchmark": "./src/benchmark.ts" },
+  "scripts": {
+    "test": "vitest run --root ../../.. packages/hub/gateway-session-directory/tests",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "benchmark": "tsx src/benchmark-cli.ts"
+  }
+}
