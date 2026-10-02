@@ -37,8 +37,15 @@ async function setup(passwordMode = false) {
 }
 
 async function submit(page: Page, button: string, path: string) {
-  const response = page.waitForResponse(reply => reply.request().method() === 'POST' && new URL(reply.url()).pathname === path)
-  await page.getByRole('button', { name: button, exact: true }).click()
+  // Form responses arrive before the browser commits their navigation. Observe
+  // that navigation before clicking, including redirects and JSON error pages,
+  // so a subsequent goto cannot race the previous form's document commit.
+  const [response] = await Promise.all([
+    page.waitForResponse(reply => reply.request().method() === 'POST' && new URL(reply.url()).pathname === path),
+    page.waitForEvent('framenavigated', { predicate: frame => frame === page.mainFrame(), timeout: 2000 }),
+    page.getByRole('button', { name: button, exact: true }).click(),
+  ])
+  await page.waitForLoadState('domcontentloaded', { timeout: 2000 })
   return response
 }
 
