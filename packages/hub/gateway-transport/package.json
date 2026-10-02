@@ -1,0 +1,9 @@
+{
+  "name": "@k1412/dsh-gateway-transport",
+  "version": "2.0.0-alpha.1",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "typecheck": "tsc -p tsconfig.json --noEmit", "test": "vitest run tests" },
+  "dependencies": { "ws": "^8.18.3" }
+}

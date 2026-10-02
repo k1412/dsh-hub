@@ -6,6 +6,26 @@ English | [中文](README.md)
 [![Release](https://img.shields.io/github/v/release/k1412/dsh-hub?display_name=tag)](https://github.com/k1412/dsh-hub/releases)
 [![License](https://img.shields.io/github/license/k1412/dsh-hub)](LICENSE)
 
+## v2 branch: native node gateway
+
+This branch is being rewritten as a simple node entry point: Hub provides node listing, add/revoke and network settings. Opening a node uses its installed official DSH frontend, plugins and the same existing Runtime. Each node has a separate browser origin. Hub does not aggregate sessions/projects or proxy the local Web listener.
+
+Invitations select only **Tailscale or Tailcat**. The Hub image includes both tools and managed Tailscale login; the node installs the selected helper and persists pairing. See the [native gateway design](docs/hub/gateway-design.md) for boundaries, endpoints, evidence and remaining acceptance work. Local gates and fixture tests passed; complete production DSH browser and deployment acceptance remain pending.
+
+### v2 quick start
+
+Use the separate [Compose application](deploy/gateway/compose.yaml) and preserve the existing v1 service. In protected environment configuration, set `DSH_GATEWAY_PUBLIC_URL` and choose complete Cloudflare Access settings or a `DSH_GATEWAY_OWNER_PASSWORD` of at least 16 characters; use HTTPS in production. From the repository root, run:
+
+```sh
+docker compose -p dsh-gateway-v2 -f deploy/gateway/compose.yaml up -d --build
+```
+
+The default publishes the browser port only on host loopback. Configure an HTTPS proxy, management and per-node hostnames, and certificates; never publish private agent port `8081`. An Access-protected entry needs a download origin reachable by the installer. Prepare the selected network in Connection settings, add a node, run its invitation command as the existing DSH user, and reload the original Runtime as instructed. Follow the design document for deployment and rollback details.
+
+## Legacy v1 workbench documentation
+
+The following content is retained for existing v1 services. Its session aggregation, model sync, screenshots and deployment path do not describe v2.
+
 **One browser for DSH across your computers, NAS, and servers.**
 
 Start a task at your desk and continue from your phone. Leave a long task on your NAS while coding in a project on another machine. DSH Hub gives [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) a single entry point: find workspaces and sessions across machines, choose where new work runs, and manage nodes, plugins, and recovery points in one place.

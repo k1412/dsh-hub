@@ -3,8 +3,12 @@
     "target": "ES2024",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2024"],
-    "types": ["node"],
+    "lib": [
+      "ES2024"
+    ],
+    "types": [
+      "node"
+    ],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
@@ -23,16 +27,48 @@
     "composite": true,
     "incremental": true,
     "paths": {
-      "@k1412/dsh-hub-capabilities": ["./packages/hub/hub-capabilities/src/index.ts"],
-      "@k1412/dsh-hub-client-ui": ["./packages/hub/hub-client-ui/src/index.ts"],
-      "@k1412/dsh-hub-connector": ["./packages/hub/hub-connector/src/index.ts"],
-      "@k1412/dsh-hub-node-agent": ["./packages/hub/hub-node-agent/src/index.ts"],
-      "@k1412/dsh-hub-node-ipc": ["./packages/hub/hub-node-ipc/src/index.ts"],
-      "@k1412/dsh-hub-protocol": ["./packages/hub/hub-protocol/src/index.ts"],
-      "@k1412/dsh-hub-server": ["./packages/hub/hub-server/src/index.ts"],
-      "@k1412/dsh-hub-storage": ["./packages/hub/hub-storage/src/index.ts"],
-      "@k1412/dsh-hub-transport": ["./packages/hub/hub-transport/src/index.ts"],
-      "@k1412/dsh-hub-*/invariant": ["./packages/hub/*/src/invariant.ts"]
+      "@k1412/dsh-hub-capabilities": [
+        "./packages/hub/hub-capabilities/src/index.ts"
+      ],
+      "@k1412/dsh-hub-client-ui": [
+        "./packages/hub/hub-client-ui/src/index.ts"
+      ],
+      "@k1412/dsh-hub-connector": [
+        "./packages/hub/hub-connector/src/index.ts"
+      ],
+      "@k1412/dsh-hub-node-agent": [
+        "./packages/hub/hub-node-agent/src/index.ts"
+      ],
+      "@k1412/dsh-hub-node-ipc": [
+        "./packages/hub/hub-node-ipc/src/index.ts"
+      ],
+      "@k1412/dsh-hub-protocol": [
+        "./packages/hub/hub-protocol/src/index.ts"
+      ],
+      "@k1412/dsh-hub-server": [
+        "./packages/hub/hub-server/src/index.ts"
+      ],
+      "@k1412/dsh-hub-storage": [
+        "./packages/hub/hub-storage/src/index.ts"
+      ],
+      "@k1412/dsh-hub-transport": [
+        "./packages/hub/hub-transport/src/index.ts"
+      ],
+      "@k1412/dsh-hub-*/invariant": [
+        "./packages/hub/*/src/invariant.ts"
+      ],
+      "@k1412/dsh-gateway-server": [
+        "./packages/hub/gateway-server/src/index.ts"
+      ],
+      "@k1412/dsh-gateway-node": [
+        "./packages/hub/gateway-node/src/index.ts"
+      ],
+      "@k1412/dsh-gateway-network": [
+        "./packages/hub/gateway-network/src/index.ts"
+      ],
+      "@k1412/dsh-gateway-transport": [
+        "./packages/hub/gateway-transport/src/index.ts"
+      ]
     }
   }
 }

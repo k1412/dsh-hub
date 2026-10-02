@@ -1,0 +1,25 @@
+services:
+  hub:
+    build:
+      context: ../..
+      dockerfile: deploy/gateway/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${DSH_GATEWAY_PORT:-8080}:8080"
+    environment:
+      PORT: "8080"
+      DSH_GATEWAY_PRIVATE_PORT: "8081"
+      DSH_GATEWAY_TAILSCALE_MODE: managed
+      DSH_GATEWAY_STATE_DIRECTORY: /var/lib/dsh-gateway
+      DSH_GATEWAY_PUBLIC_URL: ${DSH_GATEWAY_PUBLIC_URL:?Set the public HTTPS Hub origin}
+      DSH_GATEWAY_DOWNLOAD_URL: ${DSH_GATEWAY_DOWNLOAD_URL:-}
+      # Configure either the standalone owner password or Cloudflare Access.
+      DSH_GATEWAY_OWNER_PASSWORD: ${DSH_GATEWAY_OWNER_PASSWORD:-}
+      DSH_GATEWAY_CF_TEAM_DOMAIN: ${DSH_GATEWAY_CF_TEAM_DOMAIN:-}
+      DSH_GATEWAY_CF_AUDIENCE: ${DSH_GATEWAY_CF_AUDIENCE:-}
+      DSH_GATEWAY_OPERATOR_EMAILS: ${DSH_GATEWAY_OPERATOR_EMAILS:-}
+      DSH_GATEWAY_ORIGIN_SECRET: ${DSH_GATEWAY_ORIGIN_SECRET:-}
+    volumes:
+      - hub-state:/var/lib/dsh-gateway
+volumes:
+  hub-state:

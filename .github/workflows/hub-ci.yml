@@ -2,7 +2,7 @@ name: Hub CI
 
 on:
   push:
-    branches: [master]
+    branches: [master, feat/minimal-node-gateway, experiment/session-directory]
   pull_request:
   workflow_dispatch:
 
@@ -236,3 +236,35 @@ jobs:
         run: |
           docker rm --force dsh-hub-ci || true
           docker volume rm dsh-hub-ci-state || true
+
+  native-gateway:
+    name: Gateway / native nodes, browser, latency and recovery
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Install verified upstream contract fixture
+        run: npm install --prefix "$RUNNER_TEMP/dsh-native" --ignore-scripts --no-audit --no-fund @deepseek-ai/dsh@0.1.7-rc.2
+      - name: Native transport and two-node server tests
+        env:
+          DSH_NATIVE_ROOT: ${{ runner.temp }}/dsh-native
+        run: pnpm run gateway:test
+      - run: pnpm run gateway:build
+      - name: Desktop and mobile, latency, disconnect and restart
+        env:
+          DSH_NATIVE_ROOT: ${{ runner.temp }}/dsh-native
+        run: pnpm run gateway:browser
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: native-gateway-validation
+          path: .artifacts/gateway*
+          if-no-files-found: warn

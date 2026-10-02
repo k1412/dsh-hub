@@ -19,6 +19,7 @@ const rootFiles = new Set([
   'tsconfig.base.client.json', 'tsconfig.base.json', 'tsconfig.json', 'vitest.config.ts',
 ])
 const scripts = new Set([
+  'build-gateway.mjs', 'verify-gateway-browser.mjs',
   'benchmark-hub.mts', 'build-hub-release.mjs', 'build-hub-server.mjs', 'build-hub-web.mjs',
   'capture-hub-readme.mjs', 'clean.mjs', 'client-bundle.ts', 'run-hub-typecheck.mjs',
   'verify-docs.mjs', 'verify-hub-release.mjs', 'verify-hub-server.mjs',
@@ -29,7 +30,7 @@ const workflows = new Set(['hub-ci.yml', 'hub-release.yml'])
 function allowed(path) {
   if (!path.includes('/')) return rootFiles.has(path)
   if (path.startsWith('apps/hub-web/')) return true
-  if (path.startsWith('deploy/hub/') || path.startsWith('deploy/node/') || path.startsWith('deploy/tailcat/')) return true
+  if (path.startsWith('deploy/gateway/') || path.startsWith('deploy/hub/') || path.startsWith('deploy/node/') || path.startsWith('deploy/tailcat/')) return true
   if (path.startsWith('packages/hub/')) return true
   if (path === 'patches/node-pty@1.1.0.patch') return true
   if (path.startsWith('third_party/official-web/')) return true

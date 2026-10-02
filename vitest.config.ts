@@ -6,6 +6,11 @@ const hub = (name: string): string => resolve(import.meta.dirname, `packages/hub
 export default defineConfig({
   resolve: {
     alias: {
+      '@k1412/dsh-gateway-server': hub('gateway-server'),
+      '@k1412/dsh-gateway-network': hub('gateway-network'),
+      '@k1412/dsh-gateway-node': hub('gateway-node'),
+      '@k1412/dsh-gateway-transport': hub('gateway-transport'),
+
       '@deepseek-ai/dsh-client-ui-primitives': resolve(
         import.meta.dirname,
         'packages/hub/hub-client-ui/tests/primitives.stub.tsx',
