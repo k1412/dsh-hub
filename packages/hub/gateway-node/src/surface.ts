@@ -3,11 +3,12 @@ import { readFile, realpath, stat } from 'node:fs/promises'
 import { dirname, extname, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { NativeMux, type NativeWireStream } from './stream.ts'
+import { pluginEvents, type PluginEventSource } from './plugin-events.ts'
 
 /** Existing Runtime capabilities; no listener or second Runtime is constructed. */
 export interface NativeRuntime {
   connection: { createSharedFetchHandler(channel: '/api'): { fetch(request: Request): Promise<Response> } }
-  clientModules: { fetchBundle(request: Request): Promise<Response> }
+  clientModules: { fetchBundle(request: Request): Promise<Response> } & Partial<PluginEventSource>
   typertGateway: { wireStream: NativeWireStream }
 }
 
@@ -43,6 +44,11 @@ export class NodeSurface {
     // Only upstream's registered API and published frontend resources are exposed.
     if (url.pathname.startsWith('/api/')) return this.api.fetch(request)
     if (url.pathname === '/api') return new Response('Not found', { status: 404 })
+    if (url.pathname === '/plugins/events') {
+      const modules = this.options.runtime.clientModules
+      if (!modules.graph || !modules.onGraphChanged || !modules.onRebuilt) return new Response('Native plugin events are unavailable', { status: 501 })
+      return pluginEvents(request, modules as PluginEventSource)
+    }
     if (url.pathname.startsWith('/plugins/')) return this.options.runtime.clientModules.fetchBundle(request)
     if (request.method !== 'GET' && request.method !== 'HEAD') return new Response('Method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } })
     let decoded: string

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { once } from 'node:events';
 import { randomBytes } from 'node:crypto';
+import { BINARY_TEST_TIMEOUT_MS, BINARY_TRANSFER_TIMEOUT_MS, verifyBinaryTransfer } from './binary-probe.ts';
 import WebSocket, { WebSocketServer } from 'ws';
 import { GatewayTunnel, serveSurface, STREAM_WINDOW_BYTES, type GatewaySurface, type TransportOptions } from '../src/index.ts';
 
@@ -38,18 +39,17 @@ describe('native gateway transport over real sockets', () => {
     let seen = '';
     const { tunnel } = await pair({ handle: async request => {
       seen = `${request.method} ${request.url}`;
-      expect(Buffer.from(await request.arrayBuffer())).toEqual(data);
+      expect(Buffer.from(await request.arrayBuffer()).equals(data), 'Native upload bytes differ').toBe(true);
       return new Response(fixture(data, 100003), { status: 206, headers: { 'content-type': 'application/octet-stream', 'content-disposition': 'attachment; filename="binary.dat"', 'x-native': 'yes' } });
-    } });
-    const response = await tunnel.fetch(upload(fixture(data)));
+    } }, { requestTimeoutMs: BINARY_TRANSFER_TIMEOUT_MS });
+    const response = await verifyBinaryTransfer('transport upload + download', signal => tunnel.fetch(upload(fixture(data), signal)), data, () => tunnel.health);
     expect(response.status).toBe(206);
     expect(response.headers.get('content-disposition')).toBe('attachment; filename="binary.dat"');
     expect(response.headers.get('content-type')).toBe('application/octet-stream');
     expect(response.headers.get('x-native')).toBe('yes');
-    expect(Buffer.from(await response.arrayBuffer())).toEqual(data);
     expect(seen).toBe('POST http://runtime.invalid/native/files?raw=%2F');
     await eventually(() => tunnel.health.inflightRequests === 0);
-  });
+  }, BINARY_TEST_TIMEOUT_MS);
 
   it('does not pull a download producer while the browser is stalled', async () => {
     let produced = 0;

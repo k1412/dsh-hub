@@ -3,9 +3,76 @@
 import assert from 'node:assert/strict'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { chromium } from 'playwright'
 import { tsImport } from 'tsx/esm/api'
 
+/**
+ * Passive production-browser collector. Attach before root's authorized actions:
+ * const metrics = collectBrowserRequests(context)
+ * // root drives navigation / native smoke here
+ * const summary = await metrics.stop()
+ * No navigation, API calls or writes; no URL, headers, body, credentials or error
+ * messages retained. Includes full request completion, HTTP errors and failures.
+ */
+export function collectBrowserRequests(context, { maxRequests = 1000, durationMs = 120_000 } = {}) {
+  if (!Number.isInteger(maxRequests) || maxRequests < 1 || maxRequests > 100_000
+    || !Number.isFinite(durationMs) || durationMs < 1 || durationMs > 600_000) throw new RangeError('Invalid browser metrics budget')
+  const active = new Map(), samples = [], pending = new Set()
+  let observed = 0, dropped = 0, pageErrors = 0, stopped = false, result
+  const started = performance.now()
+  const requested = request => {
+    if (observed >= maxRequests) { dropped++; return }
+    observed++; active.set(request, performance.now())
+  }
+  const completed = request => {
+    const start = active.get(request)
+    if (start === undefined) return
+    active.delete(request)
+    const elapsedMs = performance.now() - start
+    const task = request.response().then(response => {
+      const status = response?.status() ?? 0
+      samples.push({ elapsedMs, status, outcome: status >= 200 && status < 400 ? 'success' : 'error' })
+    }).catch(() => { samples.push({ elapsedMs, status: 0, outcome: 'error' }) })
+    pending.add(task); void task.finally(() => pending.delete(task))
+  }
+  const failed = request => {
+    const start = active.get(request)
+    if (start === undefined) return
+    active.delete(request); samples.push({ elapsedMs: performance.now() - start, status: 0, outcome: 'error' })
+  }
+  const webError = () => { pageErrors++ }
+  const detach = () => {
+    if (stopped) return
+    stopped = true; clearTimeout(timer)
+    context.off('request', requested); context.off('requestfinished', completed); context.off('requestfailed', failed); context.off('weberror', webError)
+    for (const start of active.values()) samples.push({ elapsedMs: performance.now() - start, status: 0, outcome: 'incomplete' })
+    active.clear()
+  }
+  const timer = setTimeout(detach, durationMs); timer.unref()
+  context.on('request', requested); context.on('requestfinished', completed); context.on('requestfailed', failed); context.on('weberror', webError)
+  return { stop() {
+    detach()
+    result ??= (async () => {
+      await Promise.all([...pending])
+      const finished = samples.filter(sample => sample.outcome !== 'incomplete')
+      const times = finished.map(sample => sample.elapsedMs).sort((a, b) => a - b)
+      const success = samples.filter(sample => sample.outcome === 'success').length
+      const errors = samples.filter(sample => sample.outcome === 'error').length
+      const incomplete = samples.length - finished.length
+      const statuses = {}
+      for (const sample of samples) statuses[sample.status] = (statuses[sample.status] ?? 0) + 1
+      return { observed, completed: finished.length, success, errors, incomplete, dropped, pageErrors, statuses,
+        successRate: observed ? success / observed : null, errorRate: observed ? errors / observed : null,
+        p50Ms: times.length ? times[Math.floor(times.length * .5)] : null,
+        p95Ms: times.length ? times[Math.floor(times.length * .95)] : null,
+        elapsedMs: performance.now() - started }
+    })()
+    return result
+  } }
+}
+
+export async function runFixtureGate() {
 const { createFixture, until } = await tsImport('../packages/hub/gateway-server/tests/fixture.ts', import.meta.url)
 const output = process.env.GATEWAY_QA_REPORT_DIR ?? '/tmp/dsh-gateway-browser'
 await mkdir(output, { recursive: true })
@@ -127,3 +194,8 @@ try {
   await writeFile(join(output, 'browser-report.json'), JSON.stringify(report, null, 2))
   console.log(JSON.stringify(report, null, 2))
 }
+
+}
+
+// Importing the production collector must never launch a fixture or browser.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await runFixtureGate()
