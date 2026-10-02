@@ -14,6 +14,12 @@ import { createManagement, type Manager } from '../src/management.ts'
 const root=process.env.DSH_NATIVE_ROOT,pnpm=process.env.DSH_TEST_PNPM
 if(!root||!pnpm)throw new Error('Set DSH_NATIVE_ROOT and DSH_TEST_PNPM to installed trees')
 const work=await mkdtemp(join(tmpdir(),'native-management-')),req=createRequire(join(root,'package.json')),exec=promisify(execFile)
+// CI may expose a shell/native pnpm launcher; a local pinned cjs remains supported.
+const firstLine=(await readFile(pnpm,'utf8')).split('\n')[0] ?? ''
+const packageManager=/\.c?js$/.test(pnpm)||(firstLine.startsWith('#!')&&firstLine.includes('node'))
+  ? {command:process.execPath,args:[pnpm],env:{}}
+  : {command:pnpm,args:[] as string[],env:{}}
+await exec(packageManager.command,[...packageManager.args,'--version'])
 const app=await import(pathToFileURL(req.resolve('@deepseek-ai/dsh-app-boot')).href)
 const contexts:any[]=[], versions=new Map<string,Buffer>()
 for(const version of ['1.0.0','1.0.1','1.0.2']) {
@@ -43,7 +49,7 @@ try {
     await writeFile(join(directory,'package.json'),JSON.stringify({name:`fixture-profile-${label.toLowerCase()}`,private:true,dsh:{profile:{bundles}}}))
     await writeFile(join(directory,'cordis.yml'),'[]\n');await writeFile(join(directory,'cordis.patch.yml'),'# preserve this private profile comment\n[]\n')
     const overlays=[...['webserver','web-runtime','web-startup','open-in-app','client-hmr','directory-picker','session-title-llm'].map(id=>({id,disabled:true})),{id:'connection',inject:[],config:{trustedHosts:[]}},{id:'plugin-manager',config:{registry:registryUrl,fallbackRegistries:[]}}]
-    const profile={name:label,dir:directory,patchPath:join(directory,'cordis.patch.yml'),installAnchor:req.resolve('@deepseek-ai/dsh/package.json'),cwd:directory,home,startedBundles:bundles,overlays,telemetryDisabledEnv:'1',packageManager:{command:process.execPath,args:[pnpm],env:{}}}
+    const profile={name:label,dir:directory,patchPath:join(directory,'cordis.patch.yml'),installAnchor:req.resolve('@deepseek-ai/dsh/package.json'),cwd:directory,home,startedBundles:bundles,overlays,telemetryDisabledEnv:'1',packageManager}
     const patches=[...app.loadOverlayPatches(label,req.resolve('@deepseek-ai/dsh-base/cordis.patch.yml')),...app.loadOverlayPatches(label,req.resolve('@deepseek-ai/dsh-web-app/cordis.patch.yml')),...app.loadOverlayPatches(label,req.resolve('@deepseek-ai/dsh-web-app/presets/standard.patch.yml')),...overlays]
     const loaded = app.loadProfileDirectory(label, directory, profile.installAnchor)
     const resolution = await app.createRuntimeResolution({ installAnchor: profile.installAnchor, profile: loaded, home })
