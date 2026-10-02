@@ -35,7 +35,7 @@ trap 'exit 143' TERM
 printf 'Downloading the Hub invitation and connection plugin…\n'
 node --input-type=module - "$hub" "$invite" "$state_directory" "$installer_directory" <<'NODE'
 import { createHash } from 'node:crypto'
-import { readFile, writeFile, mkdir, chmod } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, chmod, open, rename, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
@@ -48,15 +48,104 @@ function checkedURL(value) {
 }
 const hubURL = checkedURL(hub)
 if (hubURL.pathname !== '/' || hubURL.search || hubURL.hash) throw new Error('Hub must be a plain origin URL')
-async function download(url, path, hash) {
-  const response = await fetch(checkedURL(url), { signal: AbortSignal.timeout(60_000), redirect: 'follow' })
-  checkedURL(response.url)
-  if (!response.ok) throw new Error(`Download failed (${response.status})`)
-  const bytes = Buffer.from(await response.arrayBuffer())
-  if (bytes.length > 300 * 1024 * 1024) throw new Error('Download is too large')
-  if (hash !== undefined && createHash('sha256').update(bytes).digest('hex') !== hash) throw new Error('Downloaded package checksum did not match')
-  await writeFile(path, bytes, { mode: 0o600 })
-  return bytes
+function assetName(file, fallback) {
+  // Resource paths may contain an invitation capability. Only reviewed public
+  // archive naming patterns are eligible for logs; never print URLs or tokens.
+  if (typeof file === 'string' && /^(?:gateway-node\.tgz|network\.tgz|network-pins\.json|tailscale_\d+\.\d+\.\d+_(?:amd64|arm64)\.tgz|tailcat_\d+\.\d+\.\d+_linux_(?:amd64|arm64)\.tar\.gz)$/.test(file)) return file
+  return fallback
+}
+const mib = bytes => `${(bytes / (1024 * 1024)).toFixed(2)} MiB`
+async function download(url, path, hash, { name = 'invitation manifest', archive = false } = {}) {
+  const maximum = (archive ? 300 : 1) * 1024 * 1024
+  const totalMs = archive ? 300_000 : 30_000
+  const controller = new AbortController()
+  const started = Date.now()
+  const partial = `${path}.partial`
+  const digest = createHash('sha256')
+  const chunks = []
+  let phase = 'headers'
+  let received = 0
+  let expected
+  let failure
+  let termination
+  let file
+  let reader
+  let idleTimer
+  let lastLog = started
+  let lastLoggedBytes = 0
+  const stop = reason => {
+    if (!controller.signal.aborted) { termination = reason; controller.abort() }
+  }
+  const headerTimer = setTimeout(() => stop('no HTTP response headers within 30 seconds'), 30_000)
+  const totalTimer = setTimeout(() => stop(`total download time exceeded ${archive ? '5 minutes' : '30 seconds'}`), totalMs)
+  const resetIdle = () => {
+    clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => stop('no download progress for 30 seconds'), 30_000)
+  }
+  process.stderr.write(`Downloading ${name}: headers <=30s, total <=${archive ? '5min' : '30s'}, limit ${mib(maximum)}.\n`)
+  try {
+    const response = await fetch(checkedURL(url), { signal: controller.signal, redirect: 'follow' })
+    clearTimeout(headerTimer)
+    checkedURL(response.url)
+    if (!response.ok) { failure = `HTTP ${response.status}`; throw new Error(failure) }
+    phase = 'body'
+    const length = response.headers.get('content-length')
+    // fetch decodes compressed HTTP responses. Content-Length then describes
+    // compressed bytes, while our limit/hash must apply to decoded bytes.
+    if (length !== null && /^\d+$/.test(length) && (!response.headers.get('content-encoding') || response.headers.get('content-encoding') === 'identity')) expected = Number(length)
+    if (expected !== undefined && expected > maximum) {
+      failure = `declared size exceeds the ${mib(maximum)} limit`
+      throw new Error(failure)
+    }
+    if (response.body === null) { failure = 'empty download response'; throw new Error(failure) }
+    file = await open(partial, 'w', 0o600)
+    reader = response.body.getReader()
+    resetIdle()
+    process.stderr.write(`${name}: connected, ${mib(0)}${expected === undefined ? '' : ` / ${mib(expected)}`}.\n`)
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (value.byteLength === 0) continue
+      received += value.byteLength
+      resetIdle()
+      if (received > maximum) { failure = `received size exceeds the ${mib(maximum)} limit`; throw new Error(failure) }
+      digest.update(value)
+      if (!archive) chunks.push(Buffer.from(value))
+      let offset = 0
+      while (offset < value.byteLength) {
+        const written = await file.write(value, offset, value.byteLength - offset)
+        if (written.bytesWritten === 0) throw new Error('file-write-failed')
+        offset += written.bytesWritten
+      }
+      const now = Date.now()
+      if (now - lastLog >= 5000 || received - lastLoggedBytes >= 8 * 1024 * 1024) {
+        process.stderr.write(`${name}: ${mib(received)}${expected === undefined ? '' : ` / ${mib(expected)}`}, ${Math.round((now - started) / 1000)}s elapsed.\n`)
+        lastLog = now
+        lastLoggedBytes = received
+      }
+    }
+    if (expected !== undefined && received !== expected) { failure = 'response ended before the declared size was received'; throw new Error(failure) }
+    if (hash !== undefined && digest.digest('hex') !== hash) { failure = 'downloaded package checksum did not match'; throw new Error(failure) }
+    await file.close()
+    file = undefined
+    await rename(partial, path)
+    process.stderr.write(`${name}: complete, ${mib(received)}, ${Math.round((Date.now() - started) / 1000)}s${hash === undefined ? '' : ', checksum verified'}.\n`)
+    return archive ? undefined : Buffer.concat(chunks)
+  } catch (error) {
+    controller.abort()
+    const reason = termination ?? failure ?? (error?.code === 'ENOSPC' ? 'not enough disk space'
+      : phase === 'headers' ? 'connection failed before response headers; check the Hub network'
+      : `connection or file write interrupted after ${mib(received)}`)
+    throw new Error(`${name}: ${reason}. No partial file was installed; retry the installation command.`)
+  } finally {
+    clearTimeout(headerTimer)
+    clearTimeout(totalTimer)
+    clearTimeout(idleTimer)
+    await reader?.cancel().catch(() => {})
+    reader?.releaseLock()
+    await file?.close().catch(() => {})
+    await unlink(partial).catch(() => {})
+  }
 }
 try {
   const bytes = await download(`${hubURL.origin}/api/enrollment/${invite}`, join(temporary, 'manifest.json'))
@@ -69,7 +158,7 @@ try {
   if (!Number.isFinite(expiration) || (expiration <= Date.now() && manifest.claimed !== true)) throw new Error('Invitation has expired. Create a new invitation in Hub.')
   if (!manifest.package || !/^[a-f0-9]{64}$/.test(manifest.package.sha256)) throw new Error('Invitation is missing the verified node package')
   const packageFile = join(temporary, 'node.tgz')
-  await download(manifest.package.url, packageFile, manifest.package.sha256)
+  await download(manifest.package.url, packageFile, manifest.package.sha256, { name: 'gateway-node.tgz', archive: true })
   const packageDirectory = join(stateDirectory, 'packages', `gateway-node-${manifest.package.sha256.slice(0, 12)}`)
   await mkdir(packageDirectory, { recursive: true, mode: 0o700 })
   const archiveList = spawnSync('tar', ['-tzf', packageFile], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 })
@@ -88,7 +177,7 @@ try {
     let assets = manifest.networkBinaries?.[`linux-${architecture}`]
     if (!Array.isArray(assets)) {
       const pinsFile = join(temporary, 'network-pins.json')
-      await download(`${hubURL.origin}/downloads/network-pins.json`, pinsFile)
+      await download(`${hubURL.origin}/downloads/network-pins.json`, pinsFile, undefined, { name: 'network-pins.json' })
       const pins = JSON.parse(await readFile(pinsFile, 'utf8'))
       assets = pins.assets.filter(asset => asset.architecture === architecture)
         .map(asset => ({ ...asset, url: `${hubURL.origin}/downloads/${asset.file}` }))
@@ -96,7 +185,7 @@ try {
     const asset = assets.find(asset => asset.tool === manifest.mode)
     if (!asset || !/^[a-f0-9]{64}$/.test(asset.sha256)) throw new Error('Invitation is missing the verified network binary')
     const networkFile = join(temporary, 'network.tgz')
-    await download(asset.url, networkFile, asset.sha256)
+    await download(asset.url, networkFile, asset.sha256, { name: assetName(asset.file, `${manifest.mode} archive`), archive: true })
     const listing = spawnSync('tar', ['-tzf', networkFile], { encoding: 'utf8' })
     if (listing.status !== 0) throw new Error('Cannot inspect the network archive')
     for (const binary of manifest.mode === 'tailscale' ? ['tailscale', 'tailscaled'] : ['tailcat']) {

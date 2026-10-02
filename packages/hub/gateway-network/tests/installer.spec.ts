@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { mkdtemp, mkdir, readFile, readlink, lstat, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
+import { gzipSync } from 'node:zlib'
 import { createServer } from 'node:http'
 import type { Server } from 'node:http'
 import { execFile, spawnSync } from 'node:child_process'
@@ -19,6 +21,8 @@ afterEach(async () => {
 const hash = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex')
 async function fixture(badPackageHash = false, options: {
   expired?: boolean; claimed?: unknown; mode?: 'tailcat' | 'tailscale'; tailscaleState?: 'Running' | 'NeedsLogin'
+  packageFault?: 'headers-stall' | 'body-stall' | 'truncated' | 'oversize-header' | 'oversize-stream' | 'slow-stream' | 'compressed'
+  faultOnce?: boolean
 } = {}): Promise<{ origin: string; record: string; requests: string[] }> {
   const mode = options.mode ?? 'tailcat'
   const packageRoot = join(directory, 'fixture', 'package')
@@ -43,6 +47,7 @@ async function fixture(badPackageHash = false, options: {
   const networkBytes = await readFile(networkArchive)
   let origin = ''
   const requests: string[] = []
+  let packageRequests = 0
   server = createServer((request, response) => {
     requests.push(request.url ?? '')
     if (request.url === '/api/enrollment/testToken') {
@@ -54,7 +59,56 @@ async function fixture(badPackageHash = false, options: {
         package: { url: `${origin}/downloads/gateway-node.tgz`, sha256: badPackageHash ? '0'.repeat(64) : hash(packageBytes) },
         networkBinaries: Object.fromEntries(['amd64', 'arm64'].map(architecture => [`linux-${architecture}`,
           [{ tool: mode, file: 'network.tgz', url: `${origin}/downloads/network.tgz`, sha256: hash(networkBytes) }]])) }))
-    } else if (request.url === '/downloads/gateway-node.tgz') response.end(packageBytes)
+    } else if (request.url === '/downloads/gateway-node.tgz') {
+      packageRequests++
+      const fault = options.faultOnce && packageRequests > 1 ? undefined : options.packageFault
+      if (fault === 'headers-stall') return
+      if (fault === 'body-stall') { response.writeHead(200); response.write(packageBytes.subarray(0, 1)); return }
+      if (fault === 'truncated') {
+        response.writeHead(200, { 'content-length': packageBytes.length })
+        response.write(packageBytes.subarray(0, Math.max(1, Math.floor(packageBytes.length / 2))))
+        setTimeout(() => response.destroy(), 20)
+        return
+      }
+      if (fault === 'oversize-header') {
+        response.writeHead(200, { 'content-length': 300 * 1024 * 1024 + 1 })
+        response.end('x')
+        return
+      }
+      if (fault === 'oversize-stream') {
+        response.writeHead(200)
+        const chunk = Buffer.alloc(1024 * 1024)
+        let sent = 0
+        const send = (): void => {
+          while (!response.destroyed && sent < 301) {
+            sent++
+            if (!response.write(chunk)) { response.once('drain', send); return }
+          }
+          if (sent === 301 && !response.destroyed) response.end()
+        }
+        send()
+        return
+      }
+      if (fault === 'slow-stream') {
+        response.writeHead(200, { 'content-length': packageBytes.length })
+        let sent = 0
+        const timer = setInterval(() => {
+          const next = Math.min(packageBytes.length, sent + Math.ceil(packageBytes.length / 6))
+          response.write(packageBytes.subarray(sent, next))
+          sent = next
+          if (sent === packageBytes.length) { clearInterval(timer); response.end() }
+        }, 100)
+        response.once('close', () => clearInterval(timer))
+        return
+      }
+      if (fault === 'compressed') {
+        const compressed = gzipSync(packageBytes)
+        response.writeHead(200, { 'content-length': compressed.length, 'content-encoding': 'gzip' })
+        response.end(compressed)
+        return
+      }
+      response.end(packageBytes)
+    }
     else if (request.url === '/downloads/network.tgz') response.end(networkBytes)
     else { response.statusCode = 404; response.end() }
   })
@@ -63,12 +117,18 @@ async function fixture(badPackageHash = false, options: {
   return { origin, record: join(directory, 'installed.json'), requests }
 }
 
-async function install(origin: string, record: string): Promise<{ code: number; output: string }> {
+async function install(origin: string, record: string, shortenDeadlines = false): Promise<{ code: number; output: string }> {
   const installer = new URL('../../../../deploy/gateway/install.sh', import.meta.url).pathname
+  let nodeOptions = process.env.NODE_OPTIONS ?? ''
+  if (shortenDeadlines) {
+    const preload = join(directory, 'deadline-preload.mjs')
+    await writeFile(preload, 'const original=globalThis.setTimeout;globalThis.setTimeout=(callback,ms,...args)=>original(callback,ms===30000?400:ms,...args);')
+    nodeOptions += ` --import=${pathToFileURL(preload).href}`
+  }
   return new Promise(resolve => {
     execFile('sh', [installer, '--hub', origin, '--invite', 'testToken', '--state-directory', join(directory, 'node-state'), '--profile', 'existing-profile'],
       { env: { ...process.env, PATH: `${join(directory, 'existing-tools')}:${process.env.PATH ?? ''}`,
-        DSH_GATEWAY_ALLOW_HTTP_TEST: '1', GATEWAY_INSTALL_TEST_RECORD: record }, timeout: 10_000 },
+        NODE_OPTIONS: nodeOptions.trim(), DSH_GATEWAY_ALLOW_HTTP_TEST: '1', GATEWAY_INSTALL_TEST_RECORD: record }, timeout: 20_000 },
       (error, stdout, stderr) => resolve({ code: error === null ? 0 : 1, output: stdout + stderr }))
   })
 }
@@ -76,7 +136,12 @@ async function install(origin: string, record: string): Promise<{ code: number; 
 it.each(['tailcat', 'tailscale'] as const)('installs only the selected %s overlay using the platform installation path', async mode => {
   const { origin, record, requests } = await fixture(false, { mode })
   const result = await install(origin, record)
-  expect(result).toEqual({ code: 0, output: 'Downloading the Hub invitation and connection plugin…\n' })
+  expect(result.code).toBe(0)
+  expect(result.output).toContain('Downloading invitation manifest:')
+  expect(result.output).toContain('gateway-node.tgz: complete,')
+  expect(result.output).toContain('checksum verified')
+  expect(result.output).not.toContain('testToken')
+  expect(result.output).not.toContain(origin)
   const installed = JSON.parse(await readFile(record, 'utf8'))
   expect(installed.manifest.inviteToken).toBe('testToken')
   expect(installed.manifest.mode).toBe(mode)
@@ -126,4 +191,58 @@ it('passes an expired already-claimed invitation to the CLI without changing the
   expect(installed.manifest.expiresAt).toBeLessThan(Date.now())
   expect(installed.manifest.inviteToken).toBe('testToken')
   expect(JSON.parse(await readFile(join(stateDirectory, 'identity.json'), 'utf8'))).toEqual(identity)
+})
+
+it.each([
+  ['headers-stall', 'no HTTP response headers within 30 seconds'],
+  ['body-stall', 'no download progress for 30 seconds'],
+  ['truncated', 'connection or file write interrupted'],
+  ['oversize-header', 'declared size exceeds the 300.00 MiB limit'],
+] as const)('reports a bounded and token-free package download failure for %s', async (packageFault, message) => {
+  const { origin, record, requests } = await fixture(false, { packageFault })
+  const result = await install(origin, record, true)
+  expect(result.code).toBe(1)
+  expect(result.output).toContain(`gateway-node.tgz: ${message}`)
+  expect(result.output).toContain('No partial file was installed')
+  expect(result.output).not.toContain('testToken')
+  expect(result.output).not.toContain(origin)
+  expect(requests.filter(url => url === '/downloads/gateway-node.tgz')).toHaveLength(1)
+  await expect(readFile(record)).rejects.toThrow()
+})
+
+it('stops a chunked response at the streaming size limit without installing its partial package', async () => {
+  const { origin, record } = await fixture(false, { packageFault: 'oversize-stream' })
+  const result = await install(origin, record)
+  expect(result.code).toBe(1)
+  expect(result.output).toContain('received size exceeds the 300.00 MiB limit')
+  expect(result.output).toContain('No partial file was installed')
+  await expect(readFile(record)).rejects.toThrow()
+}, 30_000)
+
+it('can recover on a fresh bounded installation attempt after a stalled transfer', async () => {
+  const { origin, record, requests } = await fixture(false, { packageFault: 'body-stall', faultOnce: true })
+  const failed = await install(origin, record, true)
+  expect(failed.code).toBe(1)
+  expect(failed.output).toContain('no download progress')
+  const retry = await install(origin, record)
+  expect(retry.code).toBe(0)
+  expect(retry.output).toContain('checksum verified')
+  expect(requests.filter(url => url === '/downloads/gateway-node.tgz')).toHaveLength(2)
+  expect(JSON.parse(await readFile(record, 'utf8')).manifest.inviteToken).toBe('testToken')
+})
+
+it('allows an archive to keep progressing beyond the small-request deadline', async () => {
+  const { origin, record } = await fixture(false, { packageFault: 'slow-stream' })
+  const result = await install(origin, record, true)
+  expect(result.code).toBe(0)
+  expect(result.output).toContain('gateway-node.tgz: complete,')
+  expect(result.output).toContain('checksum verified')
+})
+
+it('verifies decoded bytes when HTTP compression changes the Content-Length', async () => {
+  const { origin, record } = await fixture(false, { packageFault: 'compressed' })
+  const result = await install(origin, record)
+  expect(result.code).toBe(0)
+  expect(result.output).toContain('gateway-node.tgz: complete,')
+  expect(result.output).toContain('checksum verified')
 })
