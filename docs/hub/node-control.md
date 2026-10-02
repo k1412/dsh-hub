@@ -5,6 +5,15 @@ Gateway. One operator retains full authority; node-to-node access defaults to de
 The Hub has no models or model credentials and does not persist prompts, results or
 session history. Older nodes remain compatible with native UI protocol version 1.
 
+## User workflow
+
+Complete the node configuration below and bring A and B online. Configure B's delegation workspace and local model first.
+
+1. **Manage a node:** From node details, open experimental management. Check versions in the plugin table, enter an exact target version to install or update, or enable, disable and remove eligible plugins. A `restart-required` job means installation reached disk but active code is unverified. Once tasks have finished, choose “Controlled restart DSH”. Full DSH updates, start, stop and restart require the [independent supervisor](#optional-resident-supervisor). They are unavailable without it and refuse active work.
+2. **Grant A→B:** Open node grants and select source A and target B. The form automatically binds their paired Runtime identities; check those identities in node details before submitting. Enter B's configured absolute workspace, select discovery, task start, read and cancel, and choose an expiry in hours or days. B→A needs a separate grant. Read permission does not grant access to another session's tasks.
+3. **Delegate in A's native session:** For example: “Discover my authorized nodes. On node B, inspect the project's test configuration in its allowed workspace. Give me the task ID, then check progress and summarize the result. Do not change files.” The model uses the registered `peer_discover`, `peer_task_start`, `peer_task_read` and `peer_task_cancel` tools; no handwritten RPC is needed. Tools derive source identity from the current native session; the model cannot choose a source session. “Do not change files” is a task instruction. The workspace only constrains the starting cwd; it is **not a sandbox**.
+4. **Read, cancel and revoke:** B uses its own model and credentials to create a separate native subagent session. Local task metadata records the source node, Runtime, session and target workspace. Keep the returned task ID and ask in the same A session: “Check that task's progress and result” or “Cancel that task”. An operator can immediately revoke A→B on the grants page. Further access is refused and related tasks receive cancellation requests. Loss of Hub or the source connection also leads to cooperative cancellation when the local lease expires within 30 seconds; uncooperative tools may delay exit. Remote results are untrusted data and convey no additional authority.
+
 ## Install and run
 
 Follow the [Gateway guide](gateway-design.md) to build and pair nodes.
