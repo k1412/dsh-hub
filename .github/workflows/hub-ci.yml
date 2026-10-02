@@ -121,7 +121,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium webkit
+      - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm run hub:web:build
       - name: Verify desktop/mobile interactions and record UI timings
         run: DSH_HUB_UI_BENCHMARK_JSON=.artifacts/ui-performance.json pnpm run hub:web:csp:verify
@@ -250,7 +250,7 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec playwright install --with-deps chromium webkit
       - name: Install verified upstream contract fixture
         run: npm install --prefix "$RUNNER_TEMP/dsh-native" --ignore-scripts --no-audit --no-fund @deepseek-ai/dsh@0.1.7-rc.2
       - name: Native transport and two-node server tests
