@@ -11,7 +11,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { createServer } from 'node:http'
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -41,7 +41,9 @@ let runtime: ChildProcess | undefined
 let output = ''
 let tunnel: GatewayTunnel | undefined
 let credential: string | undefined
+let enrolledClientId: string | undefined
 let enrollmentCount = 0
+let onlineEnrollmentProbes = 0
 let runtimeStarts = 0
 const inviteToken = 'native-profile-smoke-private-invitation'
 const sockets = new WebSocketServer({ noServer: true })
@@ -53,7 +55,21 @@ const server = createServer(async (request, response) => {
   if (body.inviteToken !== inviteToken || body.runtimeId !== 'default' || body.dshVersion !== '0.1.7-rc.2') {
     response.writeHead(403).end(); return
   }
+  if (credential !== undefined && (body.credential !== credential || body.clientId !== enrolledClientId)) {
+    response.writeHead(403).end(); return
+  }
+  if (tunnel) {
+    // The retry helper and existing Runtime must work concurrently, using
+    // distinct Tailcat identities but the same saved Hub pairing identity.
+    const active = tunnel
+    const probe = await active.fetch(new Request('http://native/'))
+    assert.equal(probe.status, 200)
+    await probe.arrayBuffer()
+    assert(active.isOpen)
+    onlineEnrollmentProbes++
+  }
   credential = body.credential
+  enrolledClientId = body.clientId
   enrollmentCount++
   response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ nodeId: 'native-profile-smoke' }))
 })
@@ -110,6 +126,22 @@ try {
   }
   assert(await waitUntil(() => Boolean(tunnel), 30_000), 'The installed scoped plugin connects from the native Runtime')
   assert(tunnel)
+  const retryPid = runtime?.pid
+  const activeBeforeRetry = tunnel
+  const savedIdentity = await readFile(join(state, 'identity.json'), 'utf8')
+  const runtimeKey = join(state, 'tailcat-config/tailcat/keys/gateway-node.private.json')
+  const savedRuntimeKey = await readFile(runtimeKey)
+  await writeFile(manifest, JSON.stringify({ ...JSON.parse(await readFile(manifest, 'utf8')), claimed: true }), { mode: 0o600 })
+  const retriedPlugin = await execute(process.execPath, [cli, 'install', '--manifest', manifest,
+    '--state-directory', state, '--bin-directory', bins, '--dsh-executable', executable], { env, timeout: 300_000, maxBuffer: 1024 * 1024 })
+  assert.deepEqual(JSON.parse(retriedPlugin.stdout.trim()), result)
+  assert.equal(enrollmentCount, 2)
+  assert.equal(onlineEnrollmentProbes, 1, 'The already connected Runtime served a request while the retry enrollment helper was active')
+  assert.equal(runtime?.pid, retryPid, 'Retry must not restart the existing Runtime')
+  assert.equal(await readFile(join(state, 'identity.json'), 'utf8'), savedIdentity)
+  assert.deepEqual(await readFile(runtimeKey), savedRuntimeKey, 'Do not replace or copy the active Runtime transport key')
+  assert(!(await readdir(state)).some(name => name.startsWith('.enroll-tailcat-')), 'Enrollment helpers must remove temporary carrier state')
+  assert(await waitUntil(() => Boolean(tunnel?.isOpen), 30_000))
   const page = await tunnel.fetch(new Request('http://native/'))
   assert.equal(page.status, 200)
   const html = await page.text()
@@ -138,6 +170,8 @@ try {
   assert(!output.includes('without inject'), 'Cordis optional services must be accessed in a valid plugin scope')
   const report = { ok: true, packagedInstaller: true, realNativeProfile: true, realTailcat: true,
     pluginScope: true, sameProfile: true, activatedByHmr, runtimeStarts, sameProcess: runtime?.pid === initialPid,
+    sameInvitationRetry: true, onlineDuringRetry: onlineEnrollmentProbes === 1, sameRuntimeTransportKey: true, enrollmentHelpersCleaned: true,
+    sameTunnelAfterRetry: activeBeforeRetry === tunnel && activeBeforeRetry.isOpen,
     nativePage: page.status, officialJavascript: script.status, nativePluginEvents: events.status, artifacts: work }
   await writeFile(join(work, 'report.json'), JSON.stringify(report, null, 2))
   process.stdout.write(`${JSON.stringify(report)}\n`)

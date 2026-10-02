@@ -1427,11 +1427,12 @@ describe('Hub Connector coexistence', () => {
     expect(await server.send('default', {
       type: 'runtime.resync-required', runtimeId: 'default', reason: 'retention-exceeded',
     })).toBe(true)
+    // The configured reconnect jitter may consume the default 1 s wait alone.
     await vi.waitFor(() => {
       expect(connections).toBeGreaterThanOrEqual(2)
       expect(muxSubscriptions).toBeGreaterThanOrEqual(2)
       expect(questionFrames().length).toBeGreaterThanOrEqual(2)
-    })
+    }, { timeout: 3000 })
     expect(questionFrames()[1]).toMatchObject({
       payload: { rpcId: 'question-rpc-resync-0001', method: 'question/requested' },
     })

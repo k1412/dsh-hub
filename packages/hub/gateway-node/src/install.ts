@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID, createHash } from 'node:crypto'
-import { readFile, writeFile, rename, mkdir, chmod, copyFile } from 'node:fs/promises'
+import { readFile, writeFile, rename, mkdir, mkdtemp, chmod, copyFile, rm } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { hostname, homedir } from 'node:os'
 import { execFile } from 'node:child_process'
@@ -125,20 +125,29 @@ export async function installNode(options: {
   const identity = { clientId: savedIdentity.clientId, credential: savedIdentity.credential }
   if (!identity.clientId || !/^[a-zA-Z0-9_-]{32,}$/.test(identity.credential)) throw new Error('Invalid existing gateway identity file')
   options.onProgress?.(`Preparing ${invitation.mode} connection`)
-  const network = await connectNodeNetwork({ mode: invitation.mode, endpoint: invitation.endpoint, stateDirectory,
-    ...(options.binDirectory ? { binDirectory: options.binDirectory } : {}), waitForLoginMs: 120_000,
-    ...(options.tailscaleSocket ? { tailscaleSocket: options.tailscaleSocket } : {}),
-    onLogin: (url) => { options.onProgress?.(`Sign in to Tailscale: ${url}`) },
-  })
+  // The existing Runtime may already own a live Tailcat process for this state.
+  // Enrollment gets an independent, short-lived carrier identity; the Hub's
+  // persistent clientId/credential above still own the idempotent pairing.
+  const enrollmentState = invitation.mode === 'tailcat'
+    ? await mkdtemp(join(stateDirectory, '.enroll-tailcat-')) : stateDirectory
+  let network: Awaited<ReturnType<typeof connectNodeNetwork>> | undefined
   let nodeId: string
   try {
+    network = await connectNodeNetwork({ mode: invitation.mode, endpoint: invitation.endpoint, stateDirectory: enrollmentState,
+      ...(options.binDirectory ? { binDirectory: options.binDirectory } : {}), waitForLoginMs: 120_000,
+      ...(options.tailscaleSocket ? { tailscaleSocket: options.tailscaleSocket } : {}),
+      onLogin: (url) => { options.onProgress?.(`Sign in to Tailscale: ${url}`) },
+    })
     const enrolled = await fetch(new URL('/enroll', network.url), { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ inviteToken: invitation.inviteToken, ...identity, name: hostname(), dshVersion: version, runtimeId: 'default' }), signal: AbortSignal.timeout(30_000) })
     if (!enrolled.ok) throw new Error(`Hub refused node enrollment (HTTP ${enrolled.status}); create a new invitation if it expired or was revoked`)
     const result = await enrolled.json() as { nodeId?: string }
     if (!result.nodeId || !/^[a-zA-Z0-9_-]+$/.test(result.nodeId)) throw new Error('Hub returned an invalid node identity')
     nodeId = result.nodeId
-  } finally { await network.close() }
+  } finally {
+    try { await network?.close() }
+    finally { if (enrollmentState !== stateDirectory) await rm(enrollmentState, { recursive: true, force: true }) }
+  }
 
   const connectionFile = join(stateDirectory, 'connection.json')
   const configuration: NodeConnectionConfig = { protocol: 1, nodeId, ...identity, name: hostname(), mode: invitation.mode,
