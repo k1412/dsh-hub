@@ -1,15 +1,15 @@
 import { createServer, request, type Server } from 'node:http'
 import { once } from 'node:events'
-import { chromium, webkit, type Page } from 'playwright'
+import { chromium, webkit, type Browser, type Page } from 'playwright'
 import { WebSocket } from 'ws'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { NETWORK_VERSIONS } from '../../gateway-network/src/versions.ts'
 import { serveSurface } from '../../gateway-transport/src/index.ts'
 import { createGateway } from '../src/server.ts'
 import { listen } from './fixture.ts'
 
 const cleanups: (() => Promise<void>)[] = []
-// A case includes cold browser startup plus several navigations. This is the
+// A case includes several navigations. Browser startup has a separate hook. This is the
 // runner's total deadline, not an HTTP latency or application performance budget.
 const BROWSER_CASE_TIMEOUT_MS = 20_000
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
@@ -92,10 +92,15 @@ async function addFormNode(fixture: Awaited<ReturnType<typeof setup>>, privatePo
 describe.skipIf(process.env.GATEWAY_BROWSER_TEST !== '1').each([
   ['Chromium', chromium], ['WebKit', webkit],
 ] as const)('%s real Hub forms', (_name, engine) => {
+  // Match browser test workers: one engine process, isolated contexts per case.
+  // Startup/exit are fixture budgets, separate from the 2-second UI deadlines.
+  let browser: Browser
+  beforeAll(async () => { browser = await engine.launch({ headless: true }) }, 20_000)
+  afterAll(async () => { await browser?.close() }, 30_000)
   it('generates invitations from the Hub page for exactly Tailscale and Tailcat', async () => {
     const fixture = await setup()
-    const browser = await engine.launch({ headless: true }); cleanups.push(() => browser.close())
     const context = await browser.newContext({ extraHTTPHeaders: { 'x-fixture-operator': 'yes' } })
+    cleanups.push(() => context.close())
     const page = await context.newPage()
     for (const mode of ['tailscale', 'tailcat']) {
       await page.goto(fixture.origin)
@@ -120,8 +125,9 @@ describe.skipIf(process.env.GATEWAY_BROWSER_TEST !== '1').each([
 
   it('logs in with the real password form and then creates an invitation', async () => {
     const fixture = await setup(true)
-    const browser = await engine.launch({ headless: true }); cleanups.push(() => browser.close())
-    const page = await browser.newPage()
+    const context = await browser.newContext()
+    cleanups.push(() => context.close())
+    const page = await context.newPage()
     await page.goto(fixture.origin)
     await page.getByLabel('管理员密码').fill(fixture.password)
     const response = await submit(page, '登录', '/login')
@@ -143,10 +149,10 @@ describe.skipIf(process.env.GATEWAY_BROWSER_TEST !== '1').each([
     })
     const attackOrigin = `http://127.0.0.1:${await listen(attack)}`
     cleanups.push(() => closeServer(attack))
-    const browser = await engine.launch({ headless: true }); cleanups.push(() => browser.close())
     // Authentication is deliberately valid at the destination so CSRF must
     // reject the browser's real Origin, independently of cookie restrictions.
     const context = await browser.newContext({ extraHTTPHeaders: { 'x-fixture-operator': 'yes' } })
+    cleanups.push(() => context.close())
     const page = await context.newPage()
     for (const [path, expectedOrigin] of [['/cross', attackOrigin], ['/null', 'null']]) {
       await page.goto(`${attackOrigin}${path}`)
@@ -163,8 +169,8 @@ describe.skipIf(process.env.GATEWAY_BROWSER_TEST !== '1').each([
     const invitation = fixture.gateway.store.invite('tailcat', 'fixture-endpoint', 'Existing node')
     const node = fixture.gateway.store.enroll({ inviteToken: invitation.token, clientId: 'fixture-node', credential: 'fixture-credential-with-32-characters',
       name: 'Existing node', dshVersion: 'fixture', runtimeId: 'default' })
-    const browser = await engine.launch({ headless: true }); cleanups.push(() => browser.close())
     const context = await browser.newContext({ extraHTTPHeaders: { 'x-fixture-operator': 'yes' } })
+    cleanups.push(() => context.close())
     const page = await context.newPage()
     page.setDefaultTimeout(2000)
     await page.goto(fixture.origin)
@@ -189,8 +195,8 @@ describe.skipIf(process.env.GATEWAY_BROWSER_TEST !== '1').each([
     const a = await addFormNode(fixture, privatePort, 'A')
     const b = await addFormNode(fixture, privatePort, 'B')
     a.otherOrigin = b.origin
-    const browser = await engine.launch({ headless: true }); cleanups.push(() => browser.close())
     const context = await browser.newContext()
+    cleanups.push(() => context.close())
     const page = await context.newPage()
     const useCookie = (node: typeof a) => context.addCookies([{ name: 'dsh_gateway_session', value: node.cookie, url: node.origin }])
     for (const node of [a, b]) {
