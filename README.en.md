@@ -55,7 +55,7 @@ Prepare networking in Hub's Connection settings, then select Add node:
 - **Tailscale:** suits an existing tailnet; Hub supports managed login configuration.
 - **Tailcat:** pairs over an encrypted connection without an account, with relay fallback when direct connectivity is unavailable.
 
-Run the invitation command as the existing DSH user. The installer verifies downloads, installs into the original profile and preserves pairing. Reinstallation does not start a conflicting process with the active Tailcat identity.
+Run the invitation command as the existing DSH user. A logged-in local Tailscale client is reused without another download or login; private network archives are checksum-verified and cached for repeat installations. The installer verifies downloads, installs into the original profile and preserves pairing. Reinstallation does not start a conflicting process with the active Tailcat identity.
 
 ### 3. Open native DSH
 

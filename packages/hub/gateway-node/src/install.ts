@@ -75,6 +75,7 @@ export async function installNode(options: {
   stateDirectory: string
   binDirectory?: string
   tailscaleSocket?: string
+  allowManagedTailscale?: boolean
   profile?: string
   dshExecutable?: string
   packageFile?: string
@@ -116,6 +117,7 @@ export async function installNode(options: {
     network = await connectNodeNetwork({ mode: invitation.mode, endpoint: invitation.endpoint, stateDirectory: enrollmentState,
       ...(options.binDirectory ? { binDirectory: options.binDirectory } : {}), waitForLoginMs: 120_000,
       ...(options.tailscaleSocket ? { tailscaleSocket: options.tailscaleSocket } : {}),
+      ...(options.allowManagedTailscale === undefined ? {} : { allowManagedTailscale: options.allowManagedTailscale }),
       onLogin: (url) => { options.onProgress?.(`Sign in to Tailscale: ${url}`) },
     })
     const enrolled = await fetch(new URL('/enroll', network.url), { method: 'POST', headers: { 'content-type': 'application/json' },
@@ -134,6 +136,7 @@ export async function installNode(options: {
     endpoint: invitation.endpoint, stateDir: stateDirectory, hubUrl: invitation.hubUrl,
     ...(options.binDirectory ? { binDirectory: resolve(options.binDirectory) } : {}),
     ...(options.tailscaleSocket ? { tailscaleSocket: options.tailscaleSocket } : {}),
+    ...(options.allowManagedTailscale === undefined ? {} : { allowManagedTailscale: options.allowManagedTailscale }),
   }
   await atomicPrivateJson(connectionFile, configuration)
   const packageDirectory = join(stateDirectory, 'packages')

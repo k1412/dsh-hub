@@ -108,7 +108,7 @@ WebSocket 处理必须保留原生流生命周期，限制帧与队列大小，�
 
 ## 6. 网络打包与配置
 
-Hub 发行包必须同时包含 Tailscale 和 Tailcat；托管 Tailscale 还需要 `tailscaled`。节点安装器安装选定的 helper；切换模式时需要显式准备另一种 helper。网络选择改变邀请命令和连接方式，不改变应用协议。不能提供公网 HTTP、任意 TCP、局域网 IP 或本地 Web URL 作为额外接入模式。
+Hub 发行包必须同时包含 Tailscale 和 Tailcat；托管 Tailscale 还需要 `tailscaled`。节点安装器优先复用可访问且已登录的现有 Tailscale，状态查询限时 4 秒，不重新登录或切换现有身份；复用模式退出登录后不启动专用 daemon。否则 Linux 安装选定的专用 helper，并按完整 SHA-256 缓存、校验和复用归档；首次使用此缓存的旧安装需下载一次。macOS 需预装所选工具，Tailscale 必须已登录；切换模式时需要显式准备另一种 helper。网络选择改变邀请命令和连接方式，不改变应用协议。不能提供公网 HTTP、任意 TCP、局域网 IP 或本地 Web URL 作为额外接入模式。
 
 Tailscale 托管模式在网关容器内拥有独立的用户态 daemon、私有 socket 和持久化状态。设置页面可发起登录并展示返回的 HTTPS 登录链接。操作者完成 Tailscale 认证后，只有 daemon 运行、tailnet 地址有效且私有转发可用，才算就绪。配置只作用于专用 daemon，不改变 NAS 宿主 DNS、路由或原有 Tailscale 身份。显式选择宿主模式时，读取现有 daemon，由其所有者负责登录。持久化身份，避免更换容器时无谓地新增 tailnet 设备。[Tailscale 容器文档](https://tailscale.com/docs/features/containers/docker)说明了用户态网络支持。
 
