@@ -37,7 +37,8 @@ async function fixture(mode: 'tailcat' | 'tailscale' = 'tailcat') {
     await writeFile(join(options.stateDirectory, 'helper-state'), 'temporary-carrier-key')
     return { url: 'http://127.0.0.1:12345', close, mode, closed: false }
   })
-  const run = (claimed = false) => installNode({ manifest: { ...manifest, claimed }, stateDirectory: state, dshExecutable: dsh })
+  const run = (claimed = false, allowManagedTailscale?: boolean) => installNode({ manifest: { ...manifest, claimed }, stateDirectory: state, dshExecutable: dsh,
+    ...(allowManagedTailscale === undefined ? {} : { allowManagedTailscale }) })
   const named = (stateDirectory: string) => installNode({ manifest: { ...manifest, hubUrl: 'https://experiment.test', sessionDirectory: true }, stateDirectory, instance: 'gateway-node-experiment', dshExecutable: dsh })
   return { directory, state, profile, runtimeKey, helpers, close, fetch, run, named }
 }
@@ -115,10 +116,25 @@ describe('installation enrollment carrier lifetime', () => {
 
   it('keeps the persistent Tailscale state used for login and managed daemon recovery', async () => {
     const f = await fixture('tailscale')
-    await f.run()
+    const result = await f.run()
     expect(f.helpers).toEqual([f.state])
     expect(await readFile(join(f.state, 'helper-state'), 'utf8')).toBe('temporary-carrier-key')
     expect(f.close).toHaveBeenCalledTimes(1)
     expect(await readFile(f.runtimeKey, 'utf8')).toBe('existing-runtime-identity')
+    expect(network.connect.mock.calls[0]![0]).not.toHaveProperty('allowManagedTailscale')
+    expect(JSON.parse(await readFile(result.connectionFile, 'utf8'))).not.toHaveProperty('allowManagedTailscale')
+  })
+
+  it('preserves host-only Tailscale reuse through enrollment, saved configuration and retries', async () => {
+    const f = await fixture('tailscale')
+    const result = await f.run(false, false)
+    const identity = await readFile(join(f.state, 'identity.json'), 'utf8')
+    const config = await readFile(result.connectionFile, 'utf8')
+    expect(JSON.parse(config).allowManagedTailscale).toBe(false)
+    expect(await f.run(true, false)).toEqual(result)
+    expect(await readFile(join(f.state, 'identity.json'), 'utf8')).toBe(identity)
+    expect(await readFile(result.connectionFile, 'utf8')).toBe(config)
+    expect(network.connect).toHaveBeenCalledTimes(2)
+    for (const [options] of network.connect.mock.calls) expect(options.allowManagedTailscale).toBe(false)
   })
 })

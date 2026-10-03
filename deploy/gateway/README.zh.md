@@ -4,7 +4,9 @@ Hub 镜像包含固定的 Tailscale 1.102.4 和 Tailcat 0.7.0。两种工具的 
 
 普通容器使用独立的用户态 `tailscaled`，登录和身份保存在 Hub 状态卷中。`compose.host-tailscale.yaml` 复用宿主已经登录的 Tailscale：只读取状态，在其 Tailnet IP 上绑定独立入口，不调用宿主的 `up`、`login` 或 `serve`。Tailcat 在独立状态目录保存 Hub 和 node 的持久密钥，由官方工具管理直连与中继。
 
-Linux amd64/arm64 可以自动下载和校验工具。macOS 当前复用已经安装的工具；Tailscale 必须先完成登录。节点 CLI 把插件安装到现有 DSH Profile，不创建第二个 DSH Runtime。
+安装器先检查本机 Tailscale，状态查询最多等待 4 秒。已有可访问且已登录的客户端时直接复用，不下载另一份，不重新登录；可通过 `DSH_GATEWAY_TAILSCALE_SOCKET` 指定现有 daemon 的绝对 socket 路径。复用模式在设备退出登录后提示重新登录现有 Tailscale，不自动创建另一个身份。Hub 邀请只负责 DSH 配对，不替代 Tailscale 登录或网络权限；节点需要能够通过 Tailnet 访问 Hub。
+
+Linux amd64/arm64 没有可用客户端时才下载固定版本的专用工具，并提示完成官方登录。专用网络归档保存在节点状态目录的 `network-cache` 中，重复安装先校验完整 SHA-256，再复用；损坏或版本不同会重新下载。首次使用此缓存的旧安装仍需下载一次。macOS 需预装所选工具，Tailscale 必须已登录。节点 CLI 把插件安装到现有 DSH Profile，不创建第二个 DSH Runtime。
 
 在仓库中运行以下命令准备工具并执行真实网络测试：
 

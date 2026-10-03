@@ -10,10 +10,11 @@ async function main(): Promise<void> {
     manifest: { type: 'string' }, 'state-directory': { type: 'string' }, 'bin-directory': { type: 'string' },
     instance: { type: 'string' }, profile: { type: 'string' }, 'package-file': { type: 'string' }, 'dsh-executable': { type: 'string' },
     'tailscale-socket': { type: 'string' },
+    'reuse-tailscale': { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
   } })
   if (args.values.help) {
-    process.stdout.write('Usage: dsh-gateway-node install --manifest <file> [--state-directory <directory>] [--bin-directory <directory>] [--profile web] [--instance gateway-node-experiment] [--dsh-executable <path>] [--tailscale-socket <path>]\nInstalls and pairs the remote plugin inside an existing DSH 0.1.7-rc.2 profile.\n')
+    process.stdout.write('Usage: dsh-gateway-node install --manifest <file> [--state-directory <directory>] [--bin-directory <directory>] [--profile web] [--instance gateway-node-experiment] [--dsh-executable <path>] [--tailscale-socket <path>] [--reuse-tailscale]\nInstalls and pairs the remote plugin inside an existing DSH 0.1.7-rc.2 profile.\n')
     return
   }
   if (args.positionals[0] !== 'install' || !args.values.manifest) throw new Error('Usage: dsh-gateway-node install --manifest <file> [--state-directory <directory>] [--profile web] [--instance gateway-node-experiment]')
@@ -25,6 +26,7 @@ async function main(): Promise<void> {
     ...(args.values['dsh-executable'] ? { dshExecutable: args.values['dsh-executable'] } : {}),
     ...(tailscaleSocket ? { tailscaleSocket } : {}),
     ...(args.values.instance ? { instance: args.values.instance } : {}),
+    ...(args.values['reuse-tailscale'] ? { allowManagedTailscale: false } : {}),
     ...(args.values.profile ? { profile: args.values.profile } : {}),
     onProgress: (message) => { process.stderr.write(`${message}\n`) },
   })

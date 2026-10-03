@@ -7,10 +7,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GatewayTunnel } from '@k1412/dsh-gateway-transport'
 import { startNodeConnector, readConnectionConfig, type NodeConnectionConfig } from '../src/connector.ts'
 import { NodeSurface } from '../src/surface.ts'
+import type { CommandRunner, ProcessSpawner } from '../../gateway-network/src/process.ts'
 
 const mocked = vi.hoisted(() => ({ url: '', close: vi.fn(async () => {}), connect: vi.fn() }))
 vi.mock('@k1412/dsh-gateway-network', () => ({
-  connectNodeNetwork: async (options: unknown) => { mocked.connect(options); return { url: mocked.url, mode: 'tailscale', closed: false, close: mocked.close } },
+  connectNodeNetwork: async (options: unknown) => { return await mocked.connect(options) ?? { url: mocked.url, mode: 'tailscale', closed: false, close: mocked.close } },
 }))
 
 const disposers: Array<() => Promise<void>> = []
@@ -53,6 +54,7 @@ describe('paired outbound native connector', () => {
     expect(observed.mock.calls[0]![0]).toBe('/connect?nodeId=test-node')
     expect(observed.mock.calls[0]![1].authorization).toBe(`Bearer ${config.credential}`)
     expect(mocked.connect).toHaveBeenCalledWith(expect.objectContaining({ mode: 'tailscale', endpoint: config.endpoint }))
+    expect(mocked.connect.mock.calls[0]![0]).not.toHaveProperty('allowManagedTailscale')
     const bytes = new Uint8Array([0, 128, 255, 0, 11])
     const response = await tunnel!.fetch(new Request('http://native/api/file/upload', { method: 'POST', body: bytes }))
     expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes)
@@ -69,5 +71,40 @@ describe('paired outbound native connector', () => {
     expect(await readConnectionConfig(file)).toEqual(config)
     await chmod(file, 0o644)
     await expect(readConnectionConfig(file)).rejects.toThrow('owner-only')
+  })
+
+  it('keeps host-only reuse from starting another Tailscale identity when the host logs out', async () => {
+    const network = await vi.importActual<typeof import('@k1412/dsh-gateway-network')>('@k1412/dsh-gateway-network')
+    const directory = await mkdtemp(join(tmpdir(), 'gateway-host-only-'))
+    disposers.push(() => rm(directory, { recursive: true, force: true }))
+    const run = vi.fn<CommandRunner>(async () => ({ code: 0, stdout: JSON.stringify({ BackendState: 'NeedsLogin' }), stderr: '' }))
+    const spawn = vi.fn<ProcessSpawner>()
+    mocked.connect.mockImplementationOnce((options) => network.connectNodeNetwork({ ...options, run, spawn }))
+    const statuses: Array<{ state: string; message: string }> = []
+    const connector = startNodeConnector({ config: { ...config, stateDir: directory, binDirectory: join(directory, 'bin'), allowManagedTailscale: false },
+      metadata: { name: 'Native test', runtimeId: 'default', dshVersion: '0.1.7-rc.2', protocol: 1 },
+      surface: {} as NodeSurface, onStatus: event => { statuses.push(event) } })
+    disposers.push(() => connector.close())
+    await vi.waitFor(() => expect(statuses).toContainEqual({ state: 'login-required', message: 'Sign in to the existing Tailscale application to reconnect.' }))
+    await connector.close()
+    expect(mocked.connect).toHaveBeenCalledTimes(1)
+    expect(run).toHaveBeenCalled()
+    expect(run.mock.calls.every(([, args]) => args.includes('status'))).toBe(true)
+    expect(spawn).not.toHaveBeenCalled()
+  })
+
+  it('accepts optional boolean managed Tailscale settings and rejects ambiguous persisted values', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'gateway-network-config-'))
+    disposers.push(() => rm(directory, { recursive: true, force: true }))
+    const file = join(directory, 'connection.json')
+    for (const value of [undefined, false, true]) {
+      const saved = { ...config, ...(value === undefined ? {} : { allowManagedTailscale: value }) }
+      await writeFile(file, JSON.stringify(saved), { mode: 0o600 })
+      expect(await readConnectionConfig(file)).toEqual(saved)
+    }
+    for (const value of [null, 0, 'false', {}]) {
+      await writeFile(file, JSON.stringify({ ...config, allowManagedTailscale: value }), { mode: 0o600 })
+      await expect(readConnectionConfig(file)).rejects.toThrow('must be a boolean')
+    }
   })
 })

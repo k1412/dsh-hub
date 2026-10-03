@@ -55,7 +55,7 @@ docker compose --env-file deploy/gateway/.env \
 - **Tailscale：**适合已有 tailnet；可在 Hub 完成托管登录配置。
 - **Tailcat：**无需账号，通过加密通道配对；直连不可用时可中继。
 
-以运行现有 DSH 的用户执行邀请命令。安装器验证下载并装入原 profile，保留配对身份；重复安装不会用同一运行中 Tailcat 身份另起冲突进程。
+以运行现有 DSH 的用户执行邀请命令。已有已登录的 Tailscale 就直接复用，无需再次下载或登录；专用网络归档经过校验后缓存，重复安装可复用。安装器验证下载并装入原 profile，保留配对身份；重复安装不会用同一运行中 Tailcat 身份另起冲突进程。
 
 ### 3. 打开原生 DSH
 

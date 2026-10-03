@@ -37,8 +37,9 @@ trap 'exit 143' TERM
 printf 'Downloading the Hub invitation and connection plugin…\n'
 node --input-type=module - "$hub" "$invite" "$state_directory" "$installer_directory" <<'NODE'
 import { createHash } from 'node:crypto'
-import { readFile, writeFile, mkdir, chmod, open, rename, unlink } from 'node:fs/promises'
-import { join } from 'node:path'
+import { readFile, writeFile, mkdir, chmod, open, rename, unlink, access, realpath, symlink, lstat } from 'node:fs/promises'
+import { createReadStream, constants } from 'node:fs'
+import { join, resolve, delimiter } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 const [hub, invite, stateDirectory, temporary] = process.argv.slice(2)
@@ -57,6 +58,53 @@ function assetName(file, fallback) {
   return fallback
 }
 const mib = bytes => `${(bytes / (1024 * 1024)).toFixed(2)} MiB`
+async function existingTailscale(binariesDirectory) {
+  process.stderr.write('Tailscale: checking the existing local client (status timeout: 4s).\n')
+  for (const directory of (process.env.PATH ?? '').split(delimiter)) {
+    const candidate = resolve(directory, 'tailscale')
+    try {
+      await access(candidate, constants.X_OK)
+      const binary = await realpath(candidate)
+      const socket = process.env.DSH_GATEWAY_TAILSCALE_SOCKET
+      const status = spawnSync(binary, [...(socket ? [`--socket=${socket}`] : []), 'status', '--json'],
+        { encoding: 'utf8', timeout: 4000, maxBuffer: 1024 * 1024 })
+      if (status.status !== 0 || JSON.parse(status.stdout)?.BackendState !== 'Running') return false
+      const target = join(binariesDirectory, 'tailscale')
+      // Keep an absolute reference: the existing Runtime may have a different PATH.
+      // Never replace a binary with a link pointing to itself.
+      if (binary !== target) {
+        const link = join(temporary, 'host-tailscale')
+        await symlink(binary, link)
+        await rename(link, target)
+      }
+      process.stderr.write('Tailscale: reusing the logged-in local client; no network package download or new login.\n')
+      return true
+    } catch (error) {
+      if (error.code === 'ENOENT' || error.code === 'EACCES') continue
+      // Malformed status is not a usable client. Do not expose status/account data.
+      if (error instanceof SyntaxError) return false
+      throw error
+    }
+  }
+  return false
+}
+async function verifiedArchive(path, expected) {
+  try {
+    const info = await lstat(path)
+    if (!info.isFile() || info.size > 300 * 1024 * 1024) return false
+    const digest = createHash('sha256')
+    let bytes = 0
+    for await (const chunk of createReadStream(path)) {
+      bytes += chunk.length
+      if (bytes > 300 * 1024 * 1024) return false
+      digest.update(chunk)
+    }
+    return digest.digest('hex') === expected
+  } catch (error) {
+    if (error.code === 'ENOENT') return false
+    throw error
+  }
+}
 async function download(url, path, hash, { name = 'invitation manifest', archive = false } = {}) {
   const maximum = (archive ? 300 : 1) * 1024 * 1024
   const totalMs = archive ? 300_000 : 30_000
@@ -173,7 +221,9 @@ try {
   if (unpack.status !== 0) throw new Error('Cannot unpack the connection plugin')
   const binariesDirectory = join(stateDirectory, 'bin')
   await mkdir(binariesDirectory, { recursive: true, mode: 0o700 })
-  if (process.platform === 'linux') {
+  if (!['linux', 'darwin'].includes(process.platform)) throw new Error('This installer supports Linux and macOS only')
+  const reuseTailscale = manifest.mode === 'tailscale' && await existingTailscale(binariesDirectory)
+  if (process.platform === 'linux' && !reuseTailscale) {
     const architecture = { x64: 'amd64', arm64: 'arm64' }[process.arch]
     if (architecture === undefined) throw new Error('Automatic binary installation supports Linux amd64 and arm64')
     let assets = manifest.networkBinaries?.[`linux-${architecture}`]
@@ -186,43 +236,58 @@ try {
     }
     const asset = assets.find(asset => asset.tool === manifest.mode)
     if (!asset || !/^[a-f0-9]{64}$/.test(asset.sha256)) throw new Error('Invitation is missing the verified network binary')
-    const networkFile = join(temporary, 'network.tgz')
-    await download(asset.url, networkFile, asset.sha256, { name: assetName(asset.file, `${manifest.mode} archive`), archive: true })
-    const listing = spawnSync('tar', ['-tzf', networkFile], { encoding: 'utf8' })
+    const cacheDirectory = join(stateDirectory, 'network-cache')
+    await mkdir(cacheDirectory, { recursive: true, mode: 0o700 })
+    const networkFile = join(cacheDirectory, `${asset.sha256}.tgz`)
+    if (await verifiedArchive(networkFile, asset.sha256)) {
+      process.stderr.write(`${manifest.mode}: reusing the cached network archive, checksum verified.\n`)
+    } else {
+      const downloaded = join(temporary, 'network.tgz')
+      await download(asset.url, downloaded, asset.sha256, { name: assetName(asset.file, `${manifest.mode} archive`), archive: true })
+      await rename(downloaded, networkFile)
+    }
+    const listing = spawnSync('tar', ['-tzf', networkFile], { encoding: 'utf8', timeout: 10_000, maxBuffer: 4 * 1024 * 1024 })
     if (listing.status !== 0) throw new Error('Cannot inspect the network archive')
     for (const binary of manifest.mode === 'tailscale' ? ['tailscale', 'tailscaled'] : ['tailcat']) {
       const member = listing.stdout.split('\n').find(path => path === binary || path.endsWith(`/${binary}`))
       if (!member) throw new Error(`Network archive is missing ${binary}`)
-      const extracted = spawnSync('tar', ['-xOzf', networkFile, member], { maxBuffer: 100 * 1024 * 1024 })
+      const extracted = spawnSync('tar', ['-xOzf', networkFile, member], { timeout: 10_000, maxBuffer: 100 * 1024 * 1024 })
       if (extracted.status !== 0) throw new Error('Cannot extract the network tool')
-      await writeFile(join(binariesDirectory, binary), extracted.stdout, { mode: 0o700 })
-      await chmod(join(binariesDirectory, binary), 0o700)
+      // Replace the directory entry, never write/chmod through a previous host link.
+      const staged = join(temporary, binary)
+      await writeFile(staged, extracted.stdout, { mode: 0o700 })
+      await chmod(staged, 0o700)
+      await rename(staged, join(binariesDirectory, binary))
     }
-  } else if (process.platform === 'darwin') {
-    const required = manifest.mode === 'tailscale' ? ['tailscale'] : ['tailcat']
-    for (const binary of required) {
-      const detected = spawnSync('/usr/bin/which', [binary], { encoding: 'utf8' })
+  } else if (process.platform === 'darwin' && !reuseTailscale) {
+    if (manifest.mode === 'tailscale') throw new Error('On macOS, sign in to an accessible existing Tailscale application before running this invitation command')
+    for (const binary of ['tailcat']) {
+      const detected = spawnSync('/usr/bin/which', [binary], { encoding: 'utf8', timeout: 4000, maxBuffer: 1024 * 1024 })
       if (detected.status !== 0) throw new Error(`On macOS, install and configure ${binary} before running this invitation command`)
-      if (binary === 'tailscale') {
-        const status = spawnSync(detected.stdout.trim(), ['status', '--json'], { encoding: 'utf8' })
-        let online = false
-        try { online = status.status === 0 && JSON.parse(status.stdout).BackendState === 'Running' } catch {}
-        if (!online) throw new Error('On macOS, sign in to the existing Tailscale application before running this invitation command')
-      }
       // Preserve the existing tool; CLI receives this bin directory on every OS.
-      const { symlink } = await import('node:fs/promises')
-      try { await symlink(detected.stdout.trim(), join(binariesDirectory, binary)) } catch (error) { if (error.code !== 'EEXIST') throw error }
+      const target = await realpath(detected.stdout.trim())
+      if (target !== join(binariesDirectory, binary)) {
+        const link = join(temporary, 'host-tailcat')
+        await symlink(target, link)
+        await rename(link, join(binariesDirectory, binary))
+      }
     }
-  } else throw new Error('This installer supports Linux and macOS only')
+  }
   manifest.inviteToken = invite
   manifest.packageFile = packageFile
   manifest.packageDirectory = packageDirectory
   await writeFile(join(temporary, 'manifest.json'), JSON.stringify(manifest), { mode: 0o600 })
   await writeFile(join(temporary, 'cli-path'), join(packageDirectory, 'lib', 'cli.js'), { mode: 0o600 })
+  if (reuseTailscale) await writeFile(join(temporary, 'reuse-tailscale'), '', { mode: 0o600 })
 } catch (error) { process.stderr.write(`${error.message}\n`); process.exitCode = 1 }
 NODE
 cli_path=$(cat "$installer_directory/cli-path")
 set -- install --manifest "$installer_directory/manifest.json" --state-directory "$state_directory" --bin-directory "$state_directory/bin"
-if [ -n "$profile" ]; then set -- "$@" --profile "$profile"; fi
+if [ -f "$installer_directory/reuse-tailscale" ]; then
+  set -- "$@" --reuse-tailscale
+fi
+if [ -n "$profile" ]; then
+  set -- "$@" --profile "$profile"
+fi
 if [ -n "$instance" ]; then set -- "$@" --instance "$instance"; fi
 node "$cli_path" "$@"
