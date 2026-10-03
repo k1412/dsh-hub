@@ -17,6 +17,7 @@ export interface NodeConnectionConfig {
   hubUrl: string
   binDirectory?: string
   tailscaleSocket?: string
+  allowManagedTailscale?: boolean
 }
 
 export interface NodeMetadata { name: string; runtimeId: string; dshVersion: string; protocol: 1 }
@@ -32,6 +33,7 @@ export async function readConnectionConfig(path: string): Promise<NodeConnection
     || !value.clientId || !value.name || !value.endpoint || !value.stateDir || !isAbsolute(value.stateDir)
     || !value.hubUrl) throw new Error('Invalid gateway connection file')
   if (value.tailscaleSocket !== undefined && !isAbsolute(value.tailscaleSocket)) throw new Error('Tailscale socket path must be absolute')
+  if (value.allowManagedTailscale !== undefined && typeof value.allowManagedTailscale !== 'boolean') throw new Error('Managed Tailscale setting must be a boolean')
   const hub = new URL(value.hubUrl)
   if (!['https:', 'http:'].includes(hub.protocol) || hub.username || hub.password) throw new Error('Invalid gateway Hub URL')
   return value as NodeConnectionConfig
@@ -68,6 +70,7 @@ export function startNodeConnector(options: {
         options.onStatus?.({ state: 'connecting', message: `Connecting through ${config.mode}` })
         network = await connectNodeNetwork({ mode: config.mode, endpoint: config.endpoint, stateDirectory: config.stateDir,
           ...(config.binDirectory ? { binDirectory: config.binDirectory } : {}),
+          ...(config.allowManagedTailscale === undefined ? {} : { allowManagedTailscale: config.allowManagedTailscale }),
           ...(config.tailscaleSocket ? { tailscaleSocket: config.tailscaleSocket } : {}), waitForLoginMs: 0 })
         if (controller.signal.aborted) break
         const url = new URL('/connect', network.url)
@@ -118,7 +121,10 @@ export function startNodeConnector(options: {
         }
         if (!controller.signal.aborted) {
           const login = error instanceof Error && error.name === 'TailscaleLoginRequiredError'
-          options.onStatus?.({ state: login ? 'login-required' : 'disconnected', message: login ? 'Tailscale login required; run the gateway installer to sign in.' : 'Connection failed; retrying the selected transport.' })
+          const loginMessage = config.allowManagedTailscale === false
+            ? 'Sign in to the existing Tailscale application to reconnect.'
+            : 'Tailscale login required; run the gateway installer to sign in.'
+          options.onStatus?.({ state: login ? 'login-required' : 'disconnected', message: login ? loginMessage : 'Connection failed; retrying the selected transport.' })
         }
       } finally {
         websocket?.terminate()

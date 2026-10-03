@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it } from 'vitest'
-import { mkdtemp, mkdir, readFile, readlink, lstat, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readlink, lstat, rm, writeFile, readdir, symlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -21,6 +21,7 @@ afterEach(async () => {
 const hash = (bytes: Buffer): string => createHash('sha256').update(bytes).digest('hex')
 async function fixture(badPackageHash = false, options: {
   expired?: boolean; claimed?: unknown; mode?: 'tailcat' | 'tailscale'; tailscaleState?: 'Running' | 'NeedsLogin'
+  tailscaleFault?: 'malformed' | 'error' | 'stall'
   packageFault?: 'headers-stall' | 'body-stall' | 'truncated' | 'oversize-header' | 'oversize-stream' | 'slow-stream' | 'compressed'
   faultOnce?: boolean
 } = {}): Promise<{ origin: string; record: string; requests: string[] }> {
@@ -42,7 +43,7 @@ async function fixture(badPackageHash = false, options: {
   const existingTools = join(directory, 'existing-tools')
   await mkdir(existingTools)
   await writeFile(join(existingTools, 'tailcat'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
-  await writeFile(join(existingTools, 'tailscale'), `#!/bin/sh\nprintf '%s\\n' '{"BackendState":"${options.tailscaleState ?? 'Running'}"}'\n`, { mode: 0o755 })
+  await writeFile(join(existingTools, 'tailscale'), `#!/bin/sh\nprintf '%s\\n' "$*" >> "$GATEWAY_INSTALL_TEST_TAILSCALE_LOG"\n${options.tailscaleFault === 'stall' ? 'exec sleep 10' : options.tailscaleFault === 'error' ? 'exit 1' : `printf '%s\\n' '${options.tailscaleFault === 'malformed' ? 'invalid json' : JSON.stringify({ BackendState: options.tailscaleState ?? 'Running' })}'`}\n`, { mode: 0o755 })
   const packageBytes = await readFile(packageArchive)
   const networkBytes = await readFile(networkArchive)
   let origin = ''
@@ -117,7 +118,7 @@ async function fixture(badPackageHash = false, options: {
   return { origin, record: join(directory, 'installed.json'), requests }
 }
 
-async function install(origin: string, record: string, shortenDeadlines = false): Promise<{ code: number; output: string }> {
+async function install(origin: string, record: string, shortenDeadlines = false, env: NodeJS.ProcessEnv = {}): Promise<{ code: number; output: string }> {
   const installer = new URL('../../../../deploy/gateway/install.sh', import.meta.url).pathname
   let nodeOptions = process.env.NODE_OPTIONS ?? ''
   if (shortenDeadlines) {
@@ -128,7 +129,8 @@ async function install(origin: string, record: string, shortenDeadlines = false)
   return new Promise(resolve => {
     execFile('sh', [installer, '--hub', origin, '--invite', 'testToken', '--state-directory', join(directory, 'node-state'), '--profile', 'existing-profile'],
       { env: { ...process.env, PATH: `${join(directory, 'existing-tools')}:${process.env.PATH ?? ''}`,
-        NODE_OPTIONS: nodeOptions.trim(), DSH_GATEWAY_ALLOW_HTTP_TEST: '1', GATEWAY_INSTALL_TEST_RECORD: record }, timeout: 20_000 },
+        NODE_OPTIONS: nodeOptions.trim(), DSH_GATEWAY_ALLOW_HTTP_TEST: '1', GATEWAY_INSTALL_TEST_RECORD: record,
+        GATEWAY_INSTALL_TEST_TAILSCALE_LOG: join(directory, 'tailscale-commands.log'), ...env }, timeout: 20_000 },
       (error, stdout, stderr) => resolve({ code: error === null ? 0 : 1, output: stdout + stderr }))
   })
 }
@@ -148,18 +150,123 @@ it.each(['tailcat', 'tailscale'] as const)('installs only the selected %s overla
   expect(installed.args.slice(-2)).toEqual(['--profile', 'existing-profile'])
   expect(installed.manifest.packageDirectory).toContain('/packages/gateway-node-')
   const selected = join(directory, 'node-state', 'bin', mode)
-  if (process.platform === 'darwin') {
+  if (process.platform === 'darwin' || mode === 'tailscale') {
     expect((await lstat(selected)).isSymbolicLink()).toBe(true)
     expect(await readlink(selected)).toBe(join(directory, 'existing-tools', mode))
     expect(requests).not.toContain('/downloads/network.tgz')
+    if (mode === 'tailscale') {
+      expect(installed.args).toContain('--reuse-tailscale')
+      expect(result.output).toContain('reusing the logged-in local client')
+      expect(await readFile(join(directory, 'tailscale-commands.log'), 'utf8')).toBe('status --json\n')
+    }
   } else {
     expect(process.platform).toBe('linux')
     expect((await lstat(selected)).isFile()).toBe(true)
     expect(await readFile(selected, 'utf8')).toBe('#!/bin/sh\nexit 0\n')
     expect(requests.filter(url => url === '/downloads/network.tgz')).toHaveLength(1)
-    if (mode === 'tailscale') expect(await readFile(join(directory, 'node-state', 'bin', 'tailscaled'), 'utf8')).toBe('#!/bin/sh\nexit 0\n')
   }
   await expect(readFile(join(directory, 'node-state', 'bin', mode === 'tailcat' ? 'tailscale' : 'tailcat'))).rejects.toThrow()
+})
+
+it('reuses host Tailscale on repeated installations, replaces stale links, and honors its custom socket', async () => {
+  const { origin, record, requests } = await fixture(false, { mode: 'tailscale' })
+  const bins = join(directory, 'node-state', 'bin')
+  await mkdir(bins, { recursive: true })
+  await symlink(join(directory, 'missing-client'), join(bins, 'tailscale'))
+  const socket = join(directory, 'existing-daemon.sock')
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await install(origin, record, false, { DSH_GATEWAY_TAILSCALE_SOCKET: socket })
+    expect(result.code).toBe(0)
+    expect(result.output).toContain('no network package download or new login')
+    expect(await readlink(join(bins, 'tailscale'))).toBe(join(directory, 'existing-tools', 'tailscale'))
+  }
+  expect(await readFile(join(directory, 'tailscale-commands.log'), 'utf8')).toBe(`--socket=${socket} status --json\n`.repeat(2))
+  expect(requests.filter(url => url.includes('network'))).toEqual([])
+  await expect(lstat(join(bins, 'tailscaled'))).rejects.toThrow()
+})
+
+it('does not create a self-referencing link when the existing CLI is already in the private bin directory', async () => {
+  const { origin, record, requests } = await fixture(false, { mode: 'tailscale' })
+  const bins = join(directory, 'node-state', 'bin')
+  await mkdir(bins, { recursive: true })
+  const binary = join(bins, 'tailscale')
+  await writeFile(binary, await readFile(join(directory, 'existing-tools', 'tailscale')), { mode: 0o700 })
+  const result = await install(origin, record, false, { PATH: `${bins}:${process.env.PATH ?? ''}` })
+  expect(result.code).toBe(0)
+  expect((await lstat(binary)).isFile()).toBe(true)
+  expect(requests).not.toContain('/downloads/network.tgz')
+})
+
+it.runIf(process.platform === 'linux').each([
+  { tailscaleState: 'NeedsLogin' as const },
+  { tailscaleFault: 'malformed' as const },
+  { tailscaleFault: 'error' as const },
+  { tailscaleFault: 'stall' as const },
+])('uses a verified private helper when host Tailscale is unusable: %j', async options => {
+  const { origin, record, requests } = await fixture(false, { mode: 'tailscale', ...options })
+  const started = Date.now()
+  const result = await install(origin, record)
+  expect(result.code).toBe(0)
+  expect(Date.now() - started).toBeLessThan(8000)
+  expect(requests.filter(url => url === '/downloads/network.tgz')).toHaveLength(1)
+  expect(JSON.parse(await readFile(record, 'utf8')).args).not.toContain('--reuse-tailscale')
+  expect(await readFile(join(directory, 'tailscale-commands.log'), 'utf8')).toBe('status --json\n')
+  for (const name of ['tailscale', 'tailscaled']) {
+    expect(await readFile(join(directory, 'node-state', 'bin', name), 'utf8')).toBe('#!/bin/sh\nexit 0\n')
+  }
+}, 10_000)
+
+it.runIf(process.platform === 'darwin')('requires existing Tailscale login on macOS without downloading another client', async () => {
+  const { origin, record, requests } = await fixture(false, { mode: 'tailscale', tailscaleState: 'NeedsLogin' })
+  const result = await install(origin, record)
+  expect(result.code).toBe(1)
+  expect(result.output).toContain('sign in to an accessible existing Tailscale application')
+  expect(requests).not.toContain('/downloads/network.tgz')
+  await expect(readFile(record)).rejects.toThrow()
+})
+
+it.runIf(process.platform === 'linux').each(['tailcat', 'tailscale'] as const)('rehashes the %s archive cache and repairs private binaries without downloading again', async mode => {
+  const { origin, record, requests } = await fixture(false, { mode, tailscaleState: 'NeedsLogin' })
+  expect((await install(origin, record)).code).toBe(0)
+  const binary = join(directory, 'node-state', 'bin', mode)
+  await writeFile(binary, 'corrupted installed binary')
+  const result = await install(origin, record)
+  expect(result.code).toBe(0)
+  expect(result.output).toContain('reusing the cached network archive, checksum verified')
+  expect(requests.filter(url => url === '/downloads/network.tgz')).toHaveLength(1)
+  expect(await readFile(binary, 'utf8')).toBe('#!/bin/sh\nexit 0\n')
+})
+
+it.runIf(process.platform === 'linux').each(['corrupt', 'symlink'] as const)('downloads again rather than trusting a %s archive cache', async fault => {
+  const { origin, record, requests } = await fixture(false, { mode: 'tailscale', tailscaleState: 'NeedsLogin' })
+  expect((await install(origin, record)).code).toBe(0)
+  const cacheDirectory = join(directory, 'node-state', 'network-cache')
+  const [name] = await readdir(cacheDirectory)
+  const archive = join(cacheDirectory, name!)
+  if (fault === 'corrupt') await writeFile(archive, 'truncated archive')
+  else {
+    await rm(archive)
+    await symlink(join(directory, 'network.tgz'), archive)
+  }
+  const result = await install(origin, record)
+  expect(result.code).toBe(0)
+  expect(requests.filter(url => url === '/downloads/network.tgz')).toHaveLength(2)
+  expect((await lstat(archive)).isFile()).toBe(true)
+})
+
+it.runIf(process.platform === 'linux')('never overwrites or chmods the host executable when falling back after host reuse', async () => {
+  const { origin, record, requests } = await fixture(false, { mode: 'tailscale' })
+  expect((await install(origin, record)).code).toBe(0)
+  const hostBinary = join(directory, 'existing-tools', 'tailscale')
+  const loggedOut = '#!/bin/sh\nprintf \'%s\\n\' \'{"BackendState":"NeedsLogin"}\'\n'
+  await writeFile(hostBinary, loggedOut)
+  const before = await lstat(hostBinary)
+  const result = await install(origin, record)
+  expect(result.code).toBe(0)
+  expect(await readFile(hostBinary, 'utf8')).toBe(loggedOut)
+  expect((await lstat(hostBinary)).mode).toBe(before.mode)
+  expect((await lstat(join(directory, 'node-state', 'bin', 'tailscale'))).isSymbolicLink()).toBe(false)
+  expect(requests.filter(url => url === '/downloads/network.tgz')).toHaveLength(1)
 })
 
 it('stops before invoking or installing a plugin when the package checksum is wrong', async () => {
