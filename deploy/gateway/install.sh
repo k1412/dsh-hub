@@ -219,8 +219,9 @@ try {
   const strip = prefixes.size === 1 && !paths.includes('package.json') ? ['--strip-components=1'] : []
   const unpack = spawnSync('tar', ['-xzf', packageFile, '-C', packageDirectory, ...strip], { stdio: 'inherit' })
   if (unpack.status !== 0) throw new Error('Cannot unpack the connection plugin')
-  const binariesDirectory = join(stateDirectory, 'bin')
-  await mkdir(binariesDirectory, { recursive: true, mode: 0o700 })
+  await mkdir(join(stateDirectory, 'bin'), { recursive: true, mode: 0o700 })
+  // macOS /var is an alias for /private/var; compare canonical parents too.
+  const binariesDirectory = await realpath(join(stateDirectory, 'bin'))
   if (!['linux', 'darwin'].includes(process.platform)) throw new Error('This installer supports Linux and macOS only')
   const reuseTailscale = manifest.mode === 'tailscale' && await existingTailscale(binariesDirectory)
   if (process.platform === 'linux' && !reuseTailscale) {
