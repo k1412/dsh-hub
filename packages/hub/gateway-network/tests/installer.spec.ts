@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it } from 'vitest'
-import { mkdtemp, mkdir, readFile, readlink, lstat, rm, writeFile, readdir, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readlink, lstat, rm, writeFile, readdir, symlink, realpath } from 'node:fs/promises'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -119,7 +119,7 @@ async function fixture(badPackageHash = false, options: {
 }
 
 async function install(origin: string, record: string, shortenDeadlines = false, env: NodeJS.ProcessEnv = {}): Promise<{ code: number; output: string }> {
-  const installer = new URL('../../../../deploy/gateway/install.sh', import.meta.url).pathname
+  const installer = process.env.GATEWAY_INSTALLER_TEST_PATH ?? new URL('../../../../deploy/gateway/install.sh', import.meta.url).pathname
   let nodeOptions = process.env.NODE_OPTIONS ?? ''
   if (shortenDeadlines) {
     const preload = join(directory, 'deadline-preload.mjs')
@@ -127,7 +127,7 @@ async function install(origin: string, record: string, shortenDeadlines = false,
     nodeOptions += ` --import=${pathToFileURL(preload).href}`
   }
   return new Promise(resolve => {
-    execFile('sh', [installer, '--hub', origin, '--invite', 'testToken', '--state-directory', join(directory, 'node-state'), '--profile', 'existing-profile'],
+    execFile('sh', [installer, '--hub', origin, '--invite', 'testToken', '--state-directory', env.GATEWAY_INSTALL_TEST_STATE_DIRECTORY ?? join(directory, 'node-state'), '--profile', 'existing-profile'],
       { env: { ...process.env, PATH: `${join(directory, 'existing-tools')}:${process.env.PATH ?? ''}`,
         NODE_OPTIONS: nodeOptions.trim(), DSH_GATEWAY_ALLOW_HTTP_TEST: '1', GATEWAY_INSTALL_TEST_RECORD: record,
         GATEWAY_INSTALL_TEST_TAILSCALE_LOG: join(directory, 'tailscale-commands.log'), ...env }, timeout: 20_000 },
@@ -152,7 +152,7 @@ it.each(['tailcat', 'tailscale'] as const)('installs only the selected %s overla
   const selected = join(directory, 'node-state', 'bin', mode)
   if (process.platform === 'darwin' || mode === 'tailscale') {
     expect((await lstat(selected)).isSymbolicLink()).toBe(true)
-    expect(await readlink(selected)).toBe(join(directory, 'existing-tools', mode))
+    expect(await readlink(selected)).toBe(await realpath(join(directory, 'existing-tools', mode)))
     expect(requests).not.toContain('/downloads/network.tgz')
     if (mode === 'tailscale') {
       expect(installed.args).toContain('--reuse-tailscale')
@@ -178,20 +178,22 @@ it('reuses host Tailscale on repeated installations, replaces stale links, and h
     const result = await install(origin, record, false, { DSH_GATEWAY_TAILSCALE_SOCKET: socket })
     expect(result.code).toBe(0)
     expect(result.output).toContain('no network package download or new login')
-    expect(await readlink(join(bins, 'tailscale'))).toBe(join(directory, 'existing-tools', 'tailscale'))
+    expect(await readlink(join(bins, 'tailscale'))).toBe(await realpath(join(directory, 'existing-tools', 'tailscale')))
   }
   expect(await readFile(join(directory, 'tailscale-commands.log'), 'utf8')).toBe(`--socket=${socket} status --json\n`.repeat(2))
   expect(requests.filter(url => url.includes('network'))).toEqual([])
   await expect(lstat(join(bins, 'tailscaled'))).rejects.toThrow()
 })
 
-it('does not create a self-referencing link when the existing CLI is already in the private bin directory', async () => {
+it('does not create a self-referencing link when a state directory alias contains the existing CLI', async () => {
   const { origin, record, requests } = await fixture(false, { mode: 'tailscale' })
   const bins = join(directory, 'node-state', 'bin')
   await mkdir(bins, { recursive: true })
   const binary = join(bins, 'tailscale')
   await writeFile(binary, await readFile(join(directory, 'existing-tools', 'tailscale')), { mode: 0o700 })
-  const result = await install(origin, record, false, { PATH: `${bins}:${process.env.PATH ?? ''}` })
+  const alias = join(directory, 'state-alias')
+  await symlink(join(directory, 'node-state'), alias)
+  const result = await install(origin, record, false, { PATH: `${join(alias, 'bin')}:${process.env.PATH ?? ''}`, GATEWAY_INSTALL_TEST_STATE_DIRECTORY: alias })
   expect(result.code).toBe(0)
   expect((await lstat(binary)).isFile()).toBe(true)
   expect(requests).not.toContain('/downloads/network.tgz')
