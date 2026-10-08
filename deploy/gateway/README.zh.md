@@ -31,3 +31,16 @@ sh /tmp/experiment-install.sh --hub https://experiment-hub.example --invite TOKE
 安装器先校验下载归档，再生成私有 `file:` 副本，使包的实际名称等于指定别名，会话浏览器模块也以同一名称注册。这避免 pnpm hoisted 布局按基础包名称和版本去重不同实验代码。激活前逐项核对已安装 Runtime、CLI、manifest 与浏览器文件；内容不符则恢复 Profile 文件并拒绝激活。实验依赖不进入 Profile 的 bundle 列表。安装器直接插入独立 Cordis Loader 条目，其模块路径指向该 Profile 下别名包的 `lib/index.js`。rc.2 的浏览器模块扫描会忽略 manifest 名称不同的裸别名；绝对模块路径使用官方支持的 package 定位方式，使会话导航客户端只注册一次。重装命名条目时保留其额外配置，包括委派工作区与允许包列表。省略新选项时保留原安装行为。更改后按现有服务机制重载同一个 Runtime。
 
 移除实验时先仅删除相应 `# BEGIN DSH GATEWAY INSTANCE gateway-node-control` 到 `# END DSH GATEWAY INSTANCE gateway-node-control` 的受管条目，再在该 Profile 目录用其包管理器移除 `@k1412/dsh-gateway-node-control` 依赖并重载原 Runtime。保留基础条目、基础依赖以及其他连接的状态目录。Hub 不保存模型配置或凭据。
+
+以下是**手工发布验收 gate**，需要完整、隔离的 DSH rc.2 代码树，以及分别构建的基础版、会话实验版和控制实验版归档；控制版归档先运行 `pnpm run build` 生成。该 gate 不属于自动 CI 步骤。官方 CLI 先复现并修复 hoisted 三包去重冲突，再在同一个临时 Runtime 加载三条连接，核对委派能力就绪和隔离卸载。每个浏览器先在基础连接通过正常 Continue 确认首次访问提示；上游将确认状态保存在同一个 Runtime，后续会话/控制 origin 必须直接进入稍后配置 provider 步骤，而不重复弹窗。Chromium 与 WebKit 通过正常稍后配置 provider、指针聚焦和键盘输入创建**未发送**草稿。仅中断自有 fixture 连接前，必须存在一个可见会话，且原生 `dsh.conversation.<sessionId>` 镜像属于该会话并保存精确草稿；恢复后核对 connector、浏览器 mux、同一会话和草稿、未提交轮次状态，以及其他连接未受影响。独立 reader 还会读取真实 `/plugins/events` SSE 的切断前 graph、确认旧流结束，再读取恢复后的新 graph；不宣称浏览器 EventSource 自动恢复。
+
+```sh
+export DSH_NATIVE_ROOT=/path/to/isolated/dsh/node_modules/@deepseek-ai/dsh
+export DSH_GATEWAY_BASELINE_PACKAGE=/path/to/base/gateway-node.tgz
+export DSH_GATEWAY_SESSION_PACKAGE=/path/to/session/gateway-node.tgz
+export DSH_GATEWAY_CONTROL_PACKAGE="$PWD/dist/gateway/downloads/gateway-node.tgz"
+DSH_NATIVE_BROWSER=chromium pnpm exec tsx packages/hub/gateway-node/tests/coexist-native-smoke.mts
+DSH_NATIVE_BROWSER=webkit pnpm exec tsx packages/hub/gateway-node/tests/coexist-native-smoke.mts
+```
+
+载体使用 loopback fixture，Profile 与连接状态位于私有临时目录，不调用模型推理。报告打印临时制品目录，并分别记录 connector、浏览器 mux 和原生流恢复耗时；这些结果不能代表公网延迟或 SLA。测试不使用生产 Profile 或宿主 Tailscale 身份。

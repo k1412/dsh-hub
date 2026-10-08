@@ -32,3 +32,16 @@ The test creates a temporary Hub network identity and two isolated node connecti
 This is a connection-layer test. Both node instances run on one test machine; Tailscale uses the existing host's `nc` data path to its own Tailnet IP, so results do not represent a cross-machine or WAN path. Preserving the probe server's counter does not verify DSH history, drafts, or permission state. The recorded result is `reports/network-local-2026-10-03.json`.
 
 Upstream references: [Tailscale userspace networking](https://tailscale.com/docs/concepts/userspace-networking), [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve), [Tailcat](https://github.com/tailscale/tailcat/tree/v0.7.0).
+
+The manual release acceptance gate below requires a complete, isolated DSH rc.2 code tree and separately built base/session/control archives; build the control archive with `pnpm run build` first. It is not part of the automatic CI steps. The official CLI reproduces and repairs a hoisted three-package collision, boots all three connections in one temporary Runtime, verifies delegation readiness, and checks isolated removal. Each browser first acknowledges Continue through the base connection; upstream persists that notice in the shared Runtime, so session/control origins must reach provider dismissal without a repeated notice. Chromium and WebKit use normal provider dismissal, pointer focus and keyboard input to create an **unsent** draft. Before interrupting only an owned fixture connection, the gate requires one visible conversation and its exact native `dsh.conversation.<sessionId>` draft mirror. It then checks connector/browser mux recovery, unchanged conversation/draft, unchanged blank-turn state, and unaffected other connections. A separate reader checks the real `/plugins/events` SSE graph before interruption, old-stream closure, and a fresh graph after recovery; this is not a claim of browser EventSource recovery.
+
+```sh
+export DSH_NATIVE_ROOT=/path/to/isolated/dsh/node_modules/@deepseek-ai/dsh
+export DSH_GATEWAY_BASELINE_PACKAGE=/path/to/base/gateway-node.tgz
+export DSH_GATEWAY_SESSION_PACKAGE=/path/to/session/gateway-node.tgz
+export DSH_GATEWAY_CONTROL_PACKAGE="$PWD/dist/gateway/downloads/gateway-node.tgz"
+DSH_NATIVE_BROWSER=chromium pnpm exec tsx packages/hub/gateway-node/tests/coexist-native-smoke.mts
+DSH_NATIVE_BROWSER=webkit pnpm exec tsx packages/hub/gateway-node/tests/coexist-native-smoke.mts
+```
+
+The carrier is a loopback fixture, with private temporary Profile/state directories and no model inference. Reports print their temporary artifact directory and separate connector, browser mux and native-stream recovery timings. These measurements do not establish public-network latency or an SLA. No production Profile or host Tailscale identity is used.
