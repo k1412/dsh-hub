@@ -14,14 +14,14 @@ export interface Target {
 export interface Gateway {
   /** Synchronous snapshot of authorized, non-revoked targets, one per node/Runtime. */
   targets(): readonly Target[]
-  /** Unwrap RemoteResult from remote.session.list({}, signal); never return history. */
+  /** Session list plus archive IDs from the first workspace/follow baseline; never history. */
   list(target: Target, request: Record<string, never>, signal: AbortSignal): Promise<unknown>
   /** Only supplied with a separately verified, pinned native navigation capability. */
   sessionUrl?(target: Target, sessionId: string): string
 }
 export interface Row {
   nodeId: string; runtimeId: string; sessionId: string
-  title: string | null; updatedAt: number; running: boolean; agentAvailable: boolean
+  title: string | null; updatedAt: number; running: boolean; agentAvailable: boolean; archived: boolean
 }
 export interface Entry extends Row { nodeName: string; nodeUrl: string; sessionUrl: string | null }
 export type State = 'ok' | 'offline' | 'unsupported' | 'timeout' | 'error' | 'changed'
@@ -34,7 +34,7 @@ export interface Page {
 export interface Options {
   timeoutMs?: number; cacheMs?: number; concurrency?: number; maxNodes?: number; maxSessionsPerNode?: number
 }
-interface Metadata { sessionId: string; title: string | null; updatedAt: number; running: boolean; agentAvailable: boolean }
+interface Metadata { sessionId: string; title: string | null; updatedAt: number; running: boolean; agentAvailable: boolean; archived: boolean }
 interface Cache { rows: Metadata[]; truncated: boolean; expires: number; timer: ReturnType<typeof setTimeout> }
 interface Fetched { target: Target; key: string; revision: number; state: State; rows: Metadata[]; truncated: boolean; cached: boolean }
 const keyOf = (t: Target): string => JSON.stringify([t.nodeId, t.runtimeId, t.generation, t.version, t.origin, t.online, t.capabilities])
@@ -50,6 +50,9 @@ function originOf(value: string): string {
 }
 function metadata(value: unknown, max: number): { rows: Metadata[]; truncated: boolean } {
   if (!value || typeof value !== 'object' || !('items' in value) || !Array.isArray(value.items)) throw new Error('Invalid native list')
+  if (!('archivedSessionIds' in value) || !Array.isArray(value.archivedSessionIds)
+    || value.archivedSessionIds.some(id => typeof id !== 'string' || !id || id.length > 1024)) throw new Error('Archive metadata unavailable')
+  const archived = new Set(value.archivedSessionIds)
   const ids = new Set<string>()
   // Native rc.2 listing is unpaged; the adapter must also cap transport response bytes.
   const rows: Metadata[] = value.items.map((item: unknown) => {
@@ -62,7 +65,7 @@ function metadata(value: unknown, max: number): { rows: Metadata[]; truncated: b
     const projection = row.projections as { values?: { title?: unknown } } | undefined
     const title = projection?.values?.title
     return { sessionId: row.sessionId, title: typeof title === 'string' ? title.slice(0, 1024) : null,
-      updatedAt: row.updatedAt, running: row.running, agentAvailable: row.agentAvailable }
+      updatedAt: row.updatedAt, running: row.running, agentAvailable: row.agentAvailable, archived: archived.has(row.sessionId) }
   })
   rows.sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId))
   return { rows: rows.slice(0, max), truncated: rows.length > max }
@@ -171,7 +174,7 @@ export class SessionDirectory {
         count: result.rows.length, truncated: result.truncated, cached: result.cached })
       for (const row of result.rows) {
         let sessionUrl: string | null = null
-        if (target.capabilities.nativeNavigation && this.gateway.sessionUrl) {
+        if (!row.archived && target.capabilities.nativeNavigation && this.gateway.sessionUrl) {
           try {
             const url = new URL(this.gateway.sessionUrl(target, row.sessionId))
             if (url.origin === target.origin && !url.username && !url.password) sessionUrl = url.href
@@ -189,4 +192,4 @@ export class SessionDirectory {
 }
 export { renderDirectory, directoryResponse } from './ssr.ts'
 
-export { nativeList, DirectoryAdmission } from './native-rpc.ts'
+export { nativeList, nativeArchivedSessions, nativeDirectoryList, DirectoryAdmission } from './native-rpc.ts'

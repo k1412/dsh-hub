@@ -31,6 +31,7 @@ export interface FixtureNode {
   socket: WebSocket; carrier: ReturnType<typeof serveSurface>; surface: NodeSurface
   writes: number; cancelled: number; uploads: number; headers: Headers | undefined
   cookie: string; disposeRuntime: () => Promise<void>
+  archivedSessionIds: string[]
 }
 export async function createFixture(options: { password?: boolean; originSecret?: string; nativeRoot?: string; requestTimeoutMs?: number; sessionDirectory?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'gateway-qa-'))
@@ -89,7 +90,7 @@ export async function createFixture(options: { password?: boolean; originSecret?
     const reply = await enroll(input)
     if (reply.status !== 200) throw new Error('Fixture enrollment failed')
     const { nodeId } = await reply.json() as { nodeId: string }
-    const node = { id: nodeId, label, ...input, writes: 0, cancelled: 0, uploads: 0, headers: undefined, cookie: '', disposeRuntime: async () => {} } as unknown as FixtureNode
+    const node = { id: nodeId, label, ...input, writes: 0, cancelled: 0, uploads: 0, archivedSessionIds: [], headers: undefined, cookie: '', disposeRuntime: async () => {} } as unknown as FixtureNode
     const handler = async (req: Request): Promise<Response> => {
       node.headers = req.headers
       const path = new URL(req.url).pathname
@@ -135,6 +136,13 @@ export async function createFixture(options: { password?: boolean; originSecret?
       connection, clientModules: { fetchBundle: bundles ?? (async () => new Response(`export default ${JSON.stringify(label)}`, { headers: { 'content-type': 'text/javascript' } })) },
       typertGateway: { wireStream: {
         open: async (endpoint, _payload, uplink, _peer, signal) => {
+          if (endpoint === 'workspace/follow') {
+            if (JSON.stringify(_payload) !== JSON.stringify({ args: {} })) throw new Error('Native workspace schema mismatch')
+            return (async function* () { try {
+              yield { type: 'baseline', value: { items: [], archivedSessionIds: node.archivedSessionIds, pinnedSessionIds: [] } }
+              for await (const _value of uplink) { /* read-only follow waits until its native cancellation */ }
+            } finally { node.cancelled++ } })()
+          }
           if (endpoint === 'fixture/fail') throw new Error('Fixture native method failed')
           return (async function* () { signal.addEventListener('abort', () => { node.cancelled++ }, { once: true }); for await (const value of uplink) yield { node: label, value } })()
         }, failure: () => ({ code: 'fixture/failure', message: 'Fixture native method failed', details: {} }),

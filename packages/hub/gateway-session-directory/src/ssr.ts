@@ -6,10 +6,10 @@ const escape = (value: string | number): string => String(value).replace(/[&<>"'
 export function renderDirectory(page: Page): string {
   const rows = page.entries.map(row => `<tr><td>${row.sessionUrl
     ? `<a href="${escape(row.sessionUrl)}" rel="noreferrer">${escape(row.title ?? row.sessionId)}</a>`
-    : `${escape(row.title ?? row.sessionId)} <small>Native session link unavailable</small>`}</td>
+    : `${escape(row.title ?? row.sessionId)} <small>${row.archived ? 'Archived — restore in the owning node’s DSH to open' : 'Native session link unavailable'}</small>`}</td>
 <td><a href="${escape(row.nodeUrl)}" rel="noreferrer">Open node: ${escape(row.nodeName)}</a>
 <small>${escape(row.nodeId)} / ${escape(row.runtimeId)} / ${escape(row.sessionId)}</small></td>
-<td>${escape(row.updatedAt)}</td><td>${row.running ? 'Running' : row.agentAvailable ? 'Idle' : 'No live agent'}</td></tr>`).join('')
+<td>${escape(row.updatedAt)}</td><td>${row.archived ? 'Archived' : row.running ? 'Running' : row.agentAvailable ? 'Idle' : 'No live agent'}</td></tr>`).join('')
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <link rel="stylesheet" href="/hub.css"><title>Session directory experiment</title><body><main class="directory"><nav><a href="/">Nodes</a><a href="/sessions">Refresh directory</a></nav><h1>Session directory experiment</h1>
 <p>Live metadata only. Paging can shift when activity changes. Session links open the full native DSH client on the owning node.</p>

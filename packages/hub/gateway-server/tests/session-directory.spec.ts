@@ -1,5 +1,19 @@
 import { expect, it } from 'vitest'
 import { createFixture, until } from './fixture.ts'
+it('does not generate a native session link for one node’s archived ID or leak its archive state to another node', async () => {
+  const f = await createFixture({ sessionDirectory: true })
+  try {
+    const alpha = await f.addNode('alpha'), beta = await f.addNode('beta')
+    alpha.archivedSessionIds = ['same-session']
+    const html = await (await f.request('/sessions', { operator: true })).text()
+    expect(html).toContain('Archived — restore in the owning node’s DSH to open')
+    expect(html).not.toMatch(/<a [^>]*>Session alpha<\/a>/)
+    expect(html).toMatch(/<a [^>]*>Session beta<\/a>/)
+    await until(() => alpha.cancelled === 1 && beta.cancelled === 1)
+    expect(alpha.writes + beta.writes).toBe(0)
+    expect(f.gateway.peers.get(alpha.id)?.tunnel.health.openMuxes).toBe(0)
+  } finally { await f.close() }
+})
 it('authenticates directory, native list fan-out and exact intent through tickets; rejects stale ownership', async () => {
   const f = await createFixture({ sessionDirectory: true })
   try {

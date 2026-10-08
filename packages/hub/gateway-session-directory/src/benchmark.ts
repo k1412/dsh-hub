@@ -58,7 +58,7 @@ export async function runSyntheticBenchmark(options: BenchmarkOptions = {}): Pro
     nativeCalls++
     if (mode === 'hung' && t.nodeId === 'node-0') { await delay(10_000, signal) }
     await delay(config.delayMs, signal)
-    return { items: Array.from({ length: config.sessionsPerNode }, (_, i) => ({ sessionId: `session-${i}`,
+    return { archivedSessionIds: [], items: Array.from({ length: config.sessionsPerNode }, (_, i) => ({ sessionId: `session-${i}`,
       updatedAt: i, running: i % 7 === 0, agentAvailable: true, projections: { values: { title: `${t.nodeId}:${t.generation}:${i}` } } })) }
   } }
   const directory = new SessionDirectory(gateway, { timeoutMs: 150, maxSessionsPerNode: config.sessionsPerNode })

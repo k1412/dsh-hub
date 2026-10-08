@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { SessionDirectory, nativeList, DirectoryAdmission, renderDirectory, type Target } from '@k1412/dsh-gateway-session-directory'
+import { SessionDirectory, nativeDirectoryList, DirectoryAdmission, renderDirectory, type Target } from '@k1412/dsh-gateway-session-directory'
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -128,7 +128,7 @@ export function createGateway(options: GatewayOptions) {
     list: async (target, _request, signal) => admission.run(async () => {
       const peer = peers.get(target.nodeId)
       if (!peer || !currentIntent({ ...target, sessionId: '', expires: Date.now() + 30_000 })) throw new Error('Target changed')
-      const value = await nativeList(peer.tunnel, target.origin, signal)
+      const value = await nativeDirectoryList(peer.tunnel, target.origin, signal)
       if (peers.get(target.nodeId) !== peer) throw new Error('Target changed')
       return value
     }),

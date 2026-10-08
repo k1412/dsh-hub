@@ -36,11 +36,13 @@ DSH_GATEWAY_SESSION_DIRECTORY=1 node dist/gateway/server.mjs
 
 响应必须是匹配 `rpcId` 的 `server-response`，并包含成功的 `RemoteResult.value.items`。这与生成的 `@deepseek-ai/dsh-api-session-controller/lib/typert.host.js` 中 `_request` 参数、远程声明和真实 Runtime 实现一致。Hub 不引入替代会话业务 API。原生列表读取不会恢复 Agent。
 
-请求与响应绑定明确的节点 ID、Runtime ID 和每次连接新生成的随机代次。替换、撤销、关闭连接会使目录缓存和正在进行的快照失效。所有调用者共用**最多 8 个目录 RPC**的准入上限，不建立无界等待队列；每页也最多同时扇出 8 个节点。每个已派发节点超时为 3 秒。响应在 JSON 解码前限制为 **8 MiB**；取消会取消 Tunnel 响应流。节点错误使用固定状态，不显示原生异常详情；部分节点失败不影响健康节点显示。
+请求与响应绑定明确的节点 ID、Runtime ID 和每次连接新生成的随机代次。替换、撤销、关闭连接会使目录缓存和正在进行的快照失效。所有调用者共用**最多 8 个节点目录读取任务**的准入上限，不建立无界等待队列；每页也最多同时扇出 8 个节点。每个已派发节点超时为 3 秒。响应在 JSON 解码前限制为 **8 MiB**；取消会取消 Tunnel 响应流。节点错误使用固定状态，不显示原生异常详情；部分节点失败不影响健康节点显示。
 
-目录仅保留 `sessionId`、可选 `projections.values.title`、`updatedAt`、`running` 和 `agentAvailable`。缺失标题显示 ID。路径和其他投影提示立即丢弃，不持久化也不渲染。不调用模型、配置或历史 API。空闲/无存活 Agent 对应原生标志，后者不等于已归档。
+目录同时通过已有原生 mux 读取 `workspace/follow` 的首个 baseline，提取 `archivedSessionIds`，随后发送 cancel 并关闭该 mux；快照帧上限为 256 KiB，受同一节点的 3 秒时限约束。rc.2 没有 `workspace/list` HTTP 接口。归档投影读取失败时，该节点目录明确报错，不能把未知归档状态当成可打开。
 
-缓存 TTL 为 2 秒（可配置上限 5 秒），由定时器删除；默认每节点保留 10,000 行，最多 64 个目标。渲染前再次检查成员、Runtime 和连接代次。原生会话变更在短 TTL 后可见，连接/成员变更立即失效。不额外订阅历史或控制流。
+目录仅保留 `sessionId`、可选 `projections.values.title`、`updatedAt`、`running`、`agentAvailable` 和从工作区快照得到的 `archived` 标志。缺失标题显示 ID。路径和其他投影提示立即丢弃，不持久化也不渲染。不调用模型、配置或历史 API。空闲/无存活 Agent 对应原生标志，后者不等于已归档。
+
+缓存 TTL 为 2 秒（可配置上限 5 秒），由定时器删除；默认每节点保留 10,000 行，最多 64 个目标。渲染前再次检查成员、Runtime 和连接代次。原生会话变更在短 TTL 后可见，连接/成员变更立即失效。不订阅历史或控制流，也不保留工作区 follow 订阅。
 
 **rc.2 原生列表没有分页。** 声明的请求游标被忽略，结果也没有续页游标。显示分页只能在保留的元数据上完成，默认 50 行、最多 200 行。截断和节点状态均明确显示。活动变化可能移动 offset 页，不保证快照一致性。网络读取和临时解析仍随完整原生列表增长，直到触及字节上限。`session/page` 是对话历史接口，不是目录分页，本目录从不调用它。
 
@@ -48,10 +50,10 @@ DSH_GATEWAY_SESSION_DIRECTORY=1 node dist/gateway/server.mjs
 
 没有找到上游原生会话 URL 路由。本实验实现的是**明确的插件导航入口**，而不是猜测上游 hash/query 约定：
 
-1. 目录行链接至所属节点的 `/_hub/open-session`，携带明确的 Runtime、连接代次和会话身份。Gateway 经操作者认证及一次性节点认证票据打开目标，并保留导航意图。
+1. 已归档的会话仍显示在目录中，明确标记归档且不生成会话深链；需要在所属节点的原生 DSH 中主动恢复后才能打开。目录不会自动取消归档。可打开的目录行链接至所属节点的 `/_hub/open-session`，携带明确的 Runtime、连接代次和会话身份。Gateway 经操作者认证及一次性节点认证票据打开目标，并保留导航意图。
 2. 票据关联有界、仅内存保存的 intent。已认证节点页面获得不透明 `gatewayIntent` 键；`/_hub/session-intent` 仅向相同节点、仍在线且 Runtime/代次匹配的访问返回意图。有效期 5 分钟，最多 512 项。意图数据不进入数据库。
-3. 额外的节点客户端模块通过官方 `dsh.client` 元数据及 `window.__ModuleLoader__` 注册。它等待公开的 `sessions.list`、`workspaces.list` 就绪快照，刷新原生列表、检查成员关系，并保留精确会话/地址，直到原生历史打开完成。
-4. 再次校验 intent 和原生连接代次，通过 `layout.beginNavigation()` 取代启动时的工作区导航，再调用已导出的 `ctx.uiWorkspace.openSession(target)`，确认目标拥有 `mainView`。不写私有 store、不用 DOM 模拟切换会话、不修改上游。
+3. 额外的节点客户端模块通过官方 `dsh.client` 元数据及 `window.__ModuleLoader__` 注册。它等待公开的 `sessions.list`、`workspaces.list` 就绪快照，刷新原生列表、检查成员和归档状态，并保留精确会话/地址，直到原生历史打开完成。
+4. 再次校验归档状态、intent 和原生连接代次，通过 `layout.beginNavigation()` 取代启动时的工作区导航，再调用已导出的 `ctx.uiWorkspace.openSession(target)`，确认目标拥有 `mainView`。不写私有 store、不用 DOM 模拟切换会话、不修改上游。
 5. 成功后移除临时查询参数，刷新页面由官方客户端恢复已保存的选择。会话不存在、票据/意图过期、Runtime/代次变化、断线或打开失败均明确报错。仅负责导航的阻挡提示防止启动时其他对话被误认为目标；它不是聊天界面。确认选择后显示完整原生编辑器和历史。
 
 Host 激活对可选的 `appReady`、`webServer` 使用公开 `ctx.get()`；受作用域约束的 Cordis Context 会拒绝未声明的直接属性访问。已测试同一个 Runtime 中两个命名 Host 插件实例与一个共享浏览器模块。
@@ -70,7 +72,7 @@ pnpm exec tsx packages/hub/gateway-session-directory/src/benchmark-cli.ts
 
 真实验证复用了原生网关 smoke test 的完整 Runtime 设置，启动两个隔离的发布版 Runtime；每个加载完整官方浏览器插件组、一个实验客户端模块、**两个真实命名 Gateway 插件激活实例及独立 connectionFile**，并发连接基线/实验 Hub。仅将 overlay 网络拨号和推理替换为本机 WebSocket 通道与模型 fixture。Runtime 服务、原生 RPC、打包的客户端插件、浏览器、权限/模型控件及持久历史均为真实实现。
 
-覆盖多节点相同会话 ID、目录/票据认证、错误目标与旧 intent 拒绝、原生响应大小/取消限制、缺失会话显式报错、Full access/模型选择、fixture 消息、多次精确历史点击和刷新、手机布局、离线部分结果及五轮重连。节点基线与实验版使用相同 Runtime 对、浏览器视口和 fixture 历史测量。基线是同一候选服务端/节点包的功能关闭模式（含未触发的导航模块），不是已部署初版发行物的基准。单元/集成测试还覆盖全局准入、协议/请求关联校验、安装共存、缓存和传输隔离。40,000 会话的合成工具仍单独标记，不能称为真实 DSH 延迟。
+覆盖归档首行不生成深链、旧归档链接明确拒绝且不修改归档状态、随后正常会话跳转、多节点相同会话 ID、目录/票据认证、错误目标与旧 intent 拒绝、原生响应大小/取消限制、缺失会话显式报错、Full access/模型选择、fixture 消息、多次精确历史点击和刷新、手机布局、离线部分结果及五轮重连。节点基线与实验版使用相同 Runtime 对、浏览器视口和 fixture 历史测量。基线是同一候选服务端/节点包的功能关闭模式（含未触发的导航模块），不是已部署初版发行物的基准。单元/集成测试还覆盖全局准入、协议/请求关联校验、安装共存、缓存和传输隔离。40,000 会话的合成工具仍单独标记，不能称为真实 DSH 延迟。
 
 私有交付证据记录精确时间、样本数、检查结果和环境。这些是**经 loopback 的真实本地 Runtime/浏览器测量**，不是生产 Tailscale/Tailcat 或 NAS 数据。首次浏览器和历史样本较少，结果是观测，不是生产 SLO。真实 overlay 稳定性、生产数据规模和部署验收仍需根工作流后续验证。
 

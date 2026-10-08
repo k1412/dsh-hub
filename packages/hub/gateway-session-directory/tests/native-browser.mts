@@ -144,6 +144,9 @@ try {
       for (const value of values) assert((value as { items: { sessionId: string }[] }).items.some(r => r.sessionId === 'directory-shared-session'))
     })
   }
+  await page.goto(`${experiment.publicUrl}/sessions`, { waitUntil: 'domcontentloaded' })
+  assert((await page.locator('tbody tr').first().innerText()).includes('Archived target'), 'The newest archived row must not become an open-session link')
+  assert.equal(await page.locator('tbody tr').first().locator('a[href*="/_hub/open-session"]').count(), 0)
   for (const [i, node] of nodes.entries()) {
     const label = i === 0 ? 'alpha' : 'beta'
     await timed('baseline-native-browser', async () => {
@@ -152,6 +155,15 @@ try {
       const welcome = page.getByRole('button', { name: 'Continue', exact: true }); if (await welcome.isVisible()) await welcome.click()
     })
     await page.goto(`${experiment.publicUrl}/sessions`, { waitUntil: 'domcontentloaded' })
+    const archivedRow = page.locator('tr').filter({ hasText: `Archived target ${label}` })
+    assert.equal(await archivedRow.getByRole('link', { name: `Archived target ${label}`, exact: true }).count(), 0)
+    assert((await archivedRow.innerText()).includes('Archived — restore'))
+    const generation = experiment.hub.peers.get(node.id)!.generation
+    await page.goto(`${experiment.publicUrl}/open/${node.id}?session=0-directory-archived-session&runtime=runtime-${label}&generation=${generation}`, {waitUntil:'domcontentloaded'})
+    await page.locator('#gateway-session-intent[data-state="error"]').waitFor()
+    assert((await page.locator('#gateway-session-intent').innerText()).includes('This session is archived. Restore it'))
+    await page.goto(`${experiment.publicUrl}/sessions`, { waitUntil: 'domcontentloaded' })
+    assert((await page.locator('tr').filter({hasText:`Archived target ${label}`}).innerText()).includes('Archived — restore'), 'Failed stale links must not unarchive the session')
     await timed('directory-click-native-ready', async () => {
       await page.getByRole('link', { name: `Directory target ${label}`, exact: true }).click()
       await page.locator('#gateway-session-intent[data-state="opened"]').waitFor()

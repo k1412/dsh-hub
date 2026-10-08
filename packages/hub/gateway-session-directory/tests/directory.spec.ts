@@ -7,13 +7,30 @@ export const row = (sessionId = 'same', title = 'Title', updatedAt = 1) => ({ se
   agentAvailable: true, cwd: 'must-not-retain', projections: { values: { title, secret: 'must-not-retain' } } })
 
 describe('injected gateway + directory + SSR integration', () => {
+  it('labels archived sessions without deep links and fails closed without archive metadata', async () => {
+    const node = target('alpha'); node.capabilities.nativeNavigation = 'gateway-intent-v1'
+    let archiveAvailable = true
+    const directory = new SessionDirectory({ targets: () => [node],
+      list: async () => ({ items: [row('archived', 'Archived target', 2), row('live', 'Live target', 1)], ...(archiveAvailable ? { archivedSessionIds: ['archived'] } : {}) }),
+      sessionUrl: t => `${t.origin}/_hub/open-session`,
+    }, { cacheMs: 0 })
+    try {
+      const page = await directory.page()
+      expect(page.entries.map(r => [r.sessionId, r.archived, !!r.sessionUrl])).toEqual([['archived', true, false], ['live', false, true]])
+      const html = renderDirectory(page)
+      expect(html).toContain('Archived — restore in the owning node’s DSH to open')
+      expect(html).not.toContain('>Archived target</a>')
+      archiveAvailable = false
+      expect((await directory.page()).nodes[0]?.state).toBe('error')
+    } finally { directory.dispose() }
+  })
   it('routes simultaneous equal IDs by explicit node, Runtime and generation; no native links fabricated', async () => {
     const targets = [target('alpha'), target('beta')]
     const seen: string[] = []
     const directory = new SessionDirectory({ targets: () => targets, list: async (t, request) => {
       expect(request).toEqual({}); seen.push(`${t.nodeId}/${t.runtimeId}/${t.generation}`)
       await wait(t.nodeId === 'alpha' ? 15 : 1)
-      return { items: [row('same', t.nodeId)] }
+      return { archivedSessionIds: [], items: [row('same', t.nodeId)] }
     } })
     try {
       const page = await directory.page()
@@ -32,7 +49,7 @@ describe('injected gateway + directory + SSR integration', () => {
     const directory = new SessionDirectory({ targets: () => targets, list: async (t, _request, signal) => {
       if (t.nodeId === 'broken') throw new Error('private credentials must not leak')
       if (t.nodeId === 'hung') { signal.addEventListener('abort', () => { cancelled = true }); return new Promise(() => {}) }
-      expect(t.nodeId).toBe('healthy'); return { items: [row()] }
+      expect(t.nodeId).toBe('healthy'); return { archivedSessionIds: [], items: [row()] }
     } }, { timeoutMs: 30 })
     try {
       const start = performance.now(), page = await directory.page()
@@ -47,7 +64,7 @@ describe('injected gateway + directory + SSR integration', () => {
     const t = target('alpha'); let calls = 0, aborted = 0
     const directory = new SessionDirectory({ targets: () => [t], list: async (_t, _request, signal) => {
       calls++; signal.addEventListener('abort', () => aborted++)
-      await wait(40); return { items: [row()] }
+      await wait(40); return { archivedSessionIds: [], items: [row()] }
     } })
     try {
       const controller = new AbortController(), pending = directory.page({ signal: controller.signal })
@@ -63,14 +80,14 @@ describe('injected gateway + directory + SSR integration', () => {
     let t = target('alpha'), release!: (value: unknown) => void
     const directory = new SessionDirectory({ targets: () => [t], list: async snapshot => {
       if (snapshot.generation === '1') return new Promise(resolve => { release = resolve })
-      return { items: [row('same', 'new-generation')] }
+      return { archivedSessionIds: [], items: [row('same', 'new-generation')] }
     } })
     try {
       const first = directory.page(); await wait(0)
       t = { ...t, generation: '2' }; directory.invalidate(t.nodeId)
       const oldPage = await first
       expect(oldPage.entries).toEqual([]); expect(oldPage.nodes[0]!.state).toBe('changed')
-      release({ items: [row('same', 'stale')] })
+      release({ archivedSessionIds: [], items: [row('same', 'stale')] })
       const fresh = await directory.page()
       expect(fresh.entries[0]!.title).toBe('new-generation')
       expect((await directory.page()).nodes[0]!.cached).toBe(true)
@@ -80,7 +97,7 @@ describe('injected gateway + directory + SSR integration', () => {
     let targets = [target('alpha'), target('beta')]
     const directory = new SessionDirectory({ targets: () => targets, list: async t => {
       if (t.nodeId === 'beta') await wait(25)
-      return { items: [row('same', t.runtimeId)] }
+      return { archivedSessionIds: [], items: [row('same', t.runtimeId)] }
     } })
     try {
       const pending = directory.page()
@@ -95,7 +112,7 @@ describe('injected gateway + directory + SSR integration', () => {
   it('enforces version/capabilities, escapes titles and refuses links to other origins', async () => {
     const targets = [target('alpha'), { ...target('beta'), version: '0.1.7' }]
     targets[0]!.capabilities.nativeNavigation = 'fixture-only'
-    const gateway: Gateway = { targets: () => targets, list: async () => ({ items: [row('same', '<script>bad</script>')] }),
+    const gateway: Gateway = { targets: () => targets, list: async () => ({ archivedSessionIds: [], items: [row('same', '<script>bad</script>')] }),
       sessionUrl: () => 'https://elsewhere.example.invalid/' }
     const directory = new SessionDirectory(gateway)
     try {
@@ -110,7 +127,7 @@ describe('injected gateway + directory + SSR integration', () => {
   it('pages many sessions deterministically, reports truncation, and expires metadata', async () => {
     let calls = 0
     const directory = new SessionDirectory({ targets: () => [target('alpha'), target('beta')], list: async () => {
-      calls++; return { items: Array.from({ length: 2000 }, (_, i) => row(String(i), 'Title', i)) }
+      calls++; return { archivedSessionIds: [], items: Array.from({ length: 2000 }, (_, i) => row(String(i), 'Title', i)) }
     } }, { cacheMs: 30, maxSessionsPerNode: 1000 })
     try {
       const first = await directory.page({ limit: 100 })
@@ -124,7 +141,7 @@ describe('injected gateway + directory + SSR integration', () => {
   it('bounds fan-out concurrency and rejects malformed native lists without exposing raw data', async () => {
     let active = 0, maximum = 0
     const directory = new SessionDirectory({ targets: () => Array.from({ length: 12 }, (_, i) => target(`n${i}`)),
-      list: async () => { active++; maximum = Math.max(maximum, active); await wait(2); active--; return { items: [row(), row()] } },
+      list: async () => { active++; maximum = Math.max(maximum, active); await wait(2); active--; return { archivedSessionIds: [], items: [row(), row()] } },
     }, { concurrency: 3 })
     try {
       const page = await directory.page()
@@ -138,7 +155,7 @@ describe('injected gateway + directory + SSR integration', () => {
 it('keeps cancellation local to each caller and invalidates after native metadata changes', async () => {
   let title = 'before', calls = 0
   const directory = new SessionDirectory({ targets: () => [target('alpha')], list: async () => {
-    calls++; await wait(15); return { items: [row('same', title)] }
+    calls++; await wait(15); return { archivedSessionIds: [], items: [row('same', title)] }
   } })
   try {
     const controller = new AbortController()
@@ -153,7 +170,7 @@ it('keeps cancellation local to each caller and invalidates after native metadat
 })
 it('fails closed when different nodes share an origin or authorization repeats an owner', async () => {
   let targets = [target('alpha'), { ...target('beta'), origin: target('alpha').origin }]
-  const directory = new SessionDirectory({ targets: () => targets, list: async () => ({ items: [] }) })
+  const directory = new SessionDirectory({ targets: () => targets, list: async () => ({ archivedSessionIds: [], items: [] }) })
   try {
     await expect(directory.page()).rejects.toThrow('origins')
     targets = [target('alpha'), target('alpha')]

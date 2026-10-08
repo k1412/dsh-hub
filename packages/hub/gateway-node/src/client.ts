@@ -9,12 +9,13 @@ interface NavigationContext {
     subagentAddress(id: string): unknown
     retain(target: unknown, options: { source: string; signal: AbortSignal }): { ready: Promise<unknown>; release(): void }
   }
-  workspaces: { list: Snapshot<{ phase: string }> }
+  workspaces: { list: Snapshot<{ phase: string; archivedSessionIds: readonly string[] }> }
   layout: { beginNavigation(): AbortSignal }
   uiWorkspace: { openSession(target: unknown): void }
   effect(callback: () => () => void, label: string): void
 }
 export const inject = ['sessions', 'workspaces', 'layout', 'uiWorkspace', 'connection']
+class ArchivedSessionError extends Error {}
 function waitReady(ctx: NavigationContext, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const disposers: Array<() => void> = []
@@ -59,6 +60,12 @@ export function apply(ctx: NavigationContext): void {
       await ctx.sessions.refresh()
       abort.signal.throwIfAborted()
       if (!ctx.sessions.list.getSnapshot().ids.includes(intent.sessionId)) throw new Error('The selected session no longer exists on this node.')
+      const checkArchived = () => {
+        if (ctx.workspaces.list.getSnapshot().archivedSessionIds.includes(intent.sessionId)) {
+          throw new ArchivedSessionError('This session is archived. Restore it in the owning node’s DSH before opening it from the directory. The archive has not been changed.')
+        }
+      }
+      checkArchived()
       const target = ctx.sessions.subagentAddress(intent.sessionId) ?? intent.sessionId
       const retained = ctx.sessions.retain(target, { source: 'workspaceOperation', signal: abort.signal })
       try {
@@ -66,6 +73,7 @@ export function apply(ctx: NavigationContext): void {
         const verified = await read()
         if (JSON.stringify(verified) !== JSON.stringify(intent)) throw new Error('Session ownership changed')
         abort.signal.throwIfAborted()
+        checkArchived()
         // Supersedes the official startup restore's asynchronous workspace navigation.
         ctx.layout.beginNavigation()
         ctx.uiWorkspace.openSession(target)
@@ -77,9 +85,9 @@ export function apply(ctx: NavigationContext): void {
         const url = new URL(location.href); url.searchParams.delete('gatewayIntent'); history.replaceState(null, '', url)
       } finally { retained.release() }
     })()
-    void Promise.race([navigation, cancelled]).catch(() => {
+    void Promise.race([navigation, cancelled]).catch((error: unknown) => {
       notice.dataset.state = 'error'; notice.setAttribute('role', 'alert')
-      notice.textContent = 'Could not open the selected session. The target expired, disconnected, or is unavailable. Return to the experiment directory; no substitute session was selected.'
+      notice.textContent = error instanceof ArchivedSessionError ? error.message : 'Could not open the selected session. The target expired, disconnected, or is unavailable. Return to the experiment directory; no substitute session was selected.'
       const back = document.createElement('a'); back.href = '/_hub/directory'; back.textContent = ' Return to session directory'; notice.append(back)
     }).finally(() => { clearTimeout(timer); abort.signal.removeEventListener('abort', rejectAbort); abort.abort() })
     return () => { clearTimeout(timer); abort.abort(); notice.remove() }
