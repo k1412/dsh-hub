@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID, createHash } from 'node:crypto'
-import { readFile, writeFile, rename, mkdir, mkdtemp, chmod, copyFile, rm } from 'node:fs/promises'
+import { readFile, writeFile, rename, mkdir, mkdtemp, chmod, copyFile, rm, realpath } from 'node:fs/promises'
 import { isAbsolute, join, resolve } from 'node:path'
 import { hostname, homedir } from 'node:os'
 import { execFile } from 'node:child_process'
@@ -42,13 +42,24 @@ async function atomicPrivateText(path: string, text: string): Promise<void> {
 }
 
 /** Preserve the operator's raw YAML/!!js expressions and replace only our own block. */
-export function gatewayProfilePatch(original: string, connectionFile: string): string {
-  const beginning = original.indexOf(markerStart)
-  const end = original.indexOf(markerEnd)
+export function gatewayProfilePatch(original: string, connectionFile: string, instance = 'gateway-node', packageName = PACKAGE_NAME, control = false): string {
+  if (!/^[a-zA-Z0-9_-]{1,80}$/.test(instance)) throw new Error('Invalid Gateway instance name')
+  const startMarker = instance === 'gateway-node' ? markerStart : `# BEGIN DSH GATEWAY INSTANCE ${instance}`
+  const endMarker = instance === 'gateway-node' ? markerEnd : `# END DSH GATEWAY INSTANCE ${instance}`
+  const offsetOf = (marker: string) => {
+    let offset = 0
+    for (const line of original.split('\n')) { if (line.replace(/\r$/, '') === marker) return offset; offset += line.length + 1 }
+    return -1
+  }
+  const beginning = offsetOf(startMarker)
+  const end = offsetOf(endMarker)
   if ((beginning >= 0) !== (end >= 0) || (beginning >= 0 && end < beginning)) throw new Error('Incomplete managed gateway profile block; repair it before installing')
-  let preserved = beginning < 0 ? original : `${original.slice(0, beginning)}${original.slice(end + markerEnd.length)}`
+  let preserved = beginning < 0 ? original : `${original.slice(0, beginning)}${original.slice(end + endMarker.length)}`
   preserved = preserved.replace(/^\s*\[\]\s*$/m, '').trimEnd()
-  return `${preserved}\n${markerStart}\n- id: gateway-node\n  config:\n    connectionFile: ${JSON.stringify(connectionFile)}\n${markerEnd}\n`
+  const entry = instance === 'gateway-node' ? '- id: gateway-node\n  disabled: false' : `- insert:\n    - id: ${instance}\n      name: ${JSON.stringify(packageName)}`
+  const indent = instance === 'gateway-node' ? '  ' : '      '
+  const unusedDefault = packageName === PACKAGE_NAME && instance !== 'gateway-node' && !/(?:^|\n)\s*-\s*id:\s*gateway-node(?:\s|$)/.test(preserved) ? '- id: gateway-node\n  disabled: true\n' : ''
+  return `${preserved}\n${startMarker}\n${unusedDefault}${entry}\n${indent}config:\n${indent}  connectionFile: ${JSON.stringify(connectionFile)}\n${control ? `${indent}  control: true\n` : ''}${endMarker}\n`
 }
 
 export function parseManifest(value: unknown): EnrollmentManifest {
@@ -76,6 +87,9 @@ export async function installNode(options: {
   binDirectory?: string
   tailscaleSocket?: string
   allowManagedTailscale?: boolean
+  instance?: string
+  packageAlias?: string
+  control?: boolean
   profile?: string
   dshExecutable?: string
   packageFile?: string
@@ -89,11 +103,29 @@ export async function installNode(options: {
   const originalManifest = await readFile(manifestPath, 'utf8').catch(() => { throw new Error(`Existing DSH profile ${profile} was not found. Install DSH first and run this command as its Runtime user.`) })
   const profileManifest = JSON.parse(originalManifest) as ProfileManifest
   if (typeof profileManifest !== 'object' || profileManifest === null || Array.isArray(profileManifest)) throw new Error('Invalid existing DSH profile manifest')
+  const patchPath = join(profileDirectory, 'cordis.patch.yml')
+  const patch = await readFile(patchPath, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return '[]\n'; throw error })
+  const instance = options.instance ?? 'gateway-node'
+  const packageName = options.packageAlias ?? PACKAGE_NAME
+  if (!/^[a-zA-Z0-9_-]{1,80}$/.test(instance)) throw new Error('Invalid Gateway instance name')
+  if (options.packageAlias !== undefined && (instance === 'gateway-node' || packageName === PACKAGE_NAME
+    || !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(packageName))) throw new Error('Package aliases require a named Gateway instance and a distinct npm dependency name')
   const dshExecutable = options.dshExecutable ?? 'dsh'
   const version = (await execute(dshExecutable, ['--version'], { timeout: 15_000 })).stdout.trim().split(/\s+/).at(-1) ?? ''
   if (version !== '0.1.7-rc.2') throw new Error(`This gateway release is validated with DSH 0.1.7-rc.2; found ${version}. Upgrade this node before pairing.`)
   const stateDirectory = resolve(options.stateDirectory)
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 }); await chmod(stateDirectory, 0o700)
+  const connectionFile = join(stateDirectory, 'connection.json')
+  const canonicalConnection = join(await realpath(stateDirectory), 'connection.json')
+  const ownMarker = instance === 'gateway-node' ? markerStart : `# BEGIN DSH GATEWAY INSTANCE ${instance}`
+  for (const block of patch.matchAll(/^# BEGIN DSH GATEWAY[^\n]*\n[\s\S]*?^# END DSH GATEWAY[^\n]*$/gm)) {
+    if (block[0].split('\n')[0] === ownMarker) continue
+    const configured = /connectionFile:\s*("[^"\n]*"|'[^'\n]*'|[^\s#]+)/.exec(block[0])?.[1]
+    if (!configured) continue
+    const saved = configured.startsWith('"') ? JSON.parse(configured) as string : configured.replace(/^'|'$/g, '')
+    const canonicalSaved = await realpath(saved).catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return resolve(saved); throw error })
+    if (canonicalSaved === canonicalConnection) throw new Error('Each Gateway instance requires its own state directory; this connection file belongs to another instance')
+  }
   const invitation = options.manifest
   const identityPath = join(stateDirectory, 'identity.json')
   let previousIdentity: { clientId: string; credential: string; invitationHash?: string } | undefined
@@ -131,7 +163,6 @@ export async function installNode(options: {
     finally { if (enrollmentState !== stateDirectory) await rm(enrollmentState, { recursive: true, force: true }) }
   }
 
-  const connectionFile = join(stateDirectory, 'connection.json')
   const configuration: NodeConnectionConfig = { protocol: 1, nodeId, ...identity, name: hostname(), mode: invitation.mode,
     endpoint: invitation.endpoint, stateDir: stateDirectory, hubUrl: invitation.hubUrl,
     ...(options.binDirectory ? { binDirectory: resolve(options.binDirectory) } : {}),
@@ -151,16 +182,14 @@ export async function installNode(options: {
   }
   const digest = createHash('sha256').update(await readFile(packagePath)).digest('hex')
   if (digest !== invitation.package.sha256) throw new Error('Gateway package checksum mismatch')
-  profileManifest.dependencies = { ...profileManifest.dependencies, [PACKAGE_NAME]: `file:${packagePath}` }
+  profileManifest.dependencies = { ...profileManifest.dependencies, [packageName]: `file:${packagePath}` }
   // HMR may observe this manifest immediately. Add the dependency first, but
   // activate the bundle only after the package has been fully installed.
   const dependencyManifest = structuredClone(profileManifest)
   profileManifest.dsh ??= {}; profileManifest.dsh.profile ??= {}; profileManifest.dsh.profile.bundles ??= []
   if (!Array.isArray(profileManifest.dsh.profile.bundles)) throw new Error('Existing profile bundle list is invalid')
-  if (!profileManifest.dsh.profile.bundles.includes(PACKAGE_NAME)) profileManifest.dsh.profile.bundles.push(PACKAGE_NAME)
-  const patchPath = join(profileDirectory, 'cordis.patch.yml')
-  const patch = await readFile(patchPath, 'utf8').catch((error: NodeJS.ErrnoException) => { if (error.code === 'ENOENT') return '[]\n'; throw error })
-  const patchNext = gatewayProfilePatch(patch, connectionFile)
+  if (!options.packageAlias && !profileManifest.dsh.profile.bundles.includes(PACKAGE_NAME)) profileManifest.dsh.profile.bundles.push(PACKAGE_NAME)
+  const patchNext = gatewayProfilePatch(patch, connectionFile, instance, options.packageAlias ? join(profileDirectory, 'node_modules', packageName, 'lib/index.js') : packageName, options.control === true)
   const suffix = `.gateway-backup-${Date.now()}`
   await writeFile(`${manifestPath}${suffix}`, originalManifest, { mode: 0o600 })
   await writeFile(`${patchPath}${suffix}`, patch, { mode: 0o600 })

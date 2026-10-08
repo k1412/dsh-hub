@@ -118,7 +118,7 @@ async function fixture(badPackageHash = false, options: {
   return { origin, record: join(directory, 'installed.json'), requests }
 }
 
-async function install(origin: string, record: string, shortenDeadlines = false, env: NodeJS.ProcessEnv = {}): Promise<{ code: number; output: string }> {
+async function install(origin: string, record: string, shortenDeadlines = false, env: NodeJS.ProcessEnv = {}, extra: string[] = []): Promise<{ code: number; output: string }> {
   const installer = process.env.GATEWAY_INSTALLER_TEST_PATH ?? new URL('../../../../deploy/gateway/install.sh', import.meta.url).pathname
   let nodeOptions = process.env.NODE_OPTIONS ?? ''
   if (shortenDeadlines) {
@@ -127,7 +127,7 @@ async function install(origin: string, record: string, shortenDeadlines = false,
     nodeOptions += ` --import=${pathToFileURL(preload).href}`
   }
   return new Promise(resolve => {
-    execFile('sh', [installer, '--hub', origin, '--invite', 'testToken', '--state-directory', env.GATEWAY_INSTALL_TEST_STATE_DIRECTORY ?? join(directory, 'node-state'), '--profile', 'existing-profile'],
+    execFile('sh', [installer, '--hub', origin, '--invite', 'testToken', '--state-directory', env.GATEWAY_INSTALL_TEST_STATE_DIRECTORY ?? join(directory, 'node-state'), '--profile', 'existing-profile', ...extra],
       { env: { ...process.env, PATH: `${join(directory, 'existing-tools')}:${process.env.PATH ?? ''}`,
         NODE_OPTIONS: nodeOptions.trim(), DSH_GATEWAY_ALLOW_HTTP_TEST: '1', GATEWAY_INSTALL_TEST_RECORD: record,
         GATEWAY_INSTALL_TEST_TAILSCALE_LOG: join(directory, 'tailscale-commands.log'), ...env }, timeout: 20_000 },
@@ -354,4 +354,12 @@ it('verifies decoded bytes when HTTP compression changes the Content-Length', as
   expect(result.code).toBe(0)
   expect(result.output).toContain('gateway-node.tgz: complete,')
   expect(result.output).toContain('checksum verified')
+})
+
+it('passes explicit instance and alias flags to the packaged node CLI', async () => {
+  const { origin, record } = await fixture(false, { mode: 'tailscale' })
+  const result = await install(origin, record, false, {}, ['--instance', 'gateway-extra', '--package-alias', '@k1412/dsh-gateway-node-control', '--control'])
+  expect(result.code).toBe(0)
+  const installed = JSON.parse(await readFile(record, 'utf8'))
+  expect(installed.args).toEqual(expect.arrayContaining(['--instance', 'gateway-extra', '--package-alias', '@k1412/dsh-gateway-node-control', '--control']))
 })

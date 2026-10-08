@@ -35,3 +35,11 @@ describe('existing Runtime installer boundaries', () => {
     expect(() => enrollmentIdentity('first-invitation', replacement, true)).toThrow('already claimed')
   })
 })
+
+it('keeps the base Loader block while configuring an aliased named connection', () => {
+  const base = gatewayProfilePatch('[]\n', '/state/base/connection.json')
+  const named = gatewayProfilePatch(base, '/state/experiment/connection.json', 'gateway-node-control', '@k1412/dsh-gateway-node-control', true)
+  expect(named.startsWith(base.trimEnd())).toBe(true)
+  expect(named).toContain('name: "@k1412/dsh-gateway-node-control"')
+  expect(named).toContain('/state/base/connection.json')
+})

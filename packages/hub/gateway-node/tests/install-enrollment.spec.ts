@@ -39,10 +39,40 @@ async function fixture(mode: 'tailcat' | 'tailscale' = 'tailcat') {
   })
   const run = (claimed = false, allowManagedTailscale?: boolean) => installNode({ manifest: { ...manifest, claimed }, stateDirectory: state, dshExecutable: dsh,
     ...(allowManagedTailscale === undefined ? {} : { allowManagedTailscale }) })
-  return { directory, state, profile, runtimeKey, helpers, close, fetch, run }
+  const named = (stateDirectory: string, packageAlias = '@k1412/dsh-gateway-node-control') => installNode({ manifest: { ...manifest, hubUrl: 'https://experiment.test' }, stateDirectory, instance: 'gateway-node-control', packageAlias, control: true, dshExecutable: dsh })
+  return { directory, state, profile, runtimeKey, helpers, close, fetch, run, named }
 }
 
 describe('installation enrollment carrier lifetime', () => {
+  it('installs an alias without replacing the base dependency, connection or active bundle', async () => {
+    const f = await fixture('tailscale')
+    const base = await f.run()
+    const baseConfig = await readFile(base.connectionFile, 'utf8')
+    const baseIdentity = await readFile(join(f.state, 'identity.json'), 'utf8')
+    const baseManifest = JSON.parse(await readFile(join(f.profile, 'package.json'), 'utf8'))
+    const result = await f.named(join(f.directory, 'aliased-state'), '@k1412/dsh-gateway-node-control')
+    const manifest = JSON.parse(await readFile(join(f.profile, 'package.json'), 'utf8'))
+    expect(manifest.dependencies['@k1412/dsh-gateway-node']).toBe(baseManifest.dependencies['@k1412/dsh-gateway-node'])
+    expect(manifest.dependencies['@k1412/dsh-gateway-node-control']).toMatch(/^file:/)
+    expect(manifest.dsh.profile.bundles).toEqual(baseManifest.dsh.profile.bundles)
+    expect(await readFile(base.connectionFile, 'utf8')).toBe(baseConfig)
+    expect(await readFile(join(f.state, 'identity.json'), 'utf8')).toBe(baseIdentity)
+    expect(result.connectionFile).not.toBe(base.connectionFile)
+    expect(await readFile(join(f.profile, 'cordis.patch.yml'), 'utf8')).toContain(JSON.stringify(join(f.profile, 'node_modules', '@k1412/dsh-gateway-node-control', 'lib/index.js')))
+  })
+
+  it('rejects shared state before changing a different Gateway identity or connection', async () => {
+    const f = await fixture('tailscale')
+    const base = await f.run()
+    const identity = await readFile(join(f.state, 'identity.json'), 'utf8')
+    const connection = await readFile(base.connectionFile, 'utf8')
+    const calls = network.connect.mock.calls.length
+    await expect(f.named(f.state, '@k1412/dsh-gateway-node-control')).rejects.toThrow('own state directory')
+    expect(network.connect).toHaveBeenCalledTimes(calls)
+    expect(await readFile(join(f.state, 'identity.json'), 'utf8')).toBe(identity)
+    expect(await readFile(base.connectionFile, 'utf8')).toBe(connection)
+  })
+
   it('uses fresh private Tailcat state per retry while retaining Hub identity and the active Runtime key', async () => {
     const f = await fixture()
     const modes: number[] = []

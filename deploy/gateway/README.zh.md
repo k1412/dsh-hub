@@ -20,3 +20,14 @@ node deploy/gateway/smoke-network.mjs --mode all --bin-directory /tmp/gateway-to
 这是连接层测试。两个 node 实例在同一台测试机器上；Tailscale 通过现有宿主的 `nc` 数据面访问本机 Tailnet IP，结果不能代表跨机器或公网延迟。测试服务计数保留也不能替代 DSH 历史、草稿或权限状态的验收。已保存的实测报告位于 `reports/network-local-2026-10-03.json`。
 
 官方依据：[Tailscale 用户态网络](https://tailscale.com/docs/concepts/userspace-networking)、[Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve)、[Tailcat](https://github.com/tailscale/tailcat/tree/v0.7.0)。
+
+多个 Hub 可以连接同一个现有 Profile/Runtime。实验连接必须使用独立 `--state-directory`、`--instance` 和 `--package-alias`，保留基础连接的包、身份与配置。例如：
+
+```sh
+curl -fsSL https://experiment-hub.example/install.sh -o /tmp/experiment-install.sh
+sh /tmp/experiment-install.sh --hub https://experiment-hub.example --invite TOKEN --profile web --instance gateway-node-control --package-alias @k1412/dsh-gateway-node-control --state-directory "$HOME/.local/state/dsh-gateway-control" --control
+```
+
+依赖别名使用已校验的本地 `file:` 归档；实验依赖不进入 Profile 的 bundle 列表。安装器直接插入独立 Cordis Loader 条目，其模块路径指向该 Profile 下别名包的 `lib/index.js`。rc.2 的浏览器模块扫描会忽略 manifest 名称不同的裸别名；绝对模块路径使用官方支持的 package 定位方式，使会话导航客户端只注册一次。省略新选项时保留原安装行为。更改后按现有服务机制重载同一个 Runtime。
+
+移除实验时先仅删除相应 `# BEGIN DSH GATEWAY INSTANCE gateway-node-control` 到 `# END DSH GATEWAY INSTANCE gateway-node-control` 的受管条目，再在该 Profile 目录用其包管理器移除 `@k1412/dsh-gateway-node-control` 依赖并重载原 Runtime。保留基础条目、基础依赖以及其他连接的状态目录。Hub 不保存模型配置或凭据。
