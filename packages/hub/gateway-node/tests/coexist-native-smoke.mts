@@ -96,6 +96,7 @@ try {
   let patch = gatewayProfilePatch('[]\n', connections[0].connectionFile)
   patch += `\n# BEGIN DSH GATEWAY INSTANCE gateway-node-session\n- insert:\n    - id: gateway-node-session\n      name: ${JSON.stringify(join(profile, 'node_modules', names[1], 'lib/index.js'))}\n      config:\n        connectionFile: ${JSON.stringify(connections[1].connectionFile)}\n        runtimeId: shared-runtime\n        sessionDirectory: true\n# END DSH GATEWAY INSTANCE gateway-node-session\n`
   patch = gatewayProfilePatch(patch, connections[2].connectionFile, 'gateway-node-control', join(profile, 'node_modules', names[2], 'lib/index.js'), true)
+  patch = patch.replace('        control: true', `        control: true\n        delegationWorkspace: ${JSON.stringify(work)}\n        trustedPackages: []\n        installation: npm`)
   await writeFile(join(profile, 'cordis.patch.yml'), patch); await writeFile(join(profile, 'cordis.yml'), '[]\n')
   const loaded = app.loadProfileDirectory('coexist', profile, require.resolve('@deepseek-ai/dsh/package.json'))
   assert.equal(loaded.skippedBundles.length, 0)
@@ -134,8 +135,10 @@ export function apply(ctx) {
   assert.equal(hubs[0].metadata['x-dsh-control'], undefined); assert.equal(hubs[1].metadata['x-dsh-control'], undefined)
   assert.equal(hubs[1].metadata['x-dsh-session-directory'], '1'); assert.equal(hubs[0].metadata['x-dsh-session-directory'], undefined)
   assert.equal(hubs[2].metadata['x-dsh-control'], '2')
+  assert.equal(hubs[2].metadata['x-dsh-control-capabilities'], 'management,admission,delegation')
   const controlInventory = await hubs[2].control.call('management.inventory', {})
   assert(Array.isArray(controlInventory.bundles))
+  assert.equal(controlInventory.supported, true, 'The real native plugin manager is ready before Gateway activation')
   const ids = ctx.clientModules.graph().entries.map((entry: any) => entry.id)
   assert.equal(new Set(ids).size, ids.length)
   assert.equal(ids.filter((id: string) => id === names[1]).length, 1, 'Only the session package contributes one navigation client')
@@ -159,7 +162,7 @@ export function apply(ctx) {
   assert.equal(after.dependencies[names[0]], manifest.dependencies[names[0]])
   assert.equal(after.dependencies[names[1]], undefined); assert.equal(after.dependencies[names[2]], undefined)
   assert.equal((await baseTunnel.fetch(new Request('http://native/'))).status, 200)
-  const report = { ok: true, runtimeCount: 1, officialDependencyAliases: true, sequentialOfficialPluginInstall: true, installedArchiveContentVerified: true, officialCliBoot: true, hoistedNodeLinker: true, repairedExistingHoistedInstall: true, threePackagedConnections: true, baseNativeUI: true, sessionNavigation: true, controlOnlyOnControlConnection: true, uniqueClientGraph: true, isolatedUninstall: true, baseConnectionPreserved: true, browser: process.env.DSH_NATIVE_BROWSER ?? 'chromium', overlay: 'loopback carrier fixture', artifacts: work }
+  const report = { ok: true, runtimeCount: 1, officialDependencyAliases: true, sequentialOfficialPluginInstall: true, installedArchiveContentVerified: true, officialCliBoot: true, hoistedNodeLinker: true, repairedExistingHoistedInstall: true, threePackagedConnections: true, baseNativeUI: true, sessionNavigation: true, controlOnlyOnControlConnection: true, configuredDelegationCapability: true, uniqueClientGraph: true, isolatedUninstall: true, baseConnectionPreserved: true, browser: process.env.DSH_NATIVE_BROWSER ?? 'chromium', overlay: 'loopback carrier fixture', artifacts: work }
   await writeFile(join(work, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report))
 } finally {
   await browser?.close(); await ctx?.fiber.dispose()

@@ -16,7 +16,8 @@ export { startNodeConnector, readConnectionConfig } from './connector.ts'
 export type { NodeConnectionConfig, NodeMetadata, ConnectorStatus } from './connector.ts'
 
 export const name = 'gateway-node'
-export const inject = ['connection', 'clientModules', 'typertGateway']
+// The Loader must wait for native control services before apply reads them.
+export const inject = ['connection', 'clientModules', 'typertGateway', 'tools', 'agents', 'agentDefaultModel', 'sessions', 'sessionController', 'pluginManager']
 export interface Config { connectionFile?: string; runtimeId?: string; name?: string; control?: boolean; delegationWorkspace?: string; trustedPackages?: string[]; updateExecutor?: string; installation?: 'npm' | 'docker' | 'external' }
 export const Config = z.object({
   connectionFile: z.string().default(join(homedir(), '.dsh-gateway', 'connection.json')),
