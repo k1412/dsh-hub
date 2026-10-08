@@ -56,3 +56,11 @@ it('disables an unconfigured default when the first connection is a named experi
   expect(primary).toContain('- id: gateway-node\n  disabled: false')
   expect(primary).toContain('/private/experiment/connection.json')
 })
+
+it('keeps the base Loader block while configuring an aliased named connection', () => {
+  const base = gatewayProfilePatch('[]\n', '/state/base/connection.json')
+  const named = gatewayProfilePatch(base, '/state/experiment/connection.json', 'gateway-node-session', true, '@k1412/dsh-gateway-node-session')
+  expect(named.startsWith(base.trimEnd())).toBe(true)
+  expect(named).toContain('name: "@k1412/dsh-gateway-node-session"')
+  expect(named).toContain('/state/base/connection.json')
+})

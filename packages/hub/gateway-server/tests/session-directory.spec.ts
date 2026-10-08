@@ -4,6 +4,12 @@ it('authenticates directory, native list fan-out and exact intent through ticket
   const f = await createFixture({ sessionDirectory: true })
   try {
     const alpha = await f.addNode('alpha'), beta = await f.addNode('beta')
+    const invitation = await f.request('/invites', { operator: true, method: 'POST', headers: { origin: f.publicUrl }, body: 'name=coexist&mode=tailcat' })
+    expect(invitation.status).toBe(200)
+    const invitationPage = await invitation.text()
+    expect(invitationPage).toContain('--instance gateway-node-session --package-alias @k1412/dsh-gateway-node-session')
+    expect(invitationPage).toContain('$HOME/.local/state/dsh-gateway-session')
+    expect(invitationPage).not.toContain('--control')
     expect((await f.request('/sessions')).status).toBe(401)
     const html = await (await f.request('/sessions', { operator: true })).text()
     expect(html).toContain('Session alpha'); expect(html).toContain('Session beta')

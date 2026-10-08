@@ -6,19 +6,21 @@ hub=''
 invite=''
 profile=''
 instance=''
+package_alias=''
 state_directory="${XDG_STATE_HOME:-${HOME:?}/.local/state}/dsh-gateway"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --hub) hub="$2"; shift 2 ;;
     --invite) invite="$2"; shift 2 ;;
     --instance) instance="$2"; shift 2 ;;
+    --package-alias) package_alias="$2"; shift 2 ;;
     --profile) profile="$2"; shift 2 ;;
     --state-directory) state_directory="$2"; shift 2 ;;
     *) printf 'Unknown installer option: %s\n' "$1" >&2; exit 2 ;;
   esac
 done
 if [ -z "$hub" ] || [ -z "$invite" ]; then
-  printf 'Usage: install.sh --hub https://hub.example --invite TOKEN [--profile NAME]\n' >&2
+  printf 'Usage: install.sh --hub https://hub.example --invite TOKEN [--profile NAME] [--instance NAME --package-alias npm-name]\n' >&2
   exit 2
 fi
 case "$invite" in *[!A-Za-z0-9_-]*) printf 'Invalid invitation token.\n' >&2; exit 2 ;; esac
@@ -291,4 +293,5 @@ if [ -n "$profile" ]; then
   set -- "$@" --profile "$profile"
 fi
 if [ -n "$instance" ]; then set -- "$@" --instance "$instance"; fi
+if [ -n "$package_alias" ]; then set -- "$@" --package-alias "$package_alias"; fi
 node "$cli_path" "$@"

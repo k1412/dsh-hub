@@ -8,6 +8,18 @@ The installer checks local Tailscale first, with a four-second status timeout. A
 
 On Linux amd64/arm64, an unavailable client triggers a pinned private-tool download and an official login prompt. Dedicated network archives are cached in `network-cache` under the node state directory. Repeat installations verify the entire SHA-256 before reuse; corrupted or different-version archives download again. Older installations download once when first adopting this cache. macOS requires the selected tool installed and Tailscale already logged in. The node CLI installs the plugin into an existing DSH Profile without starting a second DSH Runtime.
 
+
+Multiple Hubs can connect through the same existing Profile/Runtime. Give each experimental connection its own `--state-directory`, `--instance` and `--package-alias`, preserving the base package, identity and configuration. For example:
+
+```sh
+curl -fsSL https://experiment-hub.example/install.sh -o /tmp/experiment-install.sh
+sh /tmp/experiment-install.sh --hub https://experiment-hub.example --invite TOKEN --profile web --instance gateway-node-session --package-alias @k1412/dsh-gateway-node-session --state-directory "$HOME/.local/state/dsh-gateway-session"
+```
+
+Dependency aliases use verified local `file:` archives; experimental dependencies stay outside the Profile bundle list. The installer inserts a separate Cordis Loader entry pointing to the alias package's `lib/index.js` in that Profile. The rc.2 browser scanner ignores bare aliases whose names differ from the package manifest; absolute module paths use its supported package discovery and register the session navigation client once. Omitting the new options preserves existing installation behavior. Reload the same Runtime through its existing service mechanism.
+
+To remove an experiment, first delete only its managed block from `# BEGIN DSH GATEWAY INSTANCE gateway-node-session` through `# END DSH GATEWAY INSTANCE gateway-node-session`. Then remove the `@k1412/dsh-gateway-node-session` dependency with that Profile's package manager and reload the original Runtime. Preserve the base entry, base dependency and other connections' state directories. Hub stores no model configuration or credentials.
+
 Run these commands from the repository to prepare tools and execute real network checks:
 
 ```sh

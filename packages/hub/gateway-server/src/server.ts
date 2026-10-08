@@ -334,7 +334,7 @@ export function createGateway(options: GatewayOptions) {
       const endpoint = await options.networks.endpoint(mode)
       const { token: invitationToken } = store.invite(mode, endpoint, name)
       const shellQuote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`
-      const command = `curl -fsSL ${shellQuote(`${downloads.origin}/install.sh`)} | sh -s -- --hub ${shellQuote(downloads.origin)} --invite ${shellQuote(invitationToken)}${directory ? ' --state-directory "$HOME/.local/state/dsh-gateway-experiment" --instance gateway-node-experiment' : ''}`
+      const command = `curl -fsSL ${shellQuote(`${downloads.origin}/install.sh`)} | sh -s -- --hub ${shellQuote(downloads.origin)} --invite ${shellQuote(invitationToken)}${directory ? ' --state-directory "$HOME/.local/state/dsh-gateway-session" --instance gateway-node-session --package-alias @k1412/dsh-gateway-node-session' : ''}`
       response(res, 200, page('安装命令', `<h1>连接 ${escape(name)}</h1><div class="card"><p>在该 node 上，以运行 DSH 的用户执行：</p><pre>${escape(command)}</pre><p class="muted">命令会安装连接插件与所选网络工具，完成配对。已有 Tailscale 会被复用；首次使用时按终端提示登录。</p><p>安装后按终端提示重新加载当前 DSH，然后返回节点列表。</p><nav><a class="button primary" href="/">查看节点</a><a href="/invites/new">生成新邀请</a></nav></div>`)); return
     }
     const opening = /^\/open\/(n[a-f0-9]{16})$/.exec(url.pathname)
