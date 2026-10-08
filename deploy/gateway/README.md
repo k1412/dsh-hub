@@ -20,3 +20,18 @@ The test creates a temporary Hub network identity and two isolated node connecti
 This is a connection-layer test. Both node instances run on one test machine; Tailscale uses the existing host's `nc` data path to its own Tailnet IP, so results do not represent a cross-machine or WAN path. Preserving the probe server's counter does not verify DSH history, drafts, or permission state. The recorded result is `reports/network-local-2026-10-03.json`.
 
 Upstream references: [Tailscale userspace networking](https://tailscale.com/docs/concepts/userspace-networking), [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve), [Tailcat](https://github.com/tailscale/tailcat/tree/v0.7.0).
+
+## Replacing the legacy Hub
+
+The base Gateway and legacy Hub are separate services. Keep the Gateway's existing canonical origin, node subdomains and installer origin, and redirect the legacy website entry to Gateway at the reverse proxy. Existing invitations, node identities and browser origins then need no migration, and the existing external login policy can remain. Do not simply proxy the legacy hostname to Gateway: the service validates Host and Origin against its configured canonical address.
+
+Retire the old deployment in this order:
+
+1. Back up legacy Hub data, Compose configuration and node profiles. Stop database writes before taking a consistent backup.
+2. Check Gateway and each online node using their actual pages and session lists. Confirm no tasks are running before scheduling any required node restart.
+3. Configure and verify the legacy entry redirect, authentication boundaries, destination page and installer before stopping the old Hub.
+4. Check whether legacy containers include a DSH Runtime already used by Gateway. Move a shared Runtime to an independent node deployment, preserving its image, user, state volumes and connection file. Do not delete it together with the legacy Node Agent.
+5. Remove legacy `@k1412/dsh-hub-connector` from each node's `dsh.profile.bundles`, preserving `@k1412/dsh-gateway-node`. Disable the old Node Agent service and autostart; remove legacy containers and Compose autostart projects without deleting node sessions, model configuration or persistent data.
+6. Recheck node IDs, session counts, pages and native session lists. Record offline devices separately for cleanup when reachable; online checks do not prove every device is finished.
+
+Legacy Hub backups are rollback material, not a Gateway runtime dependency. Retirement does not import the old Hub database into the base Gateway; each node's native DSH continues storing and serving its own sessions.

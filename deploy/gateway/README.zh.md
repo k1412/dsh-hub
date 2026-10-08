@@ -20,3 +20,18 @@ node deploy/gateway/smoke-network.mjs --mode all --bin-directory /tmp/gateway-to
 这是连接层测试。两个 node 实例在同一台测试机器上；Tailscale 通过现有宿主的 `nc` 数据面访问本机 Tailnet IP，结果不能代表跨机器或公网延迟。测试服务计数保留也不能替代 DSH 历史、草稿或权限状态的验收。已保存的实测报告位于 `reports/network-local-2026-10-03.json`。
 
 官方依据：[Tailscale 用户态网络](https://tailscale.com/docs/concepts/userspace-networking)、[Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve)、[Tailcat](https://github.com/tailscale/tailcat/tree/v0.7.0)。
+
+## 替换旧 Hub
+
+基础 Gateway 与旧 Hub 是不同的服务。推荐保留已投入使用的 Gateway 主地址、节点子域名和安装地址，将旧网站入口在反向代理中跳转到 Gateway。这样已有邀请、节点身份和浏览器源站不用迁移；原有外部登录策略也可以保留。不要只把旧域名代理到 Gateway：服务会按配置的主地址校验 Host 和 Origin。
+
+按以下顺序退役旧部署：
+
+1. 备份旧 Hub 数据、Compose 配置以及各节点的 Profile；数据库停止写入后再做一致性备份。
+2. 用实际网页和会话列表检查 Gateway 及每个在线节点。确认没有运行中的任务，再安排必要的节点重启。
+3. 配置旧入口跳转，验证登录边界、目标网页和安装脚本，再停止旧 Hub。
+4. 检查旧容器是否包含 Gateway 正在使用的 DSH Runtime。共享 Runtime 应迁到独立节点部署，保留原镜像、用户、状态卷和连接文件；不要连同旧 Node Agent 一起删除。
+5. 从节点的 `dsh.profile.bundles` 中移除旧 `@k1412/dsh-hub-connector`，保留 `@k1412/dsh-gateway-node`。停用旧 Node Agent 的服务和自启；移除旧容器及旧 Compose 自启项目，不删除节点会话、模型配置或持久数据。
+6. 再次核对节点 ID、会话数量、网页和原生会话列表。离线节点要单独记录，待其可达后清理；不能把在线节点检查称为全部设备已完成。
+
+旧 Hub 数据备份是回退资料，不是 Gateway 的运行依赖。退役操作不会把旧 Hub 的数据库导入基础版；会话继续由对应节点的原生 DSH 保存和提供。
