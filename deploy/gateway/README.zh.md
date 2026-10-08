@@ -28,6 +28,6 @@ curl -fsSL https://experiment-hub.example/install.sh -o /tmp/experiment-install.
 sh /tmp/experiment-install.sh --hub https://experiment-hub.example --invite TOKEN --profile web --instance gateway-node-session --package-alias @k1412/dsh-gateway-node-session --state-directory "$HOME/.local/state/dsh-gateway-session"
 ```
 
-依赖别名使用已校验的本地 `file:` 归档；实验依赖不进入 Profile 的 bundle 列表。安装器直接插入独立 Cordis Loader 条目，其模块路径指向该 Profile 下别名包的 `lib/index.js`。rc.2 的浏览器模块扫描会忽略 manifest 名称不同的裸别名；绝对模块路径使用官方支持的 package 定位方式，使会话导航客户端只注册一次。省略新选项时保留原安装行为。更改后按现有服务机制重载同一个 Runtime。
+安装器先校验下载归档，再生成私有 `file:` 副本，使包的实际名称等于指定别名，会话浏览器模块也以同一名称注册。这避免 pnpm hoisted 布局按基础包名称和版本去重不同实验代码。激活前逐项核对已安装 Runtime、CLI、manifest 与浏览器文件；内容不符则恢复 Profile 文件并拒绝激活。实验依赖不进入 Profile 的 bundle 列表。安装器直接插入独立 Cordis Loader 条目，其模块路径指向该 Profile 下别名包的 `lib/index.js`。rc.2 的浏览器模块扫描会忽略 manifest 名称不同的裸别名；绝对模块路径使用官方支持的 package 定位方式，使会话导航客户端只注册一次。重装命名条目时保留其额外配置，包括委派工作区与允许包列表。省略新选项时保留原安装行为。更改后按现有服务机制重载同一个 Runtime。
 
 移除实验时先仅删除相应 `# BEGIN DSH GATEWAY INSTANCE gateway-node-session` 到 `# END DSH GATEWAY INSTANCE gateway-node-session` 的受管条目，再在该 Profile 目录用其包管理器移除 `@k1412/dsh-gateway-node-session` 依赖并重载原 Runtime。保留基础条目、基础依赖以及其他连接的状态目录。Hub 不保存模型配置或凭据。

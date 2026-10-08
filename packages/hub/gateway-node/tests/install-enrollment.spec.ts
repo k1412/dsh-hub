@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -23,8 +25,19 @@ async function fixture(mode: 'tailcat' | 'tailscale' = 'tailcat') {
   await writeFile(join(profile, 'cordis.patch.yml'), '[]\n')
   const dsh = join(directory, 'dsh')
   await writeFile(dsh, '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "0.1.7-rc.2\\n"; else exit 0; fi\n', { mode: 0o700 })
-  const packageFile = join(directory, 'node.tgz'); const bytes = Buffer.from('fixture-package')
-  await writeFile(packageFile, bytes)
+  const packageFile = join(directory, 'node.tgz')
+  const packed = join(directory, 'package'); await mkdir(join(packed, 'lib'), { recursive: true })
+  const packageManifest = JSON.stringify({ name: '@k1412/dsh-gateway-node', version: '2.0.0-alpha.1' })
+  await writeFile(join(packed, 'package.json'), packageManifest)
+  await writeFile(join(packed, 'lib/index.js'), 'fixture-runtime')
+  await writeFile(join(packed, 'lib/cli.js'), 'fixture-cli')
+  await promisify(execFile)('tar', ['-czf', packageFile, '-C', directory, 'package'])
+  const bytes = await readFile(packageFile)
+  const aliasDirectory = join(profile, 'node_modules', '@k1412/dsh-gateway-node-session')
+  await mkdir(join(aliasDirectory, 'lib'), { recursive: true })
+  await writeFile(join(aliasDirectory, 'package.json'), `${JSON.stringify({ name: '@k1412/dsh-gateway-node-session', version: '2.0.0-alpha.1' }, null, 2)}\n`)
+  await writeFile(join(aliasDirectory, 'lib/index.js'), 'fixture-runtime')
+  await writeFile(join(aliasDirectory, 'lib/cli.js'), 'fixture-cli')
   const manifest: EnrollmentManifest = { protocol: 1, inviteToken: 'same-invitation', mode,
     hubUrl: 'https://hub.test', endpoint: mode === 'tailcat' ? 'tailcat://fixture' : 'http://100.70.0.1:8081',
     expiresAt: Date.now() + 60_000, packageFile, package: { url: 'https://download.test/node.tgz', sha256: createHash('sha256').update(bytes).digest('hex') } }
@@ -59,6 +72,17 @@ describe('installation enrollment carrier lifetime', () => {
     expect(await readFile(join(f.state, 'identity.json'), 'utf8')).toBe(baseIdentity)
     expect(result.connectionFile).not.toBe(base.connectionFile)
     expect(await readFile(join(f.profile, 'cordis.patch.yml'), 'utf8')).toContain(JSON.stringify(join(f.profile, 'node_modules', '@k1412/dsh-gateway-node-session', 'lib/index.js')))
+  })
+
+  it('rejects a successful package manager that installed base code under the experimental alias', async () => {
+    const f = await fixture('tailscale')
+    await f.run()
+    const manifest = await readFile(join(f.profile, 'package.json'), 'utf8')
+    const patch = await readFile(join(f.profile, 'cordis.patch.yml'), 'utf8')
+    await writeFile(join(f.profile, 'node_modules', '@k1412/dsh-gateway-node-session', 'lib/index.js'), 'incorrect-base-runtime')
+    await expect(f.named(join(f.directory, 'wrong-package-state'), '@k1412/dsh-gateway-node-session')).rejects.toThrow('profile files restored')
+    expect(await readFile(join(f.profile, 'package.json'), 'utf8')).toBe(manifest)
+    expect(await readFile(join(f.profile, 'cordis.patch.yml'), 'utf8')).toBe(patch)
   })
 
   it('rejects shared state before changing a different Gateway identity or connection', async () => {

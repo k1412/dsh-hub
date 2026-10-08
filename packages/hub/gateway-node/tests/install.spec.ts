@@ -64,3 +64,16 @@ it('keeps the base Loader block while configuring an aliased named connection', 
   expect(named).toContain('name: "@k1412/dsh-gateway-node-session"')
   expect(named).toContain('/state/base/connection.json')
 })
+
+it('preserves named managed config extensions and multiline allowlists on reinstall', () => {
+  const base = gatewayProfilePatch('[]\n', '/state/base/connection.json')
+  const first = gatewayProfilePatch(base, '/state/experiment/connection.json', 'gateway-node-session', true, '@k1412/dsh-gateway-node-session')
+  const configured = first.replace('        connectionFile:', '        delegationWorkspace: "/workspace/delegation"\n        trustedPackages:\n          - approved-plugin\n        installation: npm\n        runtimeId: default\n        connectionFile:')
+  const next = gatewayProfilePatch(configured, '/state/experiment/connection.json', 'gateway-node-session', true, '@k1412/dsh-gateway-node-session')
+  expect(next.startsWith(base.trimEnd())).toBe(true)
+  expect(next).toContain('        delegationWorkspace: "/workspace/delegation"')
+  expect(next).toContain('        trustedPackages:\n          - approved-plugin')
+  expect(next).toContain('        installation: npm')
+  expect(next).toContain('        runtimeId: default')
+  expect(next.match(/        connectionFile:/g)).toHaveLength(1)
+})
