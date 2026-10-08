@@ -4,7 +4,7 @@ import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { createServer } from 'node:http'
 import { Readable } from 'node:stream'
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
 import { mkdtemp, mkdir, readFile, writeFile, symlink } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto'
 import { WebSocket, WebSocketServer } from 'ws'
 import { chromium, webkit } from 'playwright'
 import { GatewayTunnel, ControlRPC } from '@k1412/dsh-gateway-transport'
-import { gatewayProfilePatch } from '../src/install.ts'
+import { gatewayProfilePatch, verifyInstalledGateway, createAliasedGatewayArchive } from '../src/install.ts'
 
 const installed = process.env.DSH_NATIVE_ROOT
 const baseline = process.env.DSH_GATEWAY_BASELINE_PACKAGE
@@ -22,12 +22,32 @@ if (!installed || !baseline || !sessionPackage) throw new Error('Set DSH_NATIVE_
 const controlPackage = resolve(process.env.DSH_GATEWAY_CONTROL_PACKAGE ?? 'dist/gateway/downloads/gateway-node.tgz')
 const work = await mkdtemp(join(tmpdir(), 'gateway-three-packages-'))
 process.env.DSH_HOME = join(work, 'home'); process.env.DSH_TELEMETRY_DISABLED = '1'
-const profile = join(work, 'profile'); await mkdir(profile)
+const profile = join(process.env.DSH_HOME, 'profiles/coexist'); await mkdir(profile, { recursive: true })
 const names = ['@k1412/dsh-gateway-node', '@k1412/dsh-gateway-node-session', '@k1412/dsh-gateway-node-control']
-const archives = [resolve(baseline), resolve(sessionPackage), controlPackage]
+const originalArchives = [resolve(baseline), resolve(sessionPackage), controlPackage]
+const archives = [...originalArchives]
+for (const index of [1, 2]) archives[index] = await createAliasedGatewayArchive(archives[index]!, names[index]!, work)
+await writeFile(join(profile, 'pnpm-workspace.yaml'), 'packages: [.]\nnodeLinker: hoisted\nautoInstallPeers: false\n')
 const manifest = { name: 'three-gateway-fixture', private: true, type: 'module', dependencies: Object.fromEntries(names.map((name, index) => [name, `file:${archives[index]}`])), dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', names[0]] } } }
-await writeFile(join(profile, 'package.json'), JSON.stringify(manifest))
-await promisify(execFile)('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--legacy-peer-deps'], { cwd: profile, timeout: 120000 })
+// Reproduce the production hoisted failure, then repair its existing lockfile.
+const path = join(profile, 'package.json')
+let current = { ...manifest, dependencies: {} as Record<string, string> }
+const install = async () => {
+  await writeFile(path, JSON.stringify(current))
+  await promisify(execFile)(process.execPath, [join(installed, 'lib/bin.js'), 'plugin', '--profile', 'coexist', 'install', '--config.auto-install-peers=false'], { cwd: work, timeout: 120000 })
+}
+for (const index of [0, 2, 1]) {
+  current.dependencies[names[index]!] = `file:${originalArchives[index]}`
+  await install()
+}
+const incorrectBase = await readFile(join(profile, 'node_modules', names[0]!, 'lib/index.js'), 'utf8')
+for (const name of names) assert.equal(await readFile(join(profile, 'node_modules', name, 'lib/index.js'), 'utf8'), incorrectBase, 'Original aliases reproduce the hoisted code collision')
+const repaired = [names[0]!]
+for (const index of [2, 1]) {
+  current.dependencies[names[index]!] = manifest.dependencies[names[index]!]!
+  await install(); repaired.push(names[index]!)
+  for (const name of repaired) await verifyInstalledGateway(archives[names.indexOf(name)]!, profile, name)
+}
 await symlink(join(installed, 'node_modules/@deepseek-ai'), join(profile, 'node_modules/@deepseek-ai'))
 const require = createRequire(join(installed, 'package.json'))
 const load = async (name: string) => import(pathToFileURL(require.resolve(name)).href)
@@ -81,15 +101,35 @@ try {
   assert.equal(loaded.skippedBundles.length, 0)
   const inventory = app.readProfilePlugins({ binName: 'coexist', profileDir: profile, installAnchor: require.resolve('@deepseek-ai/dsh/package.json') })
   assert(names.every(name => inventory.dependencies.some((dependency: any) => dependency.name === name)), 'Official inventory preserves alias keys')
-  const resolution = await app.createRuntimeResolution({ installAnchor: require.resolve('@deepseek-ai/dsh/package.json'), profile: loaded, home: process.env.DSH_HOME })
-  const patches = [
-    ...loaded.layers.flatMap((layer: any) => layer.patches), ...loaded.patches,
+  const fixturePlugin = join(work, 'cli-fixture.mjs')
+  await writeFile(fixturePlugin, `
+export const inject = ['sessionController', 'workspaceController', 'clientModules'];
+export function apply(ctx) {
+  const graph = () => ctx.clientModules.graph().entries.map(entry => entry.id);
+  const receive = async message => { if (!message.remove) return; const entry = [...ctx.loader.entries()].find(entry => entry.options.id === message.remove); if (!entry) throw new Error('Fixture entry missing'); entry.parent.tree.remove(entry.options.id); await ctx.loader.await(); process.send({ id: message.id, graph: graph() }); };
+  process.on('message', receive); ctx.effect(() => () => { process.removeListener('message', receive); process.disconnect(); });
+  ctx.appReady.onReady(() => { void (async () => {
+    const workspace = await ctx.workspaceController.create({ path: ${JSON.stringify(work)} });
+    const session = await ctx.sessionController.create({ workspaceId: workspace.workspace.workspaceId, sessionId: 'coexist-selected-session' });
+    await ctx.sessionController.rename({ sessionId: session.sessionId, title: 'Coexist selected session' });
+    process.send({ ready: true, sessionId: session.sessionId, graph: graph(), hasWebListener: Boolean(ctx.get('webServer')) });
+  })(); });
+}
+`)
+  const overlays = [
     ...app.loadOverlayPatches('coexist', require.resolve('@deepseek-ai/dsh-web-app/presets/standard.patch.yml')),
     ...['webserver', 'web-runtime', 'web-startup', 'open-in-app', 'client-hmr', 'directory-picker', 'session-title-llm'].map(id => ({ id, disabled: true })),
     { id: 'connection', inject: [], config: { trustedHosts: [] } },
+    { insert: [{ id: 'cli-test-fixture', name: fixturePlugin }] },
   ]
-  ctx = await app.boot('coexist', join(profile, 'cordis.yml'), patches, async (scope: any) => { await scope.plugin(app.PluginPackages, { resolution }) }, pathToFileURL(join(profile, 'package.json')).href)
-  assert.equal(ctx.webServer, undefined)
+  const overlayFile = join(work, 'cli-overlay.yml'); await writeFile(overlayFile, JSON.stringify(overlays))
+  const child = spawn(process.execPath, [join(installed, 'lib/bin.js'), '--profile', 'coexist', '--patch', overlayFile], { cwd: work, env: process.env, stdio: ['ignore', 'pipe', 'pipe', 'ipc'] })
+  let bootReport: any; let graph: string[] = []; let childOutput = ''; const pending = new Map<number, (value: any) => void>(); let request = 0
+  child.stdout.on('data', bytes => { childOutput += bytes }); child.stderr.on('data', bytes => { childOutput += bytes })
+  child.on('message', (message: any) => { if (message.ready) { bootReport = message; selectedSession = message.sessionId; graph = message.graph } else { graph = message.graph; pending.get(message.id)?.(message); pending.delete(message.id) } })
+  ctx = { clientModules: { graph: () => ({ entries: graph.map(id => ({ id })) }) }, loader: { await: async () => {} }, fiber: { dispose: async () => { child.kill('SIGINT'); await new Promise<void>(ok => { if (child.exitCode !== null) { ok(); return } const timer = setTimeout(() => child.kill('SIGKILL'), 8000); child.once('exit', () => { clearTimeout(timer); ok() }) }); await writeFile(join(work, 'cli.log'), childOutput) } } }
+  await until(() => Boolean(bootReport)); assert.equal(bootReport.hasWebListener, false)
+  const remove = (id: string) => new Promise<void>(ok => { const sequence = ++request; pending.set(sequence, () => ok()); child.send({ id: sequence, remove: id }) })
   await until(() => hubs.every(hub => hub.tunnel?.isOpen))
   assert.equal(hubs[0].metadata['x-dsh-control'], undefined); assert.equal(hubs[1].metadata['x-dsh-control'], undefined)
   assert.equal(hubs[1].metadata['x-dsh-session-directory'], '1'); assert.equal(hubs[0].metadata['x-dsh-session-directory'], undefined)
@@ -98,10 +138,7 @@ try {
   assert(Array.isArray(controlInventory.bundles))
   const ids = ctx.clientModules.graph().entries.map((entry: any) => entry.id)
   assert.equal(new Set(ids).size, ids.length)
-  assert.equal(ids.filter((id: string) => id === names[0]).length, 1, 'Only the session package contributes one navigation client')
-  const workspace = await ctx.workspaceController.create({ path: work })
-  const session = await ctx.sessionController.create({ workspaceId: workspace.workspace.workspaceId, sessionId: 'coexist-selected-session' }); selectedSession = session.sessionId
-  await ctx.sessionController.rename({ sessionId: selectedSession, title: 'Coexist selected session' })
+  assert.equal(ids.filter((id: string) => id === names[1]).length, 1, 'Only the session package contributes one navigation client')
   browser = await (process.env.DSH_NATIVE_BROWSER === 'webkit' ? webkit : chromium).launch({ headless: true })
   const page = await browser.newPage(); page.setDefaultTimeout(15000)
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message))
@@ -111,19 +148,18 @@ try {
   await page.locator(`#gateway-session-intent[data-state="opened"][data-session-id="${selectedSession}"]`).waitFor()
   assert.equal(errors.length, 0, errors.join('\n'))
   const baseTunnel = hubs[0].tunnel, sessionTunnel = hubs[1].tunnel
-  const remove = (id: string) => { const entry = [...ctx.loader.entries()].find((entry: any) => entry.options.id === id); assert(entry); entry.parent.tree.remove(entry.options.id) }
-  remove('gateway-node-control'); await ctx.loader.await(); await until(() => !hubs[2].tunnel.isOpen)
+  await remove('gateway-node-control'); await ctx.loader.await(); await until(() => !hubs[2].tunnel.isOpen)
   assert(baseTunnel.isOpen && sessionTunnel.isOpen)
-  remove('gateway-node-session'); await ctx.loader.await(); await until(() => !hubs[1].tunnel.isOpen)
+  await remove('gateway-node-session'); await ctx.loader.await(); await until(() => !hubs[1].tunnel.isOpen)
   assert(baseTunnel.isOpen)
-  await until(() => !ctx.clientModules.graph().entries.some((entry: any) => entry.id === names[0]))
+  await until(() => !ctx.clientModules.graph().entries.some((entry: any) => entry.id === names[1]))
   for (const connection of connections) assert.equal(await readFile(connection.connectionFile, 'utf8'), connection.original)
   await promisify(execFile)('npm', ['uninstall', '--ignore-scripts', '--no-audit', '--no-fund', '--legacy-peer-deps', names[1], names[2]], { cwd: profile, timeout: 120000 })
   const after = JSON.parse(await readFile(join(profile, 'package.json'), 'utf8'))
   assert.equal(after.dependencies[names[0]], manifest.dependencies[names[0]])
   assert.equal(after.dependencies[names[1]], undefined); assert.equal(after.dependencies[names[2]], undefined)
   assert.equal((await baseTunnel.fetch(new Request('http://native/'))).status, 200)
-  const report = { ok: true, runtimeCount: 1, officialDependencyAliases: true, threePackagedConnections: true, baseNativeUI: true, sessionNavigation: true, controlOnlyOnControlConnection: true, uniqueClientGraph: true, isolatedUninstall: true, baseConnectionPreserved: true, browser: process.env.DSH_NATIVE_BROWSER ?? 'chromium', overlay: 'loopback carrier fixture', artifacts: work }
+  const report = { ok: true, runtimeCount: 1, officialDependencyAliases: true, sequentialOfficialPluginInstall: true, installedArchiveContentVerified: true, officialCliBoot: true, hoistedNodeLinker: true, repairedExistingHoistedInstall: true, threePackagedConnections: true, baseNativeUI: true, sessionNavigation: true, controlOnlyOnControlConnection: true, uniqueClientGraph: true, isolatedUninstall: true, baseConnectionPreserved: true, browser: process.env.DSH_NATIVE_BROWSER ?? 'chromium', overlay: 'loopback carrier fixture', artifacts: work }
   await writeFile(join(work, 'report.json'), JSON.stringify(report, null, 2)); console.log(JSON.stringify(report))
 } finally {
   await browser?.close(); await ctx?.fiber.dispose()

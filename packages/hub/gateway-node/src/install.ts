@@ -41,6 +41,48 @@ async function atomicPrivateText(path: string, text: string): Promise<void> {
   await chmod(path, 0o600)
 }
 
+/** A real package name isolates pnpm's hoisted layout as well as its default layout. */
+export async function createAliasedGatewayArchive(verifiedArchive: string, packageName: string, directory: string): Promise<string> {
+  const temporary = await mkdtemp(join(directory, '.alias-package-'))
+  try {
+    const listed = (await execute('tar', ['-tzf', verifiedArchive], { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 })).stdout.trim().split('\n')
+    if (listed.some(path => !path.startsWith('package/') || path.split('/').includes('..') || path.includes('\\'))) throw new Error('Unsafe Gateway archive path')
+    const verbose = (await execute('tar', ['-tvzf', verifiedArchive], { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 })).stdout
+    if (/^[lh]/m.test(verbose)) throw new Error('Gateway archives must not contain links')
+    await execute('tar', ['-xzf', verifiedArchive, '-C', temporary], { timeout: 15_000 })
+    const manifestPath = join(temporary, 'package/package.json')
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
+    if (manifest.name !== PACKAGE_NAME) throw new Error('Unexpected Gateway package identity')
+    manifest.name = packageName
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 })
+    if (listed.includes('package/lib/client.js')) {
+      const clientPath = join(temporary, 'package/lib/client.js'), client = await readFile(clientPath, 'utf8')
+      const registration = `window.__ModuleLoader__.load({id:${JSON.stringify(PACKAGE_NAME)},factory:`
+      if (!client.startsWith(registration)) throw new Error('Unexpected Gateway browser module registration')
+      await writeFile(clientPath, client.replace(registration, `window.__ModuleLoader__.load({id:${JSON.stringify(packageName)},factory:`), { mode: 0o600 })
+    }
+    const sourceDigest = createHash('sha256').update(await readFile(verifiedArchive)).digest('hex')
+    const aliasDigest = createHash('sha256').update(packageName).digest('hex').slice(0, 16)
+    const archive = join(directory, `gateway-alias-${aliasDigest}-${sourceDigest.slice(0, 16)}.tgz`)
+    const next = `${archive}.tmp`
+    await execute('tar', ['-czf', next, '-C', temporary, 'package'], { timeout: 15_000 })
+    await chmod(next, 0o600); await rename(next, archive)
+    return archive
+  } finally { await rm(temporary, { recursive: true, force: true }) }
+}
+
+/** Refuse a successful package-manager exit if it installed another Gateway's code. */
+export async function verifyInstalledGateway(archive: string, profileDirectory: string, packageName: string): Promise<void> {
+  const listed = (await execute('tar', ['-tzf', archive], { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 })).stdout.trim().split('\n')
+  const required = ['package/lib/index.js', 'package/lib/cli.js', 'package/package.json']
+  if (required.some(path => !listed.includes(path))) throw new Error('Gateway archive is missing runtime files')
+  for (const path of [...required, ...(listed.includes('package/lib/client.js') ? ['package/lib/client.js'] : [])]) {
+    const expected = (await execute('tar', ['-xOzf', archive, path], { timeout: 15_000, maxBuffer: 32 * 1024 * 1024 })).stdout
+    const actual = await readFile(join(profileDirectory, 'node_modules', packageName, path.slice('package/'.length)), 'utf8')
+    if (actual !== expected) throw new Error(`Installed Gateway ${packageName} differs from its verified archive; refusing to activate this connection`)
+  }
+}
+
 /** Preserve the operator's raw YAML/!!js expressions and replace only our own block. */
 export function gatewayProfilePatch(original: string, connectionFile: string, instance = 'gateway-node', packageName = PACKAGE_NAME, control = false): string {
   if (!/^[a-zA-Z0-9_-]{1,80}$/.test(instance)) throw new Error('Invalid Gateway instance name')
@@ -58,8 +100,20 @@ export function gatewayProfilePatch(original: string, connectionFile: string, in
   preserved = preserved.replace(/^\s*\[\]\s*$/m, '').trimEnd()
   const entry = instance === 'gateway-node' ? '- id: gateway-node\n  disabled: false' : `- insert:\n    - id: ${instance}\n      name: ${JSON.stringify(packageName)}`
   const indent = instance === 'gateway-node' ? '  ' : '      '
+  const extensions: string[] = []
+  let keepField = false
+  const fieldIndent = `${indent}  `
+  if (beginning >= 0 && instance !== 'gateway-node') {
+    for (const line of original.slice(beginning, end).split('\n')) {
+      const field = new RegExp(`^${fieldIndent}([a-zA-Z_][\\w-]*):`).exec(line)
+      if (field) keepField = !['connectionFile', 'control', 'sessionDirectory'].includes(field[1] ?? '')
+      else if (line.trim() && !line.startsWith(fieldIndent)) keepField = false
+      if (keepField) extensions.push(line)
+    }
+  }
+  const extraConfig = extensions.length ? `${extensions.join('\n').trimEnd()}\n` : ''
   const unusedDefault = packageName === PACKAGE_NAME && instance !== 'gateway-node' && !/(?:^|\n)\s*-\s*id:\s*gateway-node(?:\s|$)/.test(preserved) ? '- id: gateway-node\n  disabled: true\n' : ''
-  return `${preserved}\n${startMarker}\n${unusedDefault}${entry}\n${indent}config:\n${indent}  connectionFile: ${JSON.stringify(connectionFile)}\n${control ? `${indent}  control: true\n` : ''}${endMarker}\n`
+  return `${preserved}\n${startMarker}\n${unusedDefault}${entry}\n${indent}config:\n${indent}  connectionFile: ${JSON.stringify(connectionFile)}\n${control ? `${indent}  control: true\n` : ''}${extraConfig}${endMarker}\n`
 }
 
 export function parseManifest(value: unknown): EnrollmentManifest {
@@ -182,7 +236,8 @@ export async function installNode(options: {
   }
   const digest = createHash('sha256').update(await readFile(packagePath)).digest('hex')
   if (digest !== invitation.package.sha256) throw new Error('Gateway package checksum mismatch')
-  profileManifest.dependencies = { ...profileManifest.dependencies, [packageName]: `file:${packagePath}` }
+  const installationArchive = options.packageAlias ? await createAliasedGatewayArchive(packagePath, packageName, packageDirectory) : packagePath
+  profileManifest.dependencies = { ...profileManifest.dependencies, [packageName]: `file:${installationArchive}` }
   // HMR may observe this manifest immediately. Add the dependency first, but
   // activate the bundle only after the package has been fully installed.
   const dependencyManifest = structuredClone(profileManifest)
@@ -197,12 +252,14 @@ export async function installNode(options: {
   options.onProgress?.(`Installing plugin into existing DSH profile ${profile}`)
   try {
     await execute(dshExecutable, ['plugin', '--profile', profile, 'install'], { timeout: 300_000, maxBuffer: 1024 * 1024 })
+    if (options.packageAlias) await verifyInstalledGateway(installationArchive, profileDirectory, packageName)
     await atomicPrivateText(patchPath, patchNext)
     await atomicPrivateJson(manifestPath, profileManifest)
   }
-  catch {
+  catch (error) {
     await atomicPrivateText(manifestPath, originalManifest); await atomicPrivateText(patchPath, patch)
-    throw new Error('DSH plugin installation failed; profile files restored. Node pairing is saved so the installation can be retried.')
+    const detail = error instanceof Error && error.message.startsWith('Installed Gateway ') ? ` ${error.message}` : ''
+    throw new Error(`DSH plugin installation failed; profile files restored. Node pairing is saved so the installation can be retried.${detail}`, { cause: error })
   }
   return { nodeId, connectionFile, profileDirectory, needsReload: true }
 }
