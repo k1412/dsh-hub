@@ -35,3 +35,5 @@ Retire the old deployment in this order:
 6. Recheck node IDs, session counts, pages and native session lists. Record offline devices separately for cleanup when reachable; online checks do not prove every device is finished.
 
 Legacy Hub backups are rollback material, not a Gateway runtime dependency. Retirement does not import the old Hub database into the base Gateway; each node's native DSH continues storing and serving its own sessions.
+
+Large native history messages are split into bounded transport frames and reassembled unchanged. Each message is limited to 16 MiB, with a 32 MiB queue budget per node connection. Update the node plugin together with the Gateway to enable large-message transfer; existing small-message framing remains compatible. A closed native channel explicitly closes the browser connection instead of leaving history loading indefinitely.

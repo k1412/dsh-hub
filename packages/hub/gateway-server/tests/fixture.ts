@@ -128,6 +128,7 @@ export async function createFixture(options: { password?: boolean; originSecret?
       connection, clientModules: { fetchBundle: bundles ?? (async () => new Response(`export default ${JSON.stringify(label)}`, { headers: { 'content-type': 'text/javascript' } })) },
       typertGateway: { wireStream: {
         open: async (endpoint, _payload, uplink, _peer, signal) => {
+          if (endpoint === 'fixture/history') return (async function* () { yield { node: label, records: '历史😀'.repeat(200_000) }; })()
           if (endpoint === 'fixture/fail') throw new Error('Fixture native method failed')
           return (async function* () { signal.addEventListener('abort', () => { node.cancelled++ }, { once: true }); for await (const value of uplink) yield { node: label, value } })()
         }, failure: () => ({ code: 'fixture/failure', message: 'Fixture native method failed', details: {} }),
