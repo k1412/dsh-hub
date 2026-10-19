@@ -252,7 +252,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium webkit
       - name: Install verified upstream contract fixture
-        run: npm install --prefix "$RUNNER_TEMP/dsh-native" --ignore-scripts --no-audit --no-fund @deepseek-ai/dsh@0.1.7-rc.2
+        run: npm install --prefix "$RUNNER_TEMP/dsh-native" --ignore-scripts --no-audit --no-fund @deepseek-ai/dsh@0.2.1-rc.2
       - name: Native transport and two-node server tests
         env:
           DSH_NATIVE_ROOT: ${{ runner.temp }}/dsh-native

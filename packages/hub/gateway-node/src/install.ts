@@ -166,7 +166,7 @@ export async function installNode(options: {
     || !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(packageName))) throw new Error('Package aliases require a named Gateway instance and a distinct npm dependency name')
   const dshExecutable = options.dshExecutable ?? 'dsh'
   const version = (await execute(dshExecutable, ['--version'], { timeout: 15_000 })).stdout.trim().split(/\s+/).at(-1) ?? ''
-  if (version !== '0.1.7-rc.2') throw new Error(`This gateway release is validated with DSH 0.1.7-rc.2; found ${version}. Upgrade this node before pairing.`)
+  if (!['0.1.7-rc.2', '0.2.1-rc.2'].includes(version)) throw new Error(`This gateway release is validated with DSH 0.1.7-rc.2 or 0.2.1-rc.2; found ${version}. Upgrade this node before pairing.`)
   const stateDirectory = resolve(options.stateDirectory)
   await mkdir(stateDirectory, { recursive: true, mode: 0o700 }); await chmod(stateDirectory, 0o700)
   const connectionFile = join(stateDirectory, 'connection.json')

@@ -25,7 +25,7 @@ export async function createRuntimeSurface(ctx: RuntimeContext, resolutionAnchor
     || typeof ctx.clientModules?.onGraphChanged !== 'function'
     || typeof ctx.clientModules?.onRebuilt !== 'function'
     || typeof ctx.typertGateway?.wireStream?.open !== 'function') {
-    throw new Error('This node requires DSH with native Connection, ClientModules and Gateway carrier APIs (tested with 0.1.7-rc.2)')
+    throw new Error('This node requires DSH with native Connection, ClientModules and Gateway carrier APIs (tested with 0.1.7-rc.2 or 0.2.1-rc.2)')
   }
   const require = createRequire(resolutionAnchor)
   const manifestPath = require.resolve('@deepseek-ai/dsh-web-frontend/package.json')

@@ -14,7 +14,7 @@ export type { NodeConnectionConfig, NodeMetadata, ConnectorStatus } from './conn
 export const name = 'gateway-node'
 export const inject = ['connection', 'clientModules', 'typertGateway']
 export interface Config { connectionFile?: string; runtimeId?: string; name?: string; sessionDirectory?: boolean }
-export const Config = z.object({
+export const Config: z<Config> = z.object({
   sessionDirectory: z.boolean().default(false),
   connectionFile: z.string().default(join(homedir(), '.dsh-gateway', 'connection.json')),
   runtimeId: z.string().default('default'), name: z.string().default(hostname()),
