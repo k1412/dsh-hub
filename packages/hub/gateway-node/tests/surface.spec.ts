@@ -57,6 +57,28 @@ describe('one installed native frontend and API surface', () => {
     expect(await rpc.json()).toEqual(body)
   })
 
+  it('keeps native owner Peers distinct across nodes and identical across HTTP and mux', async () => {
+    const a = await fixture('peer-a'); const b = await fixture('peer-b')
+    const peerA = { principal: { kind: 'owner' as const }, signal: new AbortController().signal, dispose: async () => {} }
+    const peerB = { ...peerA, signal: new AbortController().signal }
+    const createA = vi.fn(() => peerA); const createB = vi.fn(() => peerB)
+    a.runtime.connection.createPeer = createA; b.runtime.connection.createPeer = createB
+    const wireA = vi.fn(a.runtime.typertGateway.wireStream.open); const wireB = vi.fn(b.runtime.typertGateway.wireStream.open)
+    a.runtime.typertGateway.wireStream.open = wireA; b.runtime.typertGateway.wireStream.open = wireB
+    const surfaceA = new NodeSurface({ runtime: a.runtime, distIndex: join(a.dist, 'index.html'), renderIndex: value => value })
+    const surfaceB = new NodeSurface({ runtime: b.runtime, distIndex: join(b.dist, 'index.html'), renderIndex: value => value })
+    const requestA = new Request('https://a.test/api/session/list'); const requestB = new Request('https://b.test/api/session/list')
+    await Promise.all([surfaceA.handle(requestA), surfaceB.handle(requestB)])
+    expect(createA).toHaveBeenCalledExactlyOnceWith({ principal: { kind: 'owner' }, interactions: 'answer' })
+    expect(createB).toHaveBeenCalledExactlyOnceWith({ principal: { kind: 'owner' }, interactions: 'answer' })
+    expect(a.fetchApi).toHaveBeenCalledWith(requestA, peerA); expect(b.fetchApi).toHaveBeenCalledWith(requestB, peerB)
+    const muxA = surfaceA.openMux(() => {}, new AbortController().signal); const muxB = surfaceB.openMux(() => {}, new AbortController().signal)
+    for (const mux of [muxA, muxB]) { mux.receive(JSON.stringify({ type: 'open', streamId: 'same-id', endpoint: 'session/follow', payload: {} })); mux.receive(JSON.stringify({ type: 'end', streamId: 'same-id' })) }
+    await vi.waitFor(() => { expect(wireA).toHaveBeenCalled(); expect(wireB).toHaveBeenCalled() })
+    expect(wireA.mock.calls[0]![3]).toBe(peerA); expect(wireB.mock.calls[0]![3]).toBe(peerB)
+    await Promise.all([muxA.close(), muxB.close()])
+  })
+
   it('keeps simultaneous nodes and native plugin resources independent', async () => {
     const a = await fixture('node-a'); const b = await fixture('node-b')
     const path = 'https://node.test/plugins/@custom/plugin/client.js?rev=dynamic'

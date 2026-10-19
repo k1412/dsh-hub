@@ -5,9 +5,11 @@ import { Readable } from 'node:stream'
 import { NativeMux, type NativeWireStream } from './stream.ts'
 import { pluginEvents, type PluginEventSource } from './plugin-events.ts'
 
+export interface NativePeer { readonly principal: { readonly kind: 'owner' }; readonly signal: AbortSignal; dispose(): Promise<void> }
+
 /** Existing Runtime capabilities; no listener or second Runtime is constructed. */
 export interface NativeRuntime {
-  connection: { createSharedFetchHandler(channel: '/api'): { fetch(request: Request): Promise<Response> } }
+  connection: { createSharedFetchHandler(channel: '/api'): { fetch(request: Request, peer?: NativePeer): Promise<Response> }; createPeer?(options: { principal: { kind: 'owner' }; interactions: 'answer' }): NativePeer }
   clientModules: { fetchBundle(request: Request): Promise<Response> } & Partial<PluginEventSource>
   typertGateway: { wireStream: NativeWireStream }
 }
@@ -33,16 +35,20 @@ const mime: Record<string, string> = {
  */
 export class NodeSurface {
   private readonly api
+  private readonly peer: NativePeer | undefined
   private readonly distRoot: string
   constructor(private readonly options: SurfaceOptions) {
     this.api = options.runtime.connection.createSharedFetchHandler('/api')
+    // Pairing authenticates this single-operator carrier. One native Peer per
+    // surface keeps HTTP and mux interactions in the same upstream scope.
+    this.peer = options.runtime.connection.createPeer?.({ principal: { kind: 'owner' }, interactions: 'answer' })
     this.distRoot = dirname(resolve(options.distIndex))
   }
 
   async handle(request: Request): Promise<Response> {
     const url = new URL(request.url)
     // Only upstream's registered API and published frontend resources are exposed.
-    if (url.pathname.startsWith('/api/')) return this.api.fetch(request)
+    if (url.pathname.startsWith('/api/')) return this.peer ? this.api.fetch(request, this.peer) : this.api.fetch(request)
     if (url.pathname === '/api') return new Response('Not found', { status: 404 })
     if (url.pathname === '/plugins/events') {
       const modules = this.options.runtime.clientModules
@@ -87,6 +93,6 @@ export class NodeSurface {
 
   /** One native browser mux connection; payloads remain upstream-owned. */
   openMux(send: (text: string) => Promise<void> | void, signal: AbortSignal): NativeMux {
-    return new NativeMux(this.options.runtime.typertGateway.wireStream, send, signal)
+    return new NativeMux(this.options.runtime.typertGateway.wireStream, send, signal, this.peer)
   }
 }

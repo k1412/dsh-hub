@@ -14,7 +14,7 @@ async function main(): Promise<void> {
     help: { type: 'boolean', short: 'h' },
   } })
   if (args.values.help) {
-    process.stdout.write('Usage: dsh-gateway-node install --manifest <file> [--state-directory <directory>] [--bin-directory <directory>] [--profile web] [--dsh-executable <path>] [--tailscale-socket <path>] [--reuse-tailscale]\nInstalls and pairs the remote plugin inside an existing DSH 0.1.7-rc.2 profile.\n')
+    process.stdout.write('Usage: dsh-gateway-node install --manifest <file> [--state-directory <directory>] [--bin-directory <directory>] [--profile web] [--dsh-executable <path>] [--tailscale-socket <path>] [--reuse-tailscale]\nInstalls and pairs the remote plugin inside an existing DSH 0.1.7-rc.2 or 0.2.1-rc.2 profile.\n')
     return
   }
   if (args.positionals[0] !== 'install' || !args.values.manifest) throw new Error('Usage: dsh-gateway-node install --manifest <file> [--state-directory <directory>] [--profile web]')
