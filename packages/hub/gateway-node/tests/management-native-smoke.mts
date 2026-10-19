@@ -13,6 +13,7 @@ import { createHash } from 'node:crypto'
 import { createManagement, type Manager } from '../src/management.ts'
 const root=process.env.DSH_NATIVE_ROOT,pnpm=process.env.DSH_TEST_PNPM
 if(!root||!pnpm)throw new Error('Set DSH_NATIVE_ROOT and DSH_TEST_PNPM to installed trees')
+const nativeVersion=createRequire(join(root,'package.json'))('@deepseek-ai/dsh/package.json').version
 const work=await mkdtemp(join(tmpdir(),'native-management-')),req=createRequire(join(root,'package.json')),exec=promisify(execFile)
 // CI may expose a shell/native pnpm launcher; a local pinned cjs remains supported.
 const firstLine=(await readFile(pnpm,'utf8')).split('\n')[0] ?? ''
@@ -62,7 +63,7 @@ try {
     ready=true;for(const listener of listeners)listener();listeners.clear()
     const manager=ctx.get('pluginManager');assert(manager)
     const originalInstall=manager.installBundle.bind(manager);manager.installBundle=async(...args:any[])=>{const result=await originalInstall(...args);if(result.application==='failed')console.error('Expected fixture install refusal:',result.error?.code);return result}
-    managers.push(await createManagement({stateDirectory:join(directory,'journal'),version:'0.1.7-rc.2',manager:manager as Manager,trustedPackages:['gateway-control-fixture']}))
+    managers.push(await createManagement({stateDirectory:join(directory,'journal'),version:nativeVersion,manager:manager as Manager,trustedPackages:['gateway-control-fixture']}))
   }
   const results=await Promise.all([job(0,{requestId:'install-A',action:'plugin.install',package:'gateway-control-fixture',version:'1.0.0'}),job(1,{requestId:'install-B',action:'plugin.install',package:'gateway-control-fixture',version:'1.0.1'})])
   assert(results.every(r=>r.status==='completed'),JSON.stringify(results))
@@ -71,12 +72,25 @@ try {
   const entry=a.plugins.find((p:any)=>p.moduleName==='gateway-control-fixture');assert(entry)
   assert.equal((await job(0,{requestId:'disable-A',action:'plugin.disable',target:entry.entryId})).status,'completed')
   assert.equal((await job(0,{requestId:'enable-A',action:'plugin.enable',target:entry.entryId})).status,'completed')
+  if (nativeVersion === '0.2.1-rc.2') {
+    for (const [index, target] of [[0, '1.0.1'], [1, '1.0.2']] as const) {
+      const before:any = await managers[index]!.handle('management.inventory', {})
+      await assert.rejects(managers[index]!.handle('management.submit', {requestId:`refused-update-${index}`,action:'plugin.install',package:'gateway-control-fixture',version:target}), /upstream-uninstall-reinstall-required/)
+      const after:any = await managers[index]!.handle('management.inventory', {})
+      assert.deepEqual(after.jobs, before.jobs, 'Rejected native updates cannot reserve jobs or alter bundle versions')
+      assert.deepEqual(after.bundles, before.bundles)
+    }
+    assert.equal(JSON.parse(await readFile(join(work,'A/package.json'),'utf8')).dependencies['gateway-control-fixture'],'1.0.0')
+    assert.equal(JSON.parse(await readFile(join(work,'B/package.json'),'utf8')).dependencies['gateway-control-fixture'],'1.0.1')
+    console.log(JSON.stringify({ok:true,realPluginManagers:2,nativeVersion,parallelInstall:true,versionIsolation:true,enableDisable:true,installedBundleUpdatesRefusedBeforeReservation:true}))
+  } else {
   assert.equal((await job(0,{requestId:'update-A',action:'plugin.install',package:'gateway-control-fixture',version:'1.0.1'})).status,'restart-required')
   const failed=await job(1,{requestId:'failed-update-B',action:'plugin.install',package:'gateway-control-fixture',version:'1.0.2'})
   assert.equal(failed.status,'restart-required');assert.equal(failed.rollback,'disk-restored-active-unverified')
   assert.equal(JSON.parse(await readFile(join(work,'A/package.json'),'utf8')).dependencies['gateway-control-fixture'],'1.0.1')
   await assert.rejects(managers[0]!.handle('management.submit',{requestId:'blocked-remove',action:'plugin.remove',target:'gateway-control-fixture'}),/busy/)
   assert.equal(JSON.parse(await readFile(join(work,'B/package.json'),'utf8')).dependencies['gateway-control-fixture'],'1.0.1')
+  }
   assert((await readFile(join(work,'A/cordis.patch.yml'),'utf8')).includes('preserve this private profile comment'))
-  console.log(JSON.stringify({ok:true,realPluginManagers:2,registry:'local fixture',parallelInstall:true,versionIsolation:true,enableDisable:true,update:true,failedUpdateDiskRollback:true,pendingRestartFence:true,activeVersionUnverified:true,preservedYaml:true}))
+  if (nativeVersion !== '0.2.1-rc.2') console.log(JSON.stringify({ok:true,realPluginManagers:2,registry:'local fixture',parallelInstall:true,versionIsolation:true,enableDisable:true,update:true,failedUpdateDiskRollback:true,pendingRestartFence:true,activeVersionUnverified:true,preservedYaml:true}))
 }finally{for(const ctx of contexts)await ctx.fiber.dispose();await new Promise<void>(r=>registry.close(()=>r()));await rm(work,{recursive:true,force:true})}
