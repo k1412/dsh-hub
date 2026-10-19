@@ -143,6 +143,7 @@ export async function createFixture(options: { password?: boolean; originSecret?
               for await (const _value of uplink) { /* read-only follow waits until its native cancellation */ }
             } finally { node.cancelled++ } })()
           }
+          if (endpoint === 'fixture/history') return (async function* () { yield { node: label, records: '历史😀'.repeat(200_000) }; })()
           if (endpoint === 'fixture/fail') throw new Error('Fixture native method failed')
           return (async function* () { signal.addEventListener('abort', () => { node.cancelled++ }, { once: true }); for await (const value of uplink) yield { node: label, value } })()
         }, failure: () => ({ code: 'fixture/failure', message: 'Fixture native method failed', details: {} }),

@@ -32,3 +32,5 @@ The test creates a temporary Hub network identity and two isolated node connecti
 This is a connection-layer test. Both node instances run on one test machine; Tailscale uses the existing host's `nc` data path to its own Tailnet IP, so results do not represent a cross-machine or WAN path. Preserving the probe server's counter does not verify DSH history, drafts, or permission state. The recorded result is `reports/network-local-2026-10-03.json`.
 
 Upstream references: [Tailscale userspace networking](https://tailscale.com/docs/concepts/userspace-networking), [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve), [Tailcat](https://github.com/tailscale/tailcat/tree/v0.7.0).
+
+Large native history messages are split into bounded transport frames and reassembled unchanged. Each message is limited to 16 MiB, with a 32 MiB queue budget per node connection. Update the node plugin together with the Gateway to enable large-message transfer; existing small-message framing remains compatible. A closed native channel explicitly closes the browser connection instead of leaving history loading indefinitely.

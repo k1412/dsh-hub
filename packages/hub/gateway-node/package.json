@@ -1,6 +1,6 @@
 {
   "name": "@k1412/dsh-gateway-node",
-  "version": "2.0.0-alpha.2",
+  "version": "2.0.0-alpha.3",
   "description": "Native DSH surface over an outbound paired Hub tunnel",
   "type": "module",
   "main": "lib/index.js",

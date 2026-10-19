@@ -124,6 +124,28 @@ describe('Gateway actual HTTP/ws integration with independent Runtime surfaces',
     } finally { sockets.forEach(s => s.terminate()) }
   })
 
+  it('loads multi-megabyte history for two nodes and settles remote mux closure without crashing', async () => {
+    const f = await setup(); const [a, b] = await Promise.all([f.addNode('A'), f.addNode('B')]);
+    const sockets = await Promise.all([a, b].map(node => browserSocket(f, node)));
+    try {
+      const replies = sockets.map(socket => once(socket, 'message'));
+      sockets.forEach(socket => socket.send(JSON.stringify({ type: 'open', streamId: 'history', endpoint: 'fixture/history', payload: {} })));
+      const frames = await Promise.all(replies);
+      frames.forEach(([bytes], i) => {
+        expect(Buffer.byteLength(String(bytes))).toBeGreaterThan(1024 * 1024);
+        expect(JSON.parse(String(bytes))).toMatchObject({ type: 'item', value: { node: i ? 'B' : 'A', records: '历史😀'.repeat(200_000) } });
+      });
+      const closed = once(sockets[0]!, 'close');
+      // Retire only the native channel, leaving its node carrier connected.
+      a.socket.send(JSON.stringify({ v: 1, type: 'cancel', id: 1 }));
+      expect((await closed)[0]).toBe(1011);
+      expect(f.gateway.peers.get(a.id)?.tunnel.isOpen).toBe(true);
+      expect((await f.request('/api/identity', { node: a })).status).toBe(200);
+      expect((await f.request('/api/identity', { node: b })).status).toBe(200);
+      expect(sockets[1]!.readyState).toBe(WebSocket.OPEN);
+    } finally { sockets.forEach(socket => socket.terminate()); }
+  });
+
   it('settles timeout/disconnect and retains pairing/session across reconnect and restart without replaying writes', async () => {
     const f = await setup({ requestTimeoutMs: 200 }); const [a, b] = await Promise.all([f.addNode('A'), f.addNode('B')])
     const timeout = await f.request('/api/hang', { node: a }); expect(timeout.status).toBe(504); await timeout.text()

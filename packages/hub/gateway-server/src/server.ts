@@ -108,7 +108,7 @@ export function createGateway(options: GatewayOptions) {
   let closing = false
   const browserSockets = new Set<WebSocket>()
   const agentSockets = new WebSocketServer({ noServer: true, maxPayload: 262144, perMessageDeflate: false })
-  const webSockets = new WebSocketServer({ noServer: true, maxPayload: 262144, perMessageDeflate: false })
+  const webSockets = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024, perMessageDeflate: false })
   const attempts = new Map<string, { count: number; reset: number }>()
   const nodeOrigin = options.nodeOrigin ?? ((id: string) => `${root.protocol}//${id}.${root.host}`)
   type Intent = { nodeId: string; runtimeId: string; generation: string; sessionId: string; expires: number }
@@ -413,8 +413,15 @@ export function createGateway(options: GatewayOptions) {
     webSockets.handleUpgrade(req, socket, head, ws => {
       browserSockets.add(ws)
       const abort = new AbortController()
-      const mux = peer.tunnel.openMux(text => { if (ws.readyState === WebSocket.OPEN) ws.send(text) }, abort.signal)
-      ws.on('message', (bytes, binary) => { if (binary) ws.close(1003, 'Native mux requires text'); else mux.send(bytes.toString()) })
+      let mux: ReturnType<GatewayTunnel['openMux']>
+      try {
+        mux = peer.tunnel.openMux(text => { if (ws.readyState === WebSocket.OPEN) ws.send(text) }, abort.signal,
+          () => ws.close(1011, 'Native mux disconnected'))
+      } catch { browserSockets.delete(ws); ws.close(1011, 'Native mux unavailable'); return }
+      ws.on('message', (bytes, binary) => {
+        if (binary) { ws.close(1003, 'Native mux requires text'); return }
+        try { mux.send(bytes.toString()) } catch { ws.close(1011, 'Native mux disconnected') }
+      })
       ws.on('error', () => {})
       const disconnected = () => ws.close(1012, 'Node disconnected')
       peer.socket.once('close', disconnected)
