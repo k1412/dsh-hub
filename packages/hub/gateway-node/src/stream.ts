@@ -1,6 +1,6 @@
 /** Public native Gateway carrier contract, intentionally independent of business endpoints. */
 export interface NativeWireStream {
-  open(endpoint: string, payload: unknown, uplink: AsyncIterable<unknown>, peer: undefined, signal: AbortSignal): Promise<AsyncIterable<unknown>>
+  open(endpoint: string, payload: unknown, uplink: AsyncIterable<unknown>, peer: unknown, signal: AbortSignal): Promise<AsyncIterable<unknown>>
   failure(error: unknown): { code: string; message: string; details: object }
 }
 
@@ -55,7 +55,7 @@ export class NativeMux {
   private closed = false
   private writes: Promise<void> = Promise.resolve()
   private readonly onAbort = (): void => { void this.close() }
-  constructor(private readonly wire: NativeWireStream, private readonly sendText: (text: string) => Promise<void> | void, private readonly signal: AbortSignal) {
+  constructor(private readonly wire: NativeWireStream, private readonly sendText: (text: string) => Promise<void> | void, private readonly signal: AbortSignal, private readonly peer?: unknown) {
     if (signal.aborted) this.closed = true
     else signal.addEventListener('abort', this.onAbort, { once: true })
   }
@@ -88,7 +88,7 @@ export class NativeMux {
   }
   private async pump(streamId: string, endpoint: string, payload: unknown, active: Active): Promise<void> {
     try {
-      const source = await this.wire.open(endpoint, payload, active.inbox, undefined, active.abort.signal)
+      const source = await this.wire.open(endpoint, payload, active.inbox, this.peer, active.abort.signal)
       for await (const value of source) {
         if (active.abort.signal.aborted || this.closed) break
         await this.send({ type: 'item', streamId, value })

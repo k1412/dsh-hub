@@ -58,7 +58,7 @@ export async function createManagement(options: ManagementOptions) {
   let installation = options.installation ?? 'external'
   try { await access('/.dockerenv'); installation = 'docker' } catch { /* non-container */ }
   const manager = options.manager
-  const protectedModule = (name: string) => /gateway-node|dsh-plugin-manager|dsh-connection|dsh-client-modules|dsh-typert-gateway/.test(name)
+  const protectedModule = (name: string) => /gateway-node|dsh-plugin-manager|dsh-connection|dsh-client-modules|dsh-typert-gateway|dsh-client-connection|dsh-api-gateway|dsh-api-remote-access/.test(name)
   async function inspectExact(name: string, target: string): Promise<PackageVersion> {
     if (options.lookupVersion) return options.lookupVersion(name, target)
     const inspected = await manager?.inspect(`${name}@${target}`)
@@ -229,6 +229,7 @@ export async function createManagement(options: ManagementOptions) {
     if (previous) { if (previous.fingerprint !== fingerprint) throw new Error('request-id-conflict'); return snapshot(previous) }
     if (active) throw new Error('node-busy')
     if (jobs.length >= 10000) throw new Error('journal-capacity; archive locally')
+    if (action === 'plugin.install' && options.version === '0.2.1-rc.2' && (await manager?.listBundles())?.some(bundle => bundle.name === input.package && !!bundle.version)) throw new Error('upstream-uninstall-reinstall-required; use native Plugins to remove and reinstall')
     const guardedLifecycle=['dsh.update','dsh.restart','dsh.stop','dsh.uninstall'].includes(action)
     if(guardedLifecycle){
       const owner=await readOwner(lockDirectory).catch(()=>undefined)

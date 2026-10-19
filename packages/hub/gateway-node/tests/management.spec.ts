@@ -40,3 +40,16 @@ it('shares an exclusive operation lock with the resident supervisor and refuses 
     await expect.poll(async()=> (await node.handle('management.inventory',{}) as {jobs:Array<{status:string}>}).jobs[0]?.status).toBe('completed')
   }finally{await rm(dir,{recursive:true,force:true})}
 })
+
+it('refuses an upstream 0.2.1 installed-plugin replacement before reserving or mutating', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'native-policy-'))
+  let installs = 0
+  const manager = { listBundles: async () => [{ name: 'example', version: '1.0.0' }], installBundle: async () => { installs++; return { application: 'applied', changed: true } }, listPlugins: async () => [] } as unknown as Manager
+  try {
+    const control = await createManagement({ stateDirectory: dir, version: '0.2.1-rc.2', trustedPackages: ['example'], manager })
+    await expect(control.handle('management.submit', { requestId: 'native-policy-update', action: 'plugin.install', package: 'example', version: '1.0.1' })).rejects.toThrow('upstream-uninstall-reinstall-required')
+    expect(installs).toBe(0)
+    expect(await control.handle('management.inventory', {})).toMatchObject({ jobs: [] })
+    for (const target of ['dsh-client-connection', 'dsh-api-gateway', 'dsh-api-remote-access']) await expect(control.handle('management.submit', { requestId: 'protected-core', action: 'plugin.disable', target })).rejects.toThrow('protected')
+  } finally { await rm(dir, { recursive: true, force: true }) }
+})

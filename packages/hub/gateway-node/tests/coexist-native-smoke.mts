@@ -6,8 +6,8 @@ import { createServer } from 'node:http'
 import { Readable } from 'node:stream'
 import { execFile, spawn } from 'node:child_process'
 import { promisify } from 'node:util'
-import { mkdtemp, mkdir, readFile, writeFile, symlink } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { mkdtemp, mkdir, readFile, writeFile, symlink, unlink } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomBytes } from 'node:crypto'
 import { WebSocket, WebSocketServer } from 'ws'
@@ -19,6 +19,7 @@ const installed = process.env.DSH_NATIVE_ROOT
 const baseline = process.env.DSH_GATEWAY_BASELINE_PACKAGE
 const sessionPackage = process.env.DSH_GATEWAY_SESSION_PACKAGE
 if (!installed || !baseline || !sessionPackage) throw new Error('Set DSH_NATIVE_ROOT, DSH_GATEWAY_BASELINE_PACKAGE and DSH_GATEWAY_SESSION_PACKAGE to isolated test code/artifacts')
+const require = createRequire(join(installed, 'package.json'))
 const controlPackage = resolve(process.env.DSH_GATEWAY_CONTROL_PACKAGE ?? 'dist/gateway/downloads/gateway-node.tgz')
 const work = await mkdtemp(join(tmpdir(), 'gateway-three-packages-'))
 process.env.DSH_HOME = join(work, 'home'); process.env.DSH_TELEMETRY_DISABLED = '1'
@@ -48,8 +49,7 @@ for (const index of [2, 1]) {
   await install(); repaired.push(names[index]!)
   for (const name of repaired) await verifyInstalledGateway(archives[names.indexOf(name)]!, profile, name)
 }
-await symlink(join(installed, 'node_modules/@deepseek-ai'), join(profile, 'node_modules/@deepseek-ai'))
-const require = createRequire(join(installed, 'package.json'))
+await symlink(dirname(dirname(require.resolve('@deepseek-ai/dsh-client-modules/package.json'))), join(profile, 'node_modules/@deepseek-ai'))
 const load = async (name: string) => import(pathToFileURL(require.resolve(name)).href)
 const app = await load('@deepseek-ai/dsh-app-boot')
 const hubs: Array<any> = []; let selectedSession = ''; let ctx: any; let browser: any
@@ -214,21 +214,33 @@ export function apply(ctx) {
       // Upstream WelcomeNoticeStore persists loopback acknowledgement in the
       // shared Runtime's ui-settings-general.welcomeNoticeVersion. Later Hub
       // origins must reach the next real onboarding step without re-acknowledge.
-      const configureLater = page.getByRole('button', { name: 'Configure later', exact: true })
-      await configureLater.waitFor({ state: 'visible' }); assert.equal(await welcome.isVisible(), false)
-      await configureLater.click()
+      if (require('@deepseek-ai/dsh-web-frontend/package.json').version === '0.2.1-rc.2') {
+        const onboarding = page.getByText('Get started', { exact: true })
+        await onboarding.waitFor({ state: 'visible' }); assert.equal(await welcome.isVisible(), false)
+        await page.keyboard.press('Escape'); await onboarding.waitFor({ state: 'hidden' })
+      } else {
+        const configureLater = page.getByRole('button', { name: 'Configure later', exact: true })
+        await configureLater.waitFor({ state: 'visible' }); assert.equal(await welcome.isVisible(), false)
+        await configureLater.click()
+      }
       const editor = page.locator('[contenteditable="true"]').first()
       await editor.waitFor({ state: 'visible' })
       if (hub.index === 1) await page.locator(`#gateway-session-intent[data-state="opened"][data-session-id="${selectedSession}"]`).waitFor()
       else {
         assert.equal(await page.locator('#gateway-session-intent').count(), 0)
+        const created = page.waitForResponse(response => new URL(response.url()).pathname === '/api/session/create')
         await page.getByRole('button', { name: /^New session$/i }).first().click()
+        const envelope = await (await created).json(); assert.equal(envelope.result?.ok, true)
+        await page.locator(`[data-conversation-session="${envelope.result.value.sessionId}"]`).waitFor()
+
       }
+      // Wait for the native new-session/onboarding requests to settle before input.
+      await page.waitForLoadState('networkidle')
       const snapshot = () => page.evaluate((text: string) => ({
         conversations: [...document.querySelectorAll('[data-conversation-session]')].map(element => element.getAttribute('data-conversation-session')),
         mirrors: Object.entries(localStorage).filter(([key, raw]) => {
           if (!key.startsWith('dsh.conversation.')) return false
-          try { return JSON.parse(raw).draft === text } catch { return false }
+          try { return (typeof JSON.parse(raw).draft === 'string' ? JSON.parse(raw).draft : JSON.parse(raw).draft?.text) === text } catch { return false }
         }).map(([key, raw]) => ({ key, draft: JSON.parse(raw).draft })),
       }), draft)
       const box = await editor.boundingBox(); assert(box, 'Native editor has a pointer target')
@@ -239,7 +251,7 @@ export function apply(ctx) {
       assert.equal((await editor.innerText()).trim(), draft)
       await page.waitForFunction((text: string) => Object.entries(localStorage).some(([key, raw]) => {
         if (!key.startsWith('dsh.conversation.')) return false
-        try { return JSON.parse(raw).draft === text } catch { return false }
+        try { return (typeof JSON.parse(raw).draft === 'string' ? JSON.parse(raw).draft : JSON.parse(raw).draft?.text) === text } catch { return false }
       }), draft)
       const before = await snapshot()
       assert.equal(before.conversations.length, 1, 'Exactly one native conversation is visible')
@@ -306,7 +318,14 @@ export function apply(ctx) {
   assert(baseTunnel.isOpen)
   await until(() => !ctx.clientModules.graph().entries.some((entry: any) => entry.id === names[1]))
   for (const connection of connections) assert.equal(await readFile(connection.connectionFile, 'utf8'), connection.original)
+  // npm traverses a symlinked namespace while pruning. Detach this fixture-only
+  // SDK projection before mutation so uninstall can never touch the SDK source.
+  const nativeIndex = require.resolve('@deepseek-ai/dsh-web-frontend/package.json')
+  const nativeManifestBefore = await readFile(nativeIndex, 'utf8')
+  await unlink(join(profile, 'node_modules/@deepseek-ai'))
   await promisify(execFile)('npm', ['uninstall', '--ignore-scripts', '--no-audit', '--no-fund', '--legacy-peer-deps', names[1], names[2]], { cwd: profile, timeout: 120000 })
+  await symlink(dirname(dirname(require.resolve('@deepseek-ai/dsh-client-modules/package.json'))), join(profile, 'node_modules/@deepseek-ai'))
+  assert.equal(await readFile(nativeIndex, 'utf8'), nativeManifestBefore, 'Uninstall leaves the isolated upstream SDK unchanged')
   const after = JSON.parse(await readFile(join(profile, 'package.json'), 'utf8'))
   assert.equal(after.dependencies[names[0]], manifest.dependencies[names[0]])
   assert.equal(after.dependencies[names[1]], undefined); assert.equal(after.dependencies[names[2]], undefined)

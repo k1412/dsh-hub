@@ -6,7 +6,7 @@
 import { createRequire } from 'node:module'
 import { pathToFileURL } from 'node:url'
 import { mkdtemp, mkdir, writeFile, symlink } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { createServer } from 'node:http'
 import { Readable } from 'node:stream'
@@ -23,6 +23,7 @@ const artifacts = process.env.DSH_NATIVE_ARTIFACTS ? resolve(process.env.DSH_NAT
 await mkdir(artifacts, { recursive: true })
 const browserName = process.env.DSH_NATIVE_BROWSER ?? 'chromium'
 if (!['chromium', 'webkit'].includes(browserName)) throw new Error('DSH_NATIVE_BROWSER must be chromium or webkit')
+process.chdir(work)
 process.env.DSH_HOME = join(work, 'home')
 process.env.DSH_TELEMETRY_DISABLED = '1'
 const require = createRequire(join(installed, 'package.json'))
@@ -36,7 +37,7 @@ await writeFile(join(eventFixture, 'index.mjs'), 'export function apply() {}\n')
 const fixtureBundle = 'globalThis.__ModuleLoader__.load({id:"@gateway-smoke/hmr-fixture",factory(){return {apply(){}};}});\n'
 await writeFile(join(eventFixture, 'client.js'), fixtureBundle)
 await writeFile(join(work, 'cordis.yml'), '[]\n')
-await symlink(join(installed, 'node_modules'), join(work, 'node_modules'))
+await symlink(dirname(dirname(dirname(require.resolve('@deepseek-ai/dsh-client-modules/package.json')))), join(work, 'node_modules'))
 const patches = [
   ...app.loadOverlayPatches('gateway-smoke', require.resolve('@deepseek-ai/dsh-base/cordis.patch.yml')),
   ...app.loadOverlayPatches('gateway-smoke', require.resolve('@deepseek-ai/dsh-web-app/cordis.patch.yml')),
@@ -173,8 +174,9 @@ try {
   await page.getByRole('checkbox').check()
   await page.getByRole('button', { name: 'Enable Full access', exact: true }).click()
   await page.getByRole('button', { name: 'Access mode, current: Full access', exact: true }).waitFor()
-  await page.getByText('DeepSeek-V41-Flash', { exact: true }).click()
-  await page.getByText('Model', { exact: true }).click()
+  await page.getByText(/^(DeepSeek-V41-Flash|Select model)$/, { exact: true }).click()
+  const modelSubmenu = page.getByText('Model', { exact: true })
+  if (await modelSubmenu.isVisible()) await modelSubmenu.click()
   await page.getByText('Fixture model A', { exact: true }).click()
   await page.locator('textarea,[contenteditable="true"]').first().fill('Native gateway prompt')
   await page.getByRole('button', { name: 'Send message', exact: true }).click()

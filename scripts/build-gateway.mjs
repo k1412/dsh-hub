@@ -24,7 +24,7 @@ const source = JSON.parse(await readFile(join(root, 'packages/hub/gateway-node/p
 await writeFile(join(pkg, 'package.json'), JSON.stringify({ name: source.name, version: source.version, type: 'module', license: 'MIT',
   main: 'lib/index.js', exports: { '.': './lib/index.js', './cordis.patch.yml': './cordis.patch.yml', './package.json': './package.json' },
   files: ['lib', 'cordis.patch.yml'], bin: { 'dsh-gateway-node': 'lib/cli.js' }, dsh: source.dsh,
-  peerDependencies: source.peerDependencies }, null, 2) + '\n')
+  engines: source.engines, peerDependencies: source.peerDependencies }, null, 2) + '\n')
 await cp(join(root, 'packages/hub/gateway-node/cordis.patch.yml'), join(pkg, 'cordis.patch.yml'))
 const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', join(out, 'downloads')], { cwd: pkg, encoding: 'utf8' }))[0]
 await cp(join(out, 'downloads', packed.filename), join(out, 'downloads/gateway-node.tgz'))

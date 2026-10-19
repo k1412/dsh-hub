@@ -29,7 +29,7 @@ describe.skipIf(!root)('published DSH native carrier integration', () => {
     }
     try {
       const { surface, dshVersion } = await createRuntimeSurface(runtime as RuntimeContext, pathToFileURL(join(root!, 'package.json')).href)
-      expect(dshVersion).toBe('0.1.7-rc.2')
+      expect(dshVersion).toBe(require('@deepseek-ai/dsh-web-frontend/package.json').version)
       const page = await surface.handle(new Request('https://node.test/'))
       const html = await page.text()
       expect(html).toContain('__DSH_BOOT_READY__')

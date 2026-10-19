@@ -19,10 +19,10 @@ export const name = 'gateway-node'
 // The Loader must wait for native control services before apply reads them.
 export const inject = ['connection', 'clientModules', 'typertGateway', 'tools', 'agents', 'agentDefaultModel', 'sessions', 'sessionController', 'pluginManager']
 export interface Config { connectionFile?: string; runtimeId?: string; name?: string; control?: boolean; delegationWorkspace?: string; trustedPackages?: string[]; updateExecutor?: string; installation?: 'npm' | 'docker' | 'external' }
-export const Config = z.object({
+export const Config: z<Config> = z.object({
   connectionFile: z.string().default(join(homedir(), '.dsh-gateway', 'connection.json')),
   runtimeId: z.string().default('default'), name: z.string().default(hostname()),
-  control: z.boolean().default(false), installation: z.string().default('external'), delegationWorkspace: z.string().default(''), trustedPackages: z.array(z.string()).default([]), updateExecutor: z.string().default(''),
+  control: z.boolean().default(false), installation: z.union(['npm', 'docker', 'external']).default('external'), delegationWorkspace: z.string().default(''), trustedPackages: z.array(z.string()).default([]), updateExecutor: z.string().default(''),
 })
 
 /** Activate inside the existing DSH Runtime; no Web listener or Runtime is created. */
