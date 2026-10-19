@@ -4,6 +4,9 @@ export const PROTOCOL_VERSION = 1;
 export const STREAM_WINDOW_BYTES = 32 * 1024;
 const MAX_CONTROL_BYTES = 256 * 1024;
 const MAX_SOCKET_BUFFER = 8 * 1024 * 1024;
+const MUX_CHUNK_UNITS = 32 * 1024;
+export const MAX_MUX_MESSAGE_BYTES = 16 * 1024 * 1024;
+const MAX_MUX_QUEUE_BYTES = 32 * 1024 * 1024;
 export interface TransportOptions { requestTimeoutMs?: number; maxChannels?: number; control?: boolean }
 export interface GatewayHealth { connected: boolean; inflightRequests: number; openMuxes: number }
 export interface GatewaySurface {
@@ -25,7 +28,7 @@ type Call = {
   receiveCredit: number; sendCredit: number; wake?: () => void; reader?: ReadableStreamDefaultReader<Uint8Array>;
   outgoingStarted: boolean; outgoingEnded: boolean; cleanup?: () => void;
 };
-type Mux = { kind: 'mux'; id: number; abort: AbortController; receive: (text: string) => void; dispose: () => void; cleanup?: () => void };
+type Mux = { kind: 'mux'; id: number; abort: AbortController; receive: (text: string) => void; dispose: () => void; cleanup?: () => void; queue: string[]; queuedBytes: number; pumping: boolean; parts: string[]; partBytes: number };
 type Channel = Call | Mux;
 const fault = (message: string) => new GatewayTransportError('PROTOCOL', message);
 function headers(value: unknown): [string, string][] {
@@ -50,6 +53,8 @@ class Peer {
   private nextId = 0;
   private highestId = 0;
   private dead = false;
+  private muxQueuedBytes = 0;
+  private muxReceivedBytes = 0;
   private readonly timeout: number;
   private readonly limit: number;
   private readonly control: boolean;
@@ -84,12 +89,12 @@ class Peer {
     if (this.ws.readyState !== WebSocket.CLOSED) this.ws.terminate();
     else this.ws.off('error', this.onError);
   }
-  private sendRaw(data: string | Buffer) {
+  private sendRaw(data: string | Buffer, sent?: (error?: Error) => void) {
     if (!this.isOpen) throw new GatewayTransportError('DISCONNECTED', 'Node is disconnected');
     if (this.ws.bufferedAmount + Buffer.byteLength(data) > MAX_SOCKET_BUFFER) {
       const error = new GatewayTransportError('CAPACITY', 'Transport write buffer exhausted'); this.shutdown(error); throw error;
     }
-    this.ws.send(data, error => { if (error) this.shutdown(new GatewayTransportError('DISCONNECTED', 'Transport write failed')); });
+    this.ws.send(data, error => { if (error) this.shutdown(new GatewayTransportError('DISCONNECTED', 'Transport write failed')); sent?.(error); });
   }
   private send(type: string, id: number, fields: Record<string, unknown> = {}) {
     const data = JSON.stringify({ v: 1, type, id, ...fields });
@@ -117,7 +122,7 @@ class Peer {
     if (!this.channels.delete(c.id)) return;
     c.cleanup?.();
     c.abort.abort(error);
-    if (c.kind === 'mux') { try { c.dispose(); } catch { /* Cleanup must not prevent other channels closing. */ } return; }
+    if (c.kind === 'mux') { this.muxQueuedBytes -= c.queuedBytes; this.muxReceivedBytes -= c.partBytes; c.queue = []; c.queuedBytes = 0; c.parts = []; c.partBytes = 0; try { c.dispose(); } catch { /* Cleanup must not prevent other channels closing. */ } return; }
     clearTimeout(c.timer);
     c.wake?.();
     if (c.reader) void c.reader.cancel(error).catch(() => {});
@@ -194,10 +199,10 @@ class Peer {
       } catch (error) { this.finish(c, error); }
     });
   }
-  openMux(receive: (text: string) => void, signal?: AbortSignal) {
+  openMux(receive: (text: string) => void, signal?: AbortSignal, closed?: () => void) {
     if (signal?.aborted) throw signal.reason;
     const id = this.allocate();
-    const c: Mux = { kind: 'mux', id, abort: new AbortController(), receive, dispose: () => {} };
+    const c: Mux = { kind: 'mux', id, abort: new AbortController(), receive, dispose: () => closed?.(), queue: [], queuedBytes: 0, pumping: false, parts: [], partBytes: 0 };
     this.channels.set(id, c);
     const close = () => this.cancel(c, new DOMException('Mux closed', 'AbortError'));
     signal?.addEventListener('abort', close, { once: true });
@@ -206,8 +211,40 @@ class Peer {
     return { send: (text: string) => {
       if (!this.channels.has(id)) throw new GatewayTransportError('DISCONNECTED', 'Mux is closed');
       if (typeof text !== 'string') throw new TypeError('Mux message must be text');
-      try { this.send('mux-text', id, { text }); } catch (error) { this.cancel(c, error); throw error; }
+      try { this.queueMux(c, text); } catch (error) { this.cancel(c, error); throw error; }
     }, close };
+  }
+  private queueMux(c: Mux, text: string) {
+    const size = Buffer.byteLength(text);
+    if (size > MAX_MUX_MESSAGE_BYTES || c.queue.length >= 1024 || this.muxQueuedBytes + size > MAX_MUX_QUEUE_BYTES) throw new GatewayTransportError('CAPACITY', 'Mux message buffer exhausted');
+    c.queue.push(text); c.queuedBytes += size; this.muxQueuedBytes += size;
+    if (!c.pumping) void this.pumpMux(c);
+  }
+  private async pumpMux(c: Mux) {
+    c.pumping = true;
+    try {
+      while (this.channels.has(c.id) && c.queue.length) {
+        const text = c.queue[0];
+        if (text === undefined) break;
+        // Keep small messages compatible with existing nodes. Large messages are
+        // reassembled before the native surface sees them, preserving RPC data.
+        const small = JSON.stringify({ v: 1, type: 'mux-text', id: c.id, text });
+        const frames = function* () {
+          if (Buffer.byteLength(small) <= MAX_CONTROL_BYTES) { yield small; return; }
+          for (let offset = 0; offset < text.length; offset += MUX_CHUNK_UNITS) {
+            yield JSON.stringify({ v: 1, type: 'mux-chunk', id: c.id, text: text.slice(offset, offset + MUX_CHUNK_UNITS), final: offset + MUX_CHUNK_UNITS >= text.length });
+          }
+        };
+        for (const frame of frames()) {
+          if (!this.channels.has(c.id)) return;
+          await new Promise<void>((resolve, reject) => this.sendRaw(frame, error => error ? reject(error) : resolve()));
+        }
+        if (!this.channels.has(c.id)) return;
+        const size = Buffer.byteLength(text);
+        c.queue.shift(); c.queuedBytes -= size; this.muxQueuedBytes -= size;
+      }
+    } catch (error) { this.cancel(c, error); }
+    finally { c.pumping = false; }
   }
   private onMessage = (raw: RawData, binary: boolean) => {
     try {
@@ -228,18 +265,30 @@ class Peer {
       if (this.control && (value as { control?: unknown }).control === 1) return;
       const f = value as Frame;
       if (f.v !== 1 || !Number.isSafeInteger(f.id) || f.id < 1 || f.id > 0xffffffff || typeof f.type !== 'string') throw fault('Invalid envelope');
-      if (!['request', 'response', 'credit', 'end', 'cancel', 'error', 'mux-open', 'mux-text'].includes(f.type)) throw fault('Unknown frame');
+      if (!['request', 'response', 'credit', 'end', 'cancel', 'error', 'mux-open', 'mux-text', 'mux-chunk'].includes(f.type)) throw fault('Unknown frame');
       if (f.type === 'request' || f.type === 'mux-open') { this.openRemote(f); return; }
       // Validate payload even for retired channels; late valid frames can race cancellation.
       if (f.type === 'credit' && (!Number.isSafeInteger(f.bytes) || (f.bytes as number) < 1 || (f.bytes as number) > STREAM_WINDOW_BYTES)) throw fault('Invalid credit');
+      if (f.type === 'mux-chunk' && (typeof f.text !== 'string' || !f.text.length || f.text.length > MUX_CHUNK_UNITS || typeof f.final !== 'boolean')) throw fault('Invalid mux chunk');
       if (f.type === 'mux-text' && typeof f.text !== 'string') throw fault('Invalid mux text');
       if (f.type === 'error' && f.code !== 'TIMEOUT' && f.code !== 'REMOTE') throw fault('Invalid error');
       const c = this.lookup(f.id); if (!c) return;
       if (f.type === 'cancel') { this.finish(c, new DOMException('Remote cancelled', 'AbortError')); return; }
       if (f.type === 'error') { this.finish(c, new GatewayTransportError(f.code as 'TIMEOUT' | 'REMOTE', 'Remote operation failed')); return; }
       if (c.kind === 'mux') {
-        if (f.type !== 'mux-text') throw fault('Invalid mux operation');
-        try { c.receive(f.text as string); } catch { this.cancel(c, new GatewayTransportError('REMOTE', 'Mux receiver failed')); }
+        if (f.type !== 'mux-text' && f.type !== 'mux-chunk') throw fault('Invalid mux operation');
+        if (f.type === 'mux-text' && c.parts.length) throw fault('Interrupted mux message');
+        let text = f.text as string;
+        if (f.type === 'mux-chunk') {
+          const size = Buffer.byteLength(text);
+          if (c.partBytes + size > MAX_MUX_MESSAGE_BYTES || this.muxReceivedBytes + size > MAX_MUX_QUEUE_BYTES) {
+            this.cancel(c, new GatewayTransportError('CAPACITY', 'Mux message buffer exhausted')); return;
+          }
+          c.parts.push(text); c.partBytes += size; this.muxReceivedBytes += size;
+          if (!f.final) return;
+          text = c.parts.join(''); this.muxReceivedBytes -= c.partBytes; c.parts = []; c.partBytes = 0;
+        }
+        try { c.receive(text); } catch { this.cancel(c, new GatewayTransportError('REMOTE', 'Mux receiver failed')); }
         return;
       }
       if (f.type === 'credit') {
@@ -268,12 +317,12 @@ class Peer {
     if (!this.surface || f.id <= this.highestId) throw fault('Invalid channel open');
     this.available(); this.highestId = f.id;
     if (f.type === 'mux-open') {
-      const c: Mux = { kind: 'mux', id: f.id, abort: new AbortController(), receive: () => {}, dispose: () => {} };
+      const c: Mux = { kind: 'mux', id: f.id, abort: new AbortController(), receive: () => {}, dispose: () => {}, queue: [], queuedBytes: 0, pumping: false, parts: [], partBytes: 0 };
       this.channels.set(c.id, c);
       try {
         const mux = this.surface.openMux(text => {
           if (!this.channels.has(c.id)) return;
-          try { this.send('mux-text', c.id, { text }); } catch (error) { this.cancel(c, error); }
+          try { this.queueMux(c, text); } catch (error) { this.cancel(c, error); }
         }, c.abort.signal);
         if (c.abort.signal.aborted) { mux.close(); return; }
         c.receive = text => mux.receive(text); c.dispose = () => mux.close();
@@ -313,7 +362,7 @@ export class GatewayTunnel {
   get isOpen() { return this.peer.isOpen; }
   get health() { return this.peer.health; }
   fetch(request: Request) { return this.peer.fetch(request); }
-  openMux(sendToBrowser: (text: string) => void, signal?: AbortSignal) { return this.peer.openMux(sendToBrowser, signal); }
+  openMux(sendToBrowser: (text: string) => void, signal?: AbortSignal, closed?: () => void) { return this.peer.openMux(sendToBrowser, signal, closed); }
   close() { this.peer.close(); }
 }
 /** Attach the installed Runtime surface to an already authenticated outbound socket. */

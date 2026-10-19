@@ -41,8 +41,17 @@ for (const index of [0, 2, 1]) {
   current.dependencies[names[index]!] = `file:${originalArchives[index]}`
   await install()
 }
-const incorrectBase = await readFile(join(profile, 'node_modules', names[0]!, 'lib/index.js'), 'utf8')
-for (const name of names) assert.equal(await readFile(join(profile, 'node_modules', name, 'lib/index.js'), 'utf8'), incorrectBase, 'Original aliases reproduce the hoisted code collision')
+const originalsByVersion = new Map<string, string>(); let collisions = 0
+for (const name of names) {
+  const manifest = JSON.parse(await readFile(join(profile, 'node_modules', name, 'package.json'), 'utf8'))
+  const code = await readFile(join(profile, 'node_modules', name, 'lib/index.js'), 'utf8')
+  assert.equal(manifest.name, names[0], 'Unrepaired dependency aliases retain the original package name')
+  if (originalsByVersion.has(manifest.version)) {
+    assert.equal(code, originalsByVersion.get(manifest.version), 'Equal-version original aliases reproduce the hoisted code collision')
+    collisions++
+  } else originalsByVersion.set(manifest.version, code)
+}
+assert(collisions > 0, 'Fixture includes equal-version original aliases')
 const repaired = [names[0]!]
 for (const index of [2, 1]) {
   current.dependencies[names[index]!] = manifest.dependencies[names[index]!]!

@@ -45,3 +45,5 @@ DSH_NATIVE_BROWSER=webkit pnpm exec tsx packages/hub/gateway-node/tests/coexist-
 ```
 
 The carrier is a loopback fixture, with private temporary Profile/state directories and no model inference. Reports print their temporary artifact directory and separate connector, browser mux and native-stream recovery timings. These measurements do not establish public-network latency or an SLA. No production Profile or host Tailscale identity is used.
+
+Large native history messages are split into bounded transport frames and reassembled unchanged. Each message is limited to 16 MiB, with a 32 MiB queue budget per node connection. Update the node plugin together with the Gateway to enable large-message transfer; existing small-message framing remains compatible. A closed native channel explicitly closes the browser connection instead of leaving history loading indefinitely.

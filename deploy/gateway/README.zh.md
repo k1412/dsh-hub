@@ -44,3 +44,5 @@ DSH_NATIVE_BROWSER=webkit pnpm exec tsx packages/hub/gateway-node/tests/coexist-
 ```
 
 载体使用 loopback fixture，Profile 与连接状态位于私有临时目录，不调用模型推理。报告打印临时制品目录，并分别记录 connector、浏览器 mux 和原生流恢复耗时；这些结果不能代表公网延迟或 SLA。测试不使用生产 Profile 或宿主 Tailscale 身份。
+
+大型原生历史消息会拆分为有界传输帧，重组后原样交给客户端。单条消息上限为 16 MiB，每个节点连接的队列预算为 32 MiB。启用大消息传输时应同时更新网关和节点插件；已有的小消息帧保持兼容。原生通道关闭时会明确关闭浏览器连接，避免历史一直处于加载状态。

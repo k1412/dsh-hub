@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { randomBytes } from 'node:crypto';
 import { BINARY_TEST_TIMEOUT_MS, BINARY_TRANSFER_TIMEOUT_MS, verifyBinaryTransfer } from './binary-probe.ts';
 import WebSocket, { WebSocketServer } from 'ws';
-import { GatewayTunnel, serveSurface, STREAM_WINDOW_BYTES, type GatewaySurface, type TransportOptions } from '../src/index.ts';
+import { GatewayTunnel, serveSurface, STREAM_WINDOW_BYTES, MAX_MUX_MESSAGE_BYTES, type GatewaySurface, type TransportOptions } from '../src/index.ts';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => { await Promise.all(cleanups.splice(0).map(fn => fn())); });
@@ -97,6 +97,32 @@ describe('native gateway transport over real sockets', () => {
     expect(results).toEqual(payloads.map((text, i) => [`${i < 2 ? 'a' : 'b'}:${text}`]));
     muxes.forEach(mux => mux.close());
     await eventually(() => a.service.health.openMuxes === 0 && b.service.health.openMuxes === 0);
+  });
+
+  it('preserves large Unicode history messages and ordering on simultaneous nodes and muxes', async () => {
+    const make = (label: string) => pair({ openMux: send => ({ receive: text => send(`${label}:${text}`), close() {} }) });
+    const [a, b] = await Promise.all([make('a'), make('b')]);
+    const messages: string[][] = [[], [], [], []];
+    const muxes = [a, a, b, b].map((p, i) => p.tunnel.openMux(text => messages[i]!.push(text)));
+    // Escaped control characters and surrogate boundaries must survive chunks.
+    const history = JSON.stringify({ records: '中😀\\\n\u0000'.repeat(180_000) });
+    expect(Buffer.byteLength(history)).toBeGreaterThan(1024 * 1024);
+    muxes.forEach(mux => { mux.send(history); mux.send('tail'); });
+    await expect.poll(() => messages.every(list => list.length === 2), { timeout: 10_000 }).toBe(true);
+    expect(messages).toEqual(muxes.map((_mux, i) => [`${i < 2 ? 'a' : 'b'}:${history}`, `${i < 2 ? 'a' : 'b'}:tail`]));
+    expect(a.tunnel.isOpen && b.tunnel.isOpen).toBe(true);
+  }, 15_000);
+
+  it('closes an overflowing mux explicitly while keeping other channels available', async () => {
+    let send: (text: string) => void = () => {};
+    let closed = 0;
+    const { tunnel, service } = await pair({ openMux: callback => { send = callback; return { receive() {}, close() {} }; } });
+    const mux = tunnel.openMux(() => {}, undefined, () => closed++);
+    await eventually(() => service.health.openMuxes === 1);
+    send('x'.repeat(MAX_MUX_MESSAGE_BYTES + 1));
+    await eventually(() => closed === 1 && tunnel.health.openMuxes === 0);
+    expect(() => mux.send('late')).toThrow('Mux is closed');
+    expect(await (await tunnel.fetch(new Request('http://runtime.invalid/alive'))).text()).toBe('ok');
   });
 
   it('fails interrupted calls without retrying and aborts native work', async () => {
