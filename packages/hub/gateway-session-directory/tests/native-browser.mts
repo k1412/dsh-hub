@@ -7,12 +7,14 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
 import { randomBytes } from 'node:crypto'
 import { chromium, webkit } from 'playwright'
 import { createGateway } from '../../gateway-server/src/server.ts'
 import { nativeList } from '../src/native-rpc.ts'
 const installed = process.env.DSH_NATIVE_ROOT
 if (!installed) throw new Error('DSH_NATIVE_ROOT required')
+const nativeVersion = createRequire(join(installed, 'package.json'))('@deepseek-ai/dsh/package.json').version
 const work = await mkdtemp(join(tmpdir(), 'dsh-directory-native-'))
 const log = createWriteStream(join(work, 'runtimes.log'))
 const listen = (server: ReturnType<typeof createServer>, port = 0) => new Promise<number>(ok => server.listen(port, '127.0.0.1', () => ok((server.address() as { port: number }).port)))
@@ -94,7 +96,7 @@ try {
     await writeFile(join(nodeWork, 'tsconfig.json'), JSON.stringify({ compilerOptions: { target: 'ES2024', module: 'ESNext', moduleResolution: 'Bundler', paths: {} } }))
     const connections = [experiment, baseline].map(g => {
       const invitation = g.hub.store.invite('tailcat', 'local-fixture', label), credential = randomBytes(32).toString('base64url')
-      const n = g.hub.store.enroll({ inviteToken: invitation.token, clientId: randomBytes(16).toString('hex'), credential, name: label, dshVersion: '0.1.7-rc.2', runtimeId: `runtime-${label}` })
+      const n = g.hub.store.enroll({ inviteToken: invitation.token, clientId: randomBytes(16).toString('hex'), credential, name: label, dshVersion: nativeVersion, runtimeId: `runtime-${label}` })
       return { id: n.id, credential, url: `ws://127.0.0.1:${g.privatePort}/connect?nodeId=${n.id}` }
     })
     const child = fork(resolve('packages/hub/gateway-session-directory/tests/native-runtime-worker.mts'), [], {
@@ -175,8 +177,9 @@ try {
     await page.getByRole('menuitem', { name: 'Full access', exact: true }).click()
     await page.getByRole('checkbox').check()
     await page.getByRole('button', { name: 'Enable Full access', exact: true }).click()
-    await page.getByText('DeepSeek-V41-Flash', { exact: true }).click()
-    await page.getByText('Model', { exact: true }).click()
+    await page.getByText(/^(DeepSeek-V41-Flash|Select model)$/, { exact: true }).click()
+    const modelSubmenu = page.getByText('Model', { exact: true })
+    if (await modelSubmenu.isVisible()) await modelSubmenu.click()
     await page.getByText('Fixture model A', { exact: true }).click()
     await page.locator('textarea,[contenteditable="true"]').first().fill(`Directory historical prompt ${label}`)
     await page.getByRole('button', { name: 'Send message', exact: true }).click()

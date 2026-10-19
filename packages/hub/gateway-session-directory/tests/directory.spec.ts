@@ -109,6 +109,16 @@ describe('injected gateway + directory + SSR integration', () => {
       expect((await directory.page()).entries).toEqual([])
     } finally { directory.dispose() }
   })
+  it('lists the two verified SDK versions together and rejects unverified versions', async () => {
+    const targets = ['0.1.7-rc.2', '0.2.1-rc.2', '0.2.1-rc.3'].map((version, i) => ({ ...target(`node${i}`), version }))
+    const directory = new SessionDirectory({ targets: () => targets,
+      list: async t => ({ archivedSessionIds: [], items: [row('same', t.version)] }) })
+    try {
+      const page = await directory.page()
+      expect(page.nodes.map(n => n.state)).toEqual(['ok', 'ok', 'unsupported'])
+      expect(page.entries.map(r => r.title)).toEqual(['0.1.7-rc.2', '0.2.1-rc.2'])
+    } finally { directory.dispose() }
+  })
   it('enforces version/capabilities, escapes titles and refuses links to other origins', async () => {
     const targets = [target('alpha'), { ...target('beta'), version: '0.1.7' }]
     targets[0]!.capabilities.nativeNavigation = 'fixture-only'

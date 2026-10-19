@@ -1,5 +1,6 @@
 /** Experimental metadata-only fan-out. No HTTP listener, persistence or DSH runtime. */
-export const SUPPORTED_VERSION = '0.1.7-rc.2'
+export const SUPPORTED_VERSION = '0.2.1-rc.2'
+export const SUPPORTED_VERSIONS = new Set(['0.1.7-rc.2', SUPPORTED_VERSION])
 export interface Target {
   nodeId: string
   runtimeId: string
@@ -104,7 +105,7 @@ export class SessionDirectory {
     const key = keyOf(target), revision = this.revision
     const base: Fetched = { target, key, revision, state: 'ok', rows: [], truncated: false, cached: false }
     if (!target.online) return { ...base, state: 'offline' }
-    if (target.version !== SUPPORTED_VERSION || !target.capabilities.sessionList) return { ...base, state: 'unsupported' }
+    if (!SUPPORTED_VERSIONS.has(target.version) || !target.capabilities.sessionList) return { ...base, state: 'unsupported' }
     try { originOf(target.origin) } catch { return { ...base, state: 'unsupported' } }
     const cached = this.cache.get(key)
     if (cached && cached.expires > Date.now()) return { ...base, rows: cached.rows, truncated: cached.truncated, cached: true }
